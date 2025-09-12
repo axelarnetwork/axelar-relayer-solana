@@ -158,7 +158,7 @@ impl Parser for ParserNativeGasPaid {
 //     use super::*;
 //     use serde_json::Value;
 //     use solana_transaction_status::UiInstruction;
-//     use solana_types::solana_types::SolanaTransaction;
+//     use crate::types::SolanaTransaction;
 
 //     #[tokio::test]
 //     async fn test_decode_queue_entry_and_parse_gas_credit() {

@@ -12,7 +12,7 @@ use crate::{
 use async_trait::async_trait;
 use relayer_base::gmp_api::gmp_types::Event;
 use solana_transaction_status::UiInstruction;
-use solana_types::solana_types::SolanaTransaction;
+use crate::types::SolanaTransaction;
 use std::collections::HashMap;
 use tracing::{info, warn};
 

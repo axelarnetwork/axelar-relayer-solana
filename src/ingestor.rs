@@ -1,3 +1,4 @@
+use crate::types::SolanaTransaction;
 use async_trait::async_trait;
 use relayer_base::error::IngestorError;
 use relayer_base::gmp_api::gmp_types::{
@@ -45,16 +46,12 @@ where
         &self,
         transaction: ChainTransaction,
     ) -> Result<Vec<Event>, IngestorError> {
-        let ChainTransaction::Solana(transaction) = transaction else {
-            return Err(IngestorError::UnexpectedChainTransactionType(format!(
-                "{:?}",
-                transaction
-            )));
-        };
+        let transaction: SolanaTransaction = serde_json::from_str(&transaction)
+            .map_err(|e| IngestorError::GenericError(e.to_string()))?;
 
         let events = self
             .solana_parser
-            .parse_transaction(*transaction.clone())
+            .parse_transaction(transaction.clone())
             .await
             .map_err(|e| IngestorError::GenericError(e.to_string()))?;
 

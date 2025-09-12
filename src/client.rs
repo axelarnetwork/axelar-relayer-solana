@@ -3,6 +3,7 @@ use std::{future::Future, pin::Pin, str::FromStr, time::Duration};
 use anyhow::anyhow;
 use serde_json::Value;
 
+use crate::types::{RpcGetTransactionResponse, SolanaTransaction};
 use futures::lock::Mutex;
 use futures_util::stream::BoxStream;
 use relayer_base::error::ClientError;
@@ -18,7 +19,6 @@ use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Signature;
 use solana_transaction_status::UiTransactionEncoding;
-use solana_types::solana_types::{RpcGetTransactionResponse, SolanaTransaction};
 use tracing::{debug, info};
 
 use crate::utils::{exec_curl_batch, get_tx_batch_command};

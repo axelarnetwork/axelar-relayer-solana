@@ -10,5 +10,6 @@ pub mod utils;
 pub use models::solana_transaction;
 pub mod subscriber_listener;
 pub mod subscriber_poller;
+pub mod types;
 
 pub mod test_utils;

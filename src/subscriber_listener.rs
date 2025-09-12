@@ -9,12 +9,12 @@ use crate::{
     models::solana_transaction::SolanaTransactionModel,
 };
 
+use crate::types::SolanaTransaction;
 use crate::utils::upsert_and_publish;
 use futures::StreamExt;
 use relayer_base::{error::SubscriberError, queue::Queue};
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Signature;
-use solana_types::solana_types::SolanaTransaction;
 use tokio::{select, time::timeout};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use tracing::{error, info, warn};

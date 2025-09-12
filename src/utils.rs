@@ -1,10 +1,9 @@
 use anyhow::anyhow;
 use relayer_base::{
     queue::{Queue, QueueItem},
-    subscriber::ChainTransaction,
 };
 use serde_json::json;
-use solana_types::solana_types::SolanaTransaction;
+use crate::types::SolanaTransaction;
 use std::str::FromStr;
 use tracing::{debug, error};
 
@@ -106,7 +105,7 @@ pub async fn upsert_and_publish<SM: SolanaTransactionModel>(
         .map_err(|e| anyhow!("Error upserting transaction: {:?}", e))?;
 
     if inserted {
-        let chain_transaction = ChainTransaction::Solana(Box::new(tx.clone()));
+        let chain_transaction = serde_json::to_string(&tx).unwrap();
 
         let item = &QueueItem::Transaction(Box::new(chain_transaction.clone()));
         debug!(

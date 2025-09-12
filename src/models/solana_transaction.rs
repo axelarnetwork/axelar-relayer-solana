@@ -128,7 +128,7 @@ mod tests {
 
     use solana_sdk::signature::Signature;
     use solana_transaction_status::UiInnerInstructions;
-    use solana_types::solana_types::SolanaTransaction;
+    use crate::types::SolanaTransaction;
     use testcontainers::runners::AsyncRunner;
     use testcontainers_modules::postgres;
 

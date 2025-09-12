@@ -12,7 +12,7 @@ use anyhow::anyhow;
 use relayer_base::{error::SubscriberError, queue::Queue};
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Signature;
-use solana_types::solana_types::SolanaTransaction;
+use crate::types::SolanaTransaction;
 use tokio::select;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
