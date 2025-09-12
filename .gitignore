@@ -1,5 +1,6 @@
 .env
-config.devner.yaml
+config.devnet.yaml
 config.testnet.yaml
 config.mainnet.yaml
 target
+certs

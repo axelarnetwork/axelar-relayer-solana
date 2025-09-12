@@ -51,13 +51,13 @@ redundant_clone = "warn"
 unnecessary_box_returns = "warn"
 
 [[bin]]
-name = "solana_subscriber"
+name = "subscriber"
 path = "src/bin/solana_subscriber.rs"
 
 [[bin]]
-name = "solana_distributor"
+name = "distributor"
 path = "src/bin/solana_distributor.rs"
 
 [[bin]]
-name = "solana_ingestor"
+name = "ingestor"
 path = "src/bin/solana_ingestor.rs"
