@@ -55,9 +55,5 @@ name = "subscriber"
 path = "src/bin/solana_subscriber.rs"
 
 [[bin]]
-name = "distributor"
-path = "src/bin/solana_distributor.rs"
-
-[[bin]]
 name = "ingestor"
 path = "src/bin/solana_ingestor.rs"

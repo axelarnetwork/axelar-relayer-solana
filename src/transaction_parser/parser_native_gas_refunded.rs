@@ -134,8 +134,8 @@ impl Parser for ParserNativeGasRefunded {
                 amount: parsed.fees.to_string(),
             },
             cost: Amount {
-                token_id: None,
                 amount: "0".to_string(),
+                token_id: None,
             },
         })
     }

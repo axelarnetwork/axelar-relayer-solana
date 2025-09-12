@@ -5,6 +5,7 @@ use crate::transaction_parser::parser_message_executed::ParserMessageExecuted;
 use crate::transaction_parser::parser_native_gas_added::ParserNativeGasAdded;
 use crate::transaction_parser::parser_native_gas_paid::ParserNativeGasPaid;
 use crate::transaction_parser::parser_native_gas_refunded::ParserNativeGasRefunded;
+use crate::types::SolanaTransaction;
 use crate::{
     error::TransactionParsingError,
     transaction_parser::parser_execute_insufficient_gas::ParserExecuteInsufficientGas,
@@ -12,7 +13,6 @@ use crate::{
 use async_trait::async_trait;
 use relayer_core::gmp_api::gmp_types::Event;
 use solana_transaction_status::UiInstruction;
-use crate::types::SolanaTransaction;
 use std::collections::HashMap;
 use tracing::{info, warn};
 
@@ -119,12 +119,9 @@ impl TransactionParserTrait for TransactionParser {
                             "Cost units for approved not found".to_string(),
                         ));
                     }
-                    cost.amount = (transaction
-                        .clone()
-                        .cost_units
-                        .checked_div(message_approved_count))
-                    .unwrap_or(0)
-                    .to_string();
+                    cost.amount = (cost_units.checked_div(message_approved_count))
+                        .unwrap_or(0)
+                        .to_string();
                     Event::MessageApproved {
                         common,
                         message,
@@ -144,17 +141,30 @@ impl TransactionParserTrait for TransactionParser {
                             "Cost units for executed not found".to_string(),
                         ));
                     }
-                    cost.amount = (transaction
-                        .clone()
-                        .cost_units
-                        .checked_div(message_executed_count))
-                    .unwrap_or(0)
-                    .to_string();
+                    cost.amount = (cost_units.checked_div(message_executed_count))
+                        .unwrap_or(0)
+                        .to_string();
                     Event::MessageExecuted {
                         common,
                         message_id,
                         source_chain,
                         status,
+                        cost,
+                    }
+                }
+                Event::GasRefunded {
+                    common,
+                    message_id,
+                    recipient_address,
+                    refunded_amount,
+                    mut cost,
+                } => {
+                    cost.amount = transaction.clone().cost_units.to_string();
+                    Event::GasRefunded {
+                        common,
+                        message_id,
+                        recipient_address,
+                        refunded_amount,
                         cost,
                     }
                 }
@@ -331,95 +341,51 @@ mod tests {
     }
 
     // #[tokio::test]
-    // async fn test_gas_executed() {
+    // async fn test_message_executed() {
     //     let txs = transaction_fixtures();
     //     let parser = TransactionParser::new("solana".to_string());
-    //     let events = parser.parse_transaction(txs[1].clone()).await.unwrap();
+    //     let events = parser.parse_transaction(txs[3].clone()).await.unwrap();
 
     //     assert_eq!(events.len(), 1);
 
     //     match events[0].clone() {
     //         Event::MessageExecuted { cost, .. } => {
-    //             assert_eq!(cost.amount, "42039207");
+    //             assert_eq!(cost.amount, "26930");
     //             assert!(cost.token_id.is_none());
     //         }
-    //         _ => panic!("Expected CallContract event"),
+    //         _ => panic!("Expected MessageExecuted event"),
     //     }
     // }
 
-    //     #[tokio::test]
-    //     async fn test_gas_approved() {
-    //         let gateway =
-    //             TonAddress::from_base64_url("EQCQPVhDBzLBwIlt8MtDhPwIrANfNH2ZQnX0cSvhCD4DlThU")
-    //                 .unwrap();
-    //         let gas_service =
-    //             TonAddress::from_base64_url("EQBcfOiB4SF73vEFm1icuf3oqaFHj1bNQgxvwHKkxAiIjxLZ")
-    //                 .unwrap();
+    #[tokio::test]
+    async fn test_message_approved() {
+        let txs = transaction_fixtures();
+        let parser = TransactionParser::new("solana".to_string());
+        let events = parser.parse_transaction(txs[1].clone()).await.unwrap();
+        assert_eq!(events.len(), 1);
 
-    //         let calc = GasCalculator::new(vec![gateway.clone(), gas_service.clone()]);
+        match events[0].clone() {
+            Event::MessageApproved { cost, .. } => {
+                assert_eq!(cost.amount, "38208");
+                assert!(cost.token_id.is_none());
+            }
+            _ => panic!("Expected MessageApproved event"),
+        }
+    }
 
-    //         let price_view = mock_price_view();
+    #[tokio::test]
+    async fn test_gas_refunded() {
+        let txs = transaction_fixtures();
+        let parser = TransactionParser::new("solana".to_string());
+        let events = parser.parse_transaction(txs[2].clone()).await.unwrap();
+        assert_eq!(events.len(), 1);
 
-    //         let traces = fixture_traces();
-    //         let parser = TraceParser::new(
-    //             price_view,
-    //             traces[2].transactions[2].account.clone(),
-    //             gas_service,
-    //             calc,
-    //             "ton2".to_string(),
-    //         );
-    //         let events = parser.parse_trace(traces[2].clone()).await.unwrap();
-    //         assert_eq!(events.len(), 1);
-
-    //         match events[0].clone() {
-    //             Event::MessageApproved { cost, .. } => {
-    //                 assert_eq!(cost.amount, "27244157");
-    //                 assert!(cost.token_id.is_none());
-    //             }
-    //             _ => panic!("Expected MessageApproved event"),
-    //         }
-    //     }
-
-    //     #[tokio::test]
-    //     async fn test_gas_refunded() {
-    //         let gateway =
-    //             TonAddress::from_base64_url("EQCQPVhDBzLBwIlt8MtDhPwIrANfNH2ZQnX0cSvhCD4DlThU")
-    //                 .unwrap();
-    //         let gas_service =
-    //             TonAddress::from_base64_url("kQCEKDERj88xS-gD7non_TITN-50i4QI8lMukNkqknAX28OJ")
-    //                 .unwrap();
-
-    //         let calc = GasCalculator::new(vec![gateway.clone(), gas_service.clone()]);
-
-    //         let price_view = self::mock_price_view();
-
-    //         let traces = fixture_traces();
-    //         let parser = TraceParser::new(price_view, gateway, gas_service, calc, "ton2".to_string());
-    //         let events = parser.parse_trace(traces[8].clone()).await.unwrap();
-    //         assert_eq!(events.len(), 1);
-
-    //         match events[0].clone() {
-    //             Event::GasRefunded { cost, .. } => {
-    //                 assert_eq!(cost.amount, "10869279");
-    //                 assert!(cost.token_id.is_none());
-    //             }
-    //             _ => panic!("Expected GasRefunded event"),
-    //         }
-    //     }
-
-    //     fn mock_price_view() -> MockPriceView<PostgresDB> {
-    //         let mut price_view: MockPriceView<PostgresDB> = MockPriceView::new();
-    //         price_view
-    //             .expect_get_price()
-    //             .with(eq(
-    //                 "0:1962e375dcf78f97880e9bec4f63e1afe683b4abdd8855d366014c05ff1160e9/USD",
-    //             ))
-    //             .returning(|_| Ok(Decimal::from_str("0.5").unwrap()));
-    //         price_view
-    //             .expect_get_price()
-    //             .with(eq("TON/USD"))
-    //             .returning(|_| Ok(Decimal::from_str("3").unwrap()));
-
-    //         price_view
-    //     }
+        match events[0].clone() {
+            Event::GasRefunded { cost, .. } => {
+                assert_eq!(cost.amount, "13085");
+                assert!(cost.token_id.is_none());
+            }
+            _ => panic!("Expected GasRefunded event"),
+        }
+    }
 }
