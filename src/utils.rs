@@ -1,5 +1,5 @@
 use anyhow::anyhow;
-use relayer_base::{
+use relayer_core::{
     queue::{Queue, QueueItem},
 };
 use serde_json::json;

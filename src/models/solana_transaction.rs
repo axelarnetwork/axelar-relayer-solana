@@ -2,7 +2,7 @@ use std::future::Future;
 
 use anyhow::Result;
 use async_trait::async_trait;
-use relayer_base::utils::ThreadSafe;
+use relayer_core::utils::ThreadSafe;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 
@@ -126,9 +126,9 @@ impl UpdateEvents for PgSolanaTransactionModel {
 mod tests {
     use std::str::FromStr;
 
+    use crate::types::SolanaTransaction;
     use solana_sdk::signature::Signature;
     use solana_transaction_status::UiInnerInstructions;
-    use crate::types::SolanaTransaction;
     use testcontainers::runners::AsyncRunner;
     use testcontainers_modules::postgres;
 
@@ -142,7 +142,7 @@ mod tests {
     async fn test_crud() {
         let init_sql = format!(
             "{}\n",
-            include_str!("../../../migrations/0014_solana_transactions.sql"),
+            include_str!("../../migrations/0006_solana_transactions.sql"),
         );
         let container = postgres::Postgres::default()
             .with_init_sql(init_sql.into_bytes())

@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use base64::prelude::BASE64_STANDARD;
 use base64::Engine;
 use borsh::BorshDeserialize;
-use relayer_base::gmp_api::gmp_types::{CommonEventFields, Event, EventMetadata, GatewayV2Message};
+use relayer_core::gmp_api::gmp_types::{CommonEventFields, Event, EventMetadata, GatewayV2Message};
 use solana_sdk::pubkey::Pubkey;
 use solana_transaction_status::UiCompiledInstruction;
 use std::collections::HashMap;

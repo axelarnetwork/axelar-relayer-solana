@@ -6,7 +6,7 @@ use crate::transaction_parser::message_matching_key::MessageMatchingKey;
 use crate::transaction_parser::parser::{Parser, ParserConfig};
 use async_trait::async_trait;
 use borsh::BorshDeserialize;
-use relayer_base::gmp_api::gmp_types::{CannotExecuteMessageReason, CommonEventFields, Event};
+use relayer_core::gmp_api::gmp_types::{CannotExecuteMessageReason, CommonEventFields, Event};
 use solana_transaction_status::UiCompiledInstruction;
 use tracing::{debug, warn};
 

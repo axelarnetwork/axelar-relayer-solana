@@ -6,7 +6,7 @@ use serde_json::Value;
 use crate::types::{RpcGetTransactionResponse, SolanaTransaction};
 use futures::lock::Mutex;
 use futures_util::stream::BoxStream;
-use relayer_base::error::ClientError;
+use relayer_core::error::ClientError;
 use solana_client::{
     rpc_client::GetConfirmedSignaturesForAddress2Config,
     rpc_config::{RpcTransactionConfig, RpcTransactionLogsConfig, RpcTransactionLogsFilter},
@@ -296,7 +296,7 @@ impl SolanaStreamClientTrait for SolanaStreamClient {
 //     use std::str::FromStr;
 
 //     use dotenv::dotenv;
-//     use relayer_base::config::config_from_yaml;
+//     use relayer_core::config::config_from_yaml;
 
 //     use crate::config::SolanaConfig;
 

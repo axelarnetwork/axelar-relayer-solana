@@ -3,11 +3,11 @@ use sqlx::PgPool;
 use std::sync::Arc;
 use tokio::signal::unix::{signal, SignalKind};
 
-use relayer_base::config::config_from_yaml;
-use relayer_base::logging::setup_logging;
-use relayer_base::logging_ctx_cache::RedisLoggingCtxCache;
-use relayer_base::redis::connection_manager;
-use relayer_base::{
+use relayer_core::config::config_from_yaml;
+use relayer_core::logging::setup_logging;
+use relayer_core::logging_ctx_cache::RedisLoggingCtxCache;
+use relayer_core::redis::connection_manager;
+use relayer_core::{
     database::PostgresDB, distributor::Distributor, gmp_api, queue::Queue, utils::setup_heartbeat,
 };
 use solana::config::SolanaConfig;

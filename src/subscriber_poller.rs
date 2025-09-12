@@ -9,7 +9,7 @@ use crate::{
     utils::upsert_and_publish,
 };
 use anyhow::anyhow;
-use relayer_base::{error::SubscriberError, queue::Queue};
+use relayer_core::{error::SubscriberError, queue::Queue};
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Signature;
 use crate::types::SolanaTransaction;
@@ -213,7 +213,7 @@ impl<RPC: SolanaRpcClientTrait, SC: SubscriberCursor, SM: SolanaTransactionModel
 //     use std::str::FromStr;
 
 //     use dotenv::dotenv;
-//     use relayer_base::config::config_from_yaml;
+//     use relayer_core::config::config_from_yaml;
 //     use solana_sdk::commitment_config::CommitmentConfig;
 //     use testcontainers::{runners::AsyncRunner, ContainerAsync};
 //     use testcontainers_modules::postgres;

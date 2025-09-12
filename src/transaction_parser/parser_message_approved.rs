@@ -5,7 +5,7 @@ use crate::transaction_parser::parser::{Parser, ParserConfig};
 use async_trait::async_trait;
 use borsh::BorshDeserialize;
 use bs58::encode;
-use relayer_base::gmp_api::gmp_types::{
+use relayer_core::gmp_api::gmp_types::{
     Amount, CommonEventFields, Event, EventMetadata, GatewayV2Message, MessageApprovedEventMetadata,
 };
 use solana_sdk::pubkey::Pubkey;

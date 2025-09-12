@@ -1,9 +1,9 @@
 use dotenv::dotenv;
 
-use relayer_base::config::config_from_yaml;
-use relayer_base::logging::setup_logging;
-use relayer_base::redis::connection_manager;
-use relayer_base::{queue::Queue, utils::setup_heartbeat};
+use relayer_core::config::config_from_yaml;
+use relayer_core::logging::setup_logging;
+use relayer_core::redis::connection_manager;
+use relayer_core::{queue::Queue, utils::setup_heartbeat};
 use solana::{
     client::{SolanaRpcClient, SolanaStreamClient},
     config::SolanaConfig,

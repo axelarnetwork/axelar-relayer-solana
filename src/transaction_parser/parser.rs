@@ -10,7 +10,7 @@ use crate::{
     transaction_parser::parser_execute_insufficient_gas::ParserExecuteInsufficientGas,
 };
 use async_trait::async_trait;
-use relayer_base::gmp_api::gmp_types::Event;
+use relayer_core::gmp_api::gmp_types::Event;
 use solana_transaction_status::UiInstruction;
 use crate::types::SolanaTransaction;
 use std::collections::HashMap;

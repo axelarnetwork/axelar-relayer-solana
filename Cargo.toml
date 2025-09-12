@@ -4,43 +4,51 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-relayer-base = { workspace = true }
-dotenv = { workspace = true }
-tokio = { workspace = true }
-anyhow = { workspace = true }
-serde = { workspace = true, features = ["derive"] }
-serde_json = { workspace = true }
-redis = { workspace = true, features = ["tokio-rustls-comp"] }
-tracing = { workspace = true }
-sqlx = { workspace = true }
-chrono = { workspace = true }
-solana-client = { workspace = true }
-solana-rpc-client = { workspace = true }
-solana-rpc-client-api = { workspace = true }
-solana-sdk = { workspace = true }
-solana-transaction-status = { workspace = true }
-solana-transaction-status-client-types = { workspace = true }
-interchain-token-service = { workspace = true }
-futures = { workspace = true }
-futures-util = { workspace = true }
-solana-pubsub-client = { workspace = true }
-async-trait = { workspace = true }
-thiserror = { workspace = true }
-hex = { workspace = true }
-tokio-util = { workspace = true }
+relayer-core = { git = "https://github.com/commonprefix/axelar-relayer-core", branch = "main" }
+dotenv = "0.15.0"
+tokio = { version = "1.41.1", features = ["full", "test-util"] }
+anyhow = "1.0.93"
+serde = "1.0.215"
+serde_json = "1.0.133"
+redis = { version = "0.32.4", features = ["tokio-rustls-comp"] }
+tracing = "0.1.40"
+sqlx = { version = "0.8.1", features = [
+    "runtime-tokio-rustls",
+    "postgres",
+    "chrono",
+] }
+chrono = { version = "0.4.40", features = ["serde"] }
+solana-client = "~2.1"
+solana-rpc-client = "~2.1"
+solana-rpc-client-api = "~2.1"
+solana-sdk = "~2.1"
+solana-transaction-status = "~2.1"
+solana-pubsub-client = "~2.1"
+solana-transaction-status-client-types = "~2.1"
+interchain-token-service = { git = "https://github.com/commonprefix/axelar-amplifier", branch = "xrpl", package = "interchain-token-service" }
+futures = "0.3.31"
+futures-util = "0.3.31"
+async-trait = "0.1.88"
+thiserror = "2.0.3"
+hex = "0.4.3"
+tokio-util = "0.7.12"
 bs58 = "0.5"
 borsh = "1"
-base64 = { workspace = true }
+base64 = "0.22.1"
 
 [dev-dependencies]
-relayer-base = { workspace = true, features = ["mocks"] }
-mockall = { workspace = true }
-testcontainers = { workspace = true }
-testcontainers-modules = { workspace = true, features = ["postgres"] }
+mockall = "0.13.1"
+testcontainers = "0.24.0"
+testcontainers-modules = { version = "0.12.1", features = ["postgres"] }
 tracing-test = "0.2.5"
 
-[lints]
-workspace = true
+[lints.clippy]
+uninlined_format_args = "allow"
+unwrap_used = "warn"
+indexing_slicing = "warn"
+clone_on_ref_ptr = "warn"
+redundant_clone = "warn"
+unnecessary_box_returns = "warn"
 
 [[bin]]
 name = "solana_subscriber"

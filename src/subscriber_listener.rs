@@ -12,7 +12,7 @@ use crate::{
 use crate::types::SolanaTransaction;
 use crate::utils::upsert_and_publish;
 use futures::StreamExt;
-use relayer_base::{error::SubscriberError, queue::Queue};
+use relayer_core::{error::SubscriberError, queue::Queue};
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Signature;
 use tokio::{select, time::timeout};
@@ -304,7 +304,7 @@ impl<STR: SolanaStreamClientTrait, SM: SolanaTransactionModel> SolanaListener<ST
 //     use std::str::FromStr;
 
 //     use dotenv::dotenv;
-//     use relayer_base::config::config_from_yaml;
+//     use relayer_core::config::config_from_yaml;
 //     use solana_sdk::commitment_config::CommitmentConfig;
 //     use testcontainers::{runners::AsyncRunner, ContainerAsync};
 //     use testcontainers_modules::postgres;

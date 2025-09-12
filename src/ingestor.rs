@@ -1,13 +1,13 @@
 use crate::types::SolanaTransaction;
 use async_trait::async_trait;
-use relayer_base::error::IngestorError;
-use relayer_base::gmp_api::gmp_types::{
+use relayer_core::error::IngestorError;
+use relayer_core::gmp_api::gmp_types::{
     ConstructProofTask, Event, ReactToWasmEventTask, RetryTask, VerifyTask,
 };
-use relayer_base::ingestor::IngestorTrait;
-use relayer_base::models::gmp_events::EventModel;
-use relayer_base::subscriber::ChainTransaction;
-use relayer_base::utils::ThreadSafe;
+use relayer_core::ingestor::IngestorTrait;
+use relayer_core::models::gmp_events::EventModel;
+use relayer_core::subscriber::ChainTransaction;
+use relayer_core::utils::ThreadSafe;
 use tracing::{info, warn};
 
 use crate::parser::TransactionParserTrait;
@@ -113,16 +113,16 @@ where
 //     use crate::ingestor::TONIngestor;
 //     use crate::models::ton_trace::MockUpdateEvents;
 //     use crate::parser::MockTraceParserTrait;
-//     use relayer_base::error::IngestorError;
-//     use relayer_base::gmp_api::gmp_types::{
+//     use relayer_core::error::IngestorError;
+//     use relayer_core::gmp_api::gmp_types::{
 //         Amount, CannotExecuteMessageReason, CommonEventFields, CommonTaskFields,
 //         ConstructProofTask, ConstructProofTaskFields, Event, EventMetadata, GatewayV2Message,
 //         ReactToExpiredSigningSessionTask, ReactToExpiredSigningSessionTaskFields,
 //         ReactToWasmEventTask, ReactToWasmEventTaskFields, RetryTask, VerifyTask, VerifyTaskFields,
 //         WasmEvent,
 //     };
-//     use relayer_base::ingestor::IngestorTrait;
-//     use relayer_base::subscriber::ChainTransaction;
+//     use relayer_core::ingestor::IngestorTrait;
+//     use relayer_core::subscriber::ChainTransaction;
 //     use ton_types::ton_types::Trace;
 
 //     #[tokio::test]
