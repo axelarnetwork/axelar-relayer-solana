@@ -345,6 +345,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_multiple_message_executed() {
+        let txs = transaction_fixtures();
+        let parser = TransactionParser::new("solana".to_string());
+        let events = parser.parse_transaction(txs[6].clone()).await.unwrap();
+
+        assert_eq!(events.len(), 2);
+
+        match events[0].clone() {
+            Event::MessageExecuted { cost, .. } => {
+                assert_eq!(cost.amount, "13465");
+                assert!(cost.token_id.is_none());
+            }
+            _ => panic!("Expected MessageExecuted event"),
+        }
+        match events[1].clone() {
+            Event::MessageExecuted { cost, .. } => {
+                assert_eq!(cost.amount, "13465");
+                assert!(cost.token_id.is_none());
+            }
+            _ => panic!("Expected MessageExecuted event"),
+        }
+    }
+
+    #[tokio::test]
     async fn test_message_approved() {
         let txs = transaction_fixtures();
         let parser = TransactionParser::new("solana".to_string());
@@ -354,6 +378,30 @@ mod tests {
         match events[0].clone() {
             Event::MessageApproved { cost, .. } => {
                 assert_eq!(cost.amount, "38208");
+                assert!(cost.token_id.is_none());
+            }
+            _ => panic!("Expected MessageApproved event"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_multiple_message_approved() {
+        let txs = transaction_fixtures();
+        let parser = TransactionParser::new("solana".to_string());
+        let events = parser.parse_transaction(txs[5].clone()).await.unwrap();
+        assert_eq!(events.len(), 2);
+
+        match events[0].clone() {
+            Event::MessageApproved { cost, .. } => {
+                assert_eq!(cost.amount, "19104");
+                assert!(cost.token_id.is_none());
+            }
+            _ => panic!("Expected MessageApproved event"),
+        }
+
+        match events[1].clone() {
+            Event::MessageApproved { cost, .. } => {
+                assert_eq!(cost.amount, "19104");
                 assert!(cost.token_id.is_none());
             }
             _ => panic!("Expected MessageApproved event"),
