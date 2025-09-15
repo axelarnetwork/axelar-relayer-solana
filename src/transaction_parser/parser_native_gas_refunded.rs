@@ -197,33 +197,36 @@ mod tests {
         parser.parse().await.unwrap();
         let event = parser.event(None).await.unwrap();
         match event {
-            Event::GasRefunded {
-                common,
-                message_id,
-                recipient_address,
-                refunded_amount,
-                cost,
-            } => {
-                assert_eq!(common.r#type, "GAS_REFUNDED");
-                assert_eq!(common.event_id, format!("{}-refund", sig));
-                assert_eq!(
-                    message_id,
-                    format!(
+            Event::GasRefunded { .. } => {
+                let expected_event = Event::GasRefunded {
+                    common: CommonEventFields {
+                        r#type: "GAS_REFUNDED".to_owned(),
+                        event_id: format!("{}-refund", sig),
+                        meta: Some(EventMetadata {
+                            tx_id: Some(sig.to_string()),
+                            from_address: None,
+                            finalized: None,
+                            source_context: None,
+                            timestamp: chrono::Utc::now()
+                                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                        }),
+                    },
+                    message_id: format!(
                         "{}-{}",
                         Signature::from(parser.parsed.as_ref().unwrap().tx_hash),
                         parser.parsed.unwrap().log_index
-                    )
-                );
-                assert_eq!(
-                    recipient_address,
-                    "483jTxdFmFGRnzgx9nBoQM2Zao5mZxKvFgHzTb4Ytn1L"
-                );
-                assert_eq!(refunded_amount.token_id, None);
-                assert_eq!(refunded_amount.amount, "500");
-                assert_eq!(cost.amount, "13085");
-
-                let meta = &common.meta.as_ref().unwrap();
-                assert_eq!(meta.tx_id.as_deref(), Some(sig.as_str()));
+                    ),
+                    recipient_address: "483jTxdFmFGRnzgx9nBoQM2Zao5mZxKvFgHzTb4Ytn1L".to_string(),
+                    refunded_amount: Amount {
+                        token_id: None,
+                        amount: "500".to_string(),
+                    },
+                    cost: Amount {
+                        amount: tx.cost_units.to_string(),
+                        token_id: None,
+                    },
+                };
+                assert_eq!(event, expected_event);
             }
             _ => panic!("Expected GasRefunded event"),
         }

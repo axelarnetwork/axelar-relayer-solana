@@ -216,27 +216,55 @@ mod tests {
         parser.parse().await.unwrap();
         let event = parser.event(None).await.unwrap();
         match event {
-            Event::Call {
-                common,
-                message,
-                destination_chain,
-                payload,
-            } => {
-                assert_eq!(destination_chain, "ethereum");
-                assert_eq!(payload, "AQIDBAU=");
-                assert_eq!(message.message_id, format!("{}-1", sig));
-                assert_eq!(message.source_chain, "solana");
-                assert_eq!(
-                    message.payload_hash,
-                    "dPgf4WfZm0y0HW0MzagieMrunz4vJdXlo5Nv89zsYNA="
-                );
-                assert_eq!(
-                    message.source_address,
-                    "483jTxdFmFGRnzgx9nBoQM2Zao5mZxKvFgHzTb4Ytn1L"
-                );
-
-                let meta = &common.meta.as_ref().unwrap();
-                assert_eq!(meta.tx_id.as_deref(), Some(sig.as_str()));
+            Event::Call { .. } => {
+                let expected_event = Event::Call {
+                    common: CommonEventFields {
+                        r#type: "CALL".to_owned(),
+                        event_id: format!("{}-call", sig),
+                        meta: Some(EventMetadata {
+                            tx_id: Some(sig.to_string()),
+                            from_address: None,
+                            finalized: None,
+                            source_context: Some(HashMap::from([
+                                (
+                                    "source_address".to_owned(),
+                                    parser.parsed.as_ref().unwrap().sender_key.to_string(),
+                                ),
+                                (
+                                    "destination_address".to_owned(),
+                                    parser
+                                        .parsed
+                                        .as_ref()
+                                        .unwrap()
+                                        .destination_contract_address
+                                        .to_string(),
+                                ),
+                                (
+                                    "destination_chain".to_owned(),
+                                    parser
+                                        .parsed
+                                        .as_ref()
+                                        .unwrap()
+                                        .destination_chain
+                                        .to_string(),
+                                ),
+                            ])),
+                            timestamp: chrono::Utc::now()
+                                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                        }),
+                    },
+                    message: GatewayV2Message {
+                        message_id: format!("{}-1", sig),
+                        source_chain: "solana".to_string(),
+                        source_address: "483jTxdFmFGRnzgx9nBoQM2Zao5mZxKvFgHzTb4Ytn1L".to_string(),
+                        destination_address: "0x7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fdd"
+                            .to_string(),
+                        payload_hash: "dPgf4WfZm0y0HW0MzagieMrunz4vJdXlo5Nv89zsYNA=".to_string(),
+                    },
+                    destination_chain: "ethereum".to_string(),
+                    payload: "AQIDBAU=".to_string(),
+                };
+                assert_eq!(event, expected_event);
             }
             _ => panic!("Expected CallContract event"),
         }

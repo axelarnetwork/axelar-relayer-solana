@@ -183,24 +183,28 @@ mod tests {
         parser.parse().await.unwrap();
         let event = parser.event(Some(format!("{}-1", sig))).await.unwrap();
         match event {
-            Event::GasCredit {
-                common,
-                message_id,
-                refund_address,
-                payment,
-            } => {
-                assert_eq!(common.r#type, "GAS_CREDIT");
-                assert_eq!(common.event_id, format!("{}-gas", sig));
-                assert_eq!(message_id, format!("{}-1", sig));
-                assert_eq!(
-                    refund_address,
-                    "483jTxdFmFGRnzgx9nBoQM2Zao5mZxKvFgHzTb4Ytn1L"
-                );
-                assert_eq!(payment.token_id, None);
-                assert_eq!(payment.amount, "1000");
-
-                let meta = &common.meta.as_ref().unwrap();
-                assert_eq!(meta.tx_id.as_deref(), Some(sig.as_str()));
+            Event::GasCredit { .. } => {
+                let expected_event = Event::GasCredit {
+                    common: CommonEventFields {
+                        r#type: "GAS_CREDIT".to_owned(),
+                        event_id: format!("{}-gas", sig),
+                        meta: Some(EventMetadata {
+                            tx_id: Some(sig.to_string()),
+                            from_address: None,
+                            finalized: None,
+                            source_context: None,
+                            timestamp: chrono::Utc::now()
+                                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                        }),
+                    },
+                    message_id: format!("{}-1", sig),
+                    refund_address: "483jTxdFmFGRnzgx9nBoQM2Zao5mZxKvFgHzTb4Ytn1L".to_string(),
+                    payment: Amount {
+                        token_id: None,
+                        amount: "1000".to_string(),
+                    },
+                };
+                assert_eq!(event, expected_event);
             }
             _ => panic!("Expected GasCredit event"),
         }
