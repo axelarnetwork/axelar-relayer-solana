@@ -297,7 +297,6 @@ impl TransactionParser {
 mod tests {
     use super::*;
     use crate::test_utils::fixtures::transaction_fixtures;
-    use solana_sdk::signature::Signature;
 
     #[tokio::test]
     async fn test_parser_converted_and_message_id_set() {
@@ -306,13 +305,7 @@ mod tests {
         let events = parser.parse_transaction(txs[0].clone()).await.unwrap();
         assert_eq!(events.len(), 2);
 
-        let sig = Signature::from([
-            13, 146, 133, 135, 22, 161, 247, 83, 30, 136, 203, 15, 188, 23, 239, 196, 10, 144, 112,
-            176, 21, 102, 85, 185, 180, 186, 52, 99, 159, 235, 208, 16, 199, 133, 34, 135, 175,
-            241, 214, 163, 19, 215, 71, 100, 19, 209, 117, 32, 171, 132, 220, 207, 185, 110, 237,
-            62, 187, 9, 143, 40, 213, 85, 104, 13,
-        ])
-        .to_string();
+        let sig = txs[0].signature.clone().to_string();
 
         match events[0].clone() {
             Event::Call {
