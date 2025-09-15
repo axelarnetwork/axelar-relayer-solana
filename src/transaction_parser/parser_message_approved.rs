@@ -158,7 +158,6 @@ impl Parser for ParserMessageApproved {
 
 #[cfg(test)]
 mod tests {
-    use solana_sdk::signature::Signature;
     use solana_transaction_status::UiInstruction;
 
     use super::*;
@@ -178,13 +177,7 @@ mod tests {
             .await
             .unwrap();
         assert!(parser.is_match().await.unwrap());
-        let sig = Signature::from([
-            40, 230, 73, 108, 137, 197, 160, 39, 204, 198, 21, 197, 67, 88, 19, 21, 106, 217, 129,
-            223, 19, 151, 242, 199, 144, 241, 23, 113, 90, 15, 12, 205, 134, 111, 95, 166, 31, 93,
-            42, 71, 167, 183, 101, 94, 161, 165, 85, 205, 76, 215, 192, 176, 200, 225, 48, 206,
-            147, 33, 28, 240, 150, 167, 28, 117,
-        ])
-        .to_string();
+        let sig = tx.signature.clone().to_string();
         parser.parse().await.unwrap();
         let event = parser.event(Some(format!("{}-1", sig))).await.unwrap();
         match event {

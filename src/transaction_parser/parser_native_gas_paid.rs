@@ -153,7 +153,6 @@ impl Parser for ParserNativeGasPaid {
 
 #[cfg(test)]
 mod tests {
-    use solana_sdk::signature::Signature;
     use solana_transaction_status::UiInstruction;
 
     use super::*;
@@ -173,13 +172,7 @@ mod tests {
             .await
             .unwrap();
         assert!(parser.is_match().await.unwrap());
-        let sig = Signature::from([
-            13, 146, 133, 135, 22, 161, 247, 83, 30, 136, 203, 15, 188, 23, 239, 196, 10, 144, 112,
-            176, 21, 102, 85, 185, 180, 186, 52, 99, 159, 235, 208, 16, 199, 133, 34, 135, 175,
-            241, 214, 163, 19, 215, 71, 100, 19, 209, 117, 32, 171, 132, 220, 207, 185, 110, 237,
-            62, 187, 9, 143, 40, 213, 85, 104, 13,
-        ])
-        .to_string();
+        let sig = tx.signature.clone().to_string();
         parser.parse().await.unwrap();
         let event = parser.event(Some(format!("{}-1", sig))).await.unwrap();
         match event {

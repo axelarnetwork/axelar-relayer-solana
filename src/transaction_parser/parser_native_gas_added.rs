@@ -176,13 +176,7 @@ mod tests {
             .await
             .unwrap();
         assert!(parser.is_match().await.unwrap());
-        let sig = Signature::from([
-            241, 82, 63, 232, 18, 206, 232, 91, 206, 156, 186, 166, 81, 66, 20, 170, 224, 129, 166,
-            58, 0, 113, 242, 35, 152, 110, 166, 40, 29, 254, 242, 69, 169, 35, 44, 211, 213, 187,
-            234, 68, 118, 68, 148, 43, 235, 13, 147, 77, 239, 219, 49, 142, 2, 150, 43, 243, 48,
-            24, 116, 8, 153, 132, 126, 9,
-        ])
-        .to_string();
+        let sig = tx.signature.clone().to_string();
         parser.parse().await.unwrap();
         let event = parser.event(None).await.unwrap();
         match event {
