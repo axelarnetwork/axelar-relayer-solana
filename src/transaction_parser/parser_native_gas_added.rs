@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use borsh::BorshDeserialize;
 use relayer_core::gmp_api::gmp_types::{Amount, CommonEventFields, Event, EventMetadata};
 use solana_sdk::pubkey::Pubkey;
+use solana_sdk::signature::Signature;
 use solana_transaction_status::UiCompiledInstruction;
 use tracing::{debug, warn};
 
@@ -142,7 +143,11 @@ impl Parser for ParserNativeGasAdded {
 
     async fn message_id(&self) -> Result<Option<String>, TransactionParsingError> {
         if let Some(parsed) = self.parsed.clone() {
-            Ok(Some(format!("{:?}-{}", parsed.tx_hash, parsed.log_index)))
+            Ok(Some(format!(
+                "{}-{}",
+                Signature::from(parsed.tx_hash).to_string(),
+                parsed.log_index
+            )))
         } else {
             Ok(None)
         }
