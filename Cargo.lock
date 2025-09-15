@@ -5949,7 +5949,7 @@ checksum = "caf4aa5b0f434c91fe5c7f1ecb6a5ece2130b02ad2a590589dda5146df959001"
 [[package]]
 name = "relayer-core"
 version = "0.1.0"
-source = "git+https://github.com/commonprefix/axelar-relayer-core?branch=main#b14aca70c2aea121a0b1453aa1b024c2d19411d2"
+source = "git+https://github.com/commonprefix/axelar-relayer-core?branch=temp-solana#6717b8ac80945266dfec80bf31ff175a6fe7f992"
 dependencies = [
  "anyhow",
  "async-std",

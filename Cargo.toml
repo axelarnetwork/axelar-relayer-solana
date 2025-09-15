@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-relayer-core = { git = "https://github.com/commonprefix/axelar-relayer-core", branch = "main" }
+relayer-core = { git = "https://github.com/commonprefix/axelar-relayer-core", branch = "temp-solana" }
 dotenv = "0.15.0"
 tokio = { version = "1.41.1", features = ["full", "test-util"] }
 anyhow = "1.0.93"
