@@ -340,22 +340,22 @@ mod tests {
         }
     }
 
-    // #[tokio::test]
-    // async fn test_message_executed() {
-    //     let txs = transaction_fixtures();
-    //     let parser = TransactionParser::new("solana".to_string());
-    //     let events = parser.parse_transaction(txs[3].clone()).await.unwrap();
+    #[tokio::test]
+    async fn test_message_executed() {
+        let txs = transaction_fixtures();
+        let parser = TransactionParser::new("solana".to_string());
+        let events = parser.parse_transaction(txs[3].clone()).await.unwrap();
 
-    //     assert_eq!(events.len(), 1);
+        assert_eq!(events.len(), 1);
 
-    //     match events[0].clone() {
-    //         Event::MessageExecuted { cost, .. } => {
-    //             assert_eq!(cost.amount, "26930");
-    //             assert!(cost.token_id.is_none());
-    //         }
-    //         _ => panic!("Expected MessageExecuted event"),
-    //     }
-    // }
+        match events[0].clone() {
+            Event::MessageExecuted { cost, .. } => {
+                assert_eq!(cost.amount, "26930");
+                assert!(cost.token_id.is_none());
+            }
+            _ => panic!("Expected MessageExecuted event"),
+        }
+    }
 
     #[tokio::test]
     async fn test_message_approved() {
@@ -386,6 +386,21 @@ mod tests {
                 assert!(cost.token_id.is_none());
             }
             _ => panic!("Expected GasRefunded event"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_gas_added() {
+        let txs = transaction_fixtures();
+        let parser = TransactionParser::new("solana".to_string());
+        let events = parser.parse_transaction(txs[4].clone()).await.unwrap();
+        assert_eq!(events.len(), 1);
+
+        match events[0].clone() {
+            Event::GasCredit { message_id, .. } => {
+                assert_eq!(message_id, "3oViqY1trepjh1wYWnwGH2JxuQXz2h4ro18GwvNEDdTpLhiZVTFPXSvgAre3yzcXUouNuDSNkpNfSsUEpg23Snu5-0");
+            }
+            _ => panic!("Expected GasCredit event"),
         }
     }
 }
