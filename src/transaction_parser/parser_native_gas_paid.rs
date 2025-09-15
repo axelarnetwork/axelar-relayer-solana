@@ -151,162 +151,74 @@ impl Parser for ParserNativeGasPaid {
     }
 }
 
-// #[cfg(test)]
-// mod tests {
-//     use crate::test_utils::fixtures::fixtures;
+#[cfg(test)]
+mod tests {
+    use solana_sdk::signature::Signature;
+    use solana_transaction_status::UiInstruction;
 
-//     use super::*;
-//     use serde_json::Value;
-//     use solana_transaction_status::UiInstruction;
-//     use crate::types::SolanaTransaction;
+    use super::*;
+    use crate::test_utils::fixtures::transaction_fixtures;
+    use crate::transaction_parser::parser_native_gas_paid::ParserNativeGasPaid;
+    #[tokio::test]
+    async fn test_parser() {
+        let txs = transaction_fixtures();
 
-//     #[tokio::test]
-//     async fn test_decode_queue_entry_and_parse_gas_credit() {
-//         let raw = r#"{"Transaction":{"Solana":{"signature":[251,90,247,104,39,187,71,5,9,30,111,123,198,171,132,91,203,215,187,255,97,59,71,155,244,76,162,237,131,193,151,91,140,187,179,237,149,203,82,62,143,105,184,105,200,43,203,46,82,97,211,190,161,103,86,167,213,242,64,67,143,98,133,9],"timestamp":null,"logs":["Program 7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc invoke [1]","Program log: Instruction: PayNativeForContractCall","Program 7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc invoke [2]","Program 7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc consumed 2084 of 192307 compute units","Program 7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc success","Program 7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc consumed 10020 of 200000 compute units","Program 7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc success"],"slot":833,"ixs":[{"index":0,"instructions":[{"programIdIndex":4,"accounts":[3],"data":"U657vb47CWbF2XaNghNVTVQvBD23QxUqAGrU7dHrnj7RcypUZyz6HckWMMux9mx4GqQtAaX6TYPvFhQevbZLqUTmfLBEdqYCSyc3tVaP7kVMLXokAkePkHTWuwKsrH81ybEKS74eEahAisn6BnSRcDgL6wDQx2vHUkMrB6MuWxMWC67FuQEBTK7GFsHGNLyEr5TQFSHoo5Wu59xkpuRt3f8VanjQHJ1deGMLbsGL3tVkTP8txGBaWN6Pq5ssWYv2oA3A7","stackHeight":2}]}]}}}
-// "#;
+        let tx = txs[0].clone();
+        let compiled_ix: UiCompiledInstruction = match tx.ixs[0].instructions[0].clone() {
+            UiInstruction::Compiled(ix) => ix,
+            _ => panic!("expected a compiled instruction"),
+        };
 
-//         let v: Value = serde_json::from_str(raw).expect("valid json");
-//         let solana_v = v["Transaction"]["Solana"].clone();
+        let mut parser = ParserNativeGasPaid::new(tx.signature.to_string(), compiled_ix)
+            .await
+            .unwrap();
+        assert!(parser.is_match().await.unwrap());
+        let sig = Signature::from([
+            13, 146, 133, 135, 22, 161, 247, 83, 30, 136, 203, 15, 188, 23, 239, 196, 10, 144, 112,
+            176, 21, 102, 85, 185, 180, 186, 52, 99, 159, 235, 208, 16, 199, 133, 34, 135, 175,
+            241, 214, 163, 19, 215, 71, 100, 19, 209, 117, 32, 171, 132, 220, 207, 185, 110, 237,
+            62, 187, 9, 143, 40, 213, 85, 104, 13,
+        ])
+        .to_string();
+        parser.parse().await.unwrap();
+        let event = parser.event(Some(format!("{}-1", sig))).await.unwrap();
+        match event {
+            Event::GasCredit {
+                common,
+                message_id,
+                refund_address,
+                payment,
+            } => {
+                assert_eq!(common.r#type, "GAS_CREDIT");
+                assert_eq!(common.event_id, format!("{}-gas", sig));
+                assert_eq!(message_id, format!("{}-1", sig));
+                assert_eq!(
+                    refund_address,
+                    "483jTxdFmFGRnzgx9nBoQM2Zao5mZxKvFgHzTb4Ytn1L"
+                );
+                assert_eq!(payment.token_id, None);
+                assert_eq!(payment.amount, "1000");
 
-//         let tx: SolanaTransaction =
-//             serde_json::from_value::<SolanaTransaction>(solana_v.clone()).unwrap();
+                let meta = &common.meta.as_ref().unwrap();
+                assert_eq!(meta.tx_id.as_deref(), Some(sig.as_str()));
+            }
+            _ => panic!("Expected GasCredit event"),
+        }
+    }
 
-//         // Derive discriminators from the first 16 bytes of the test data
-//         let first_ix_data = tx.ixs[0].instructions[0].clone();
-//         let UiInstruction::Compiled(ci) = first_ix_data else {
-//             panic!("expected compiled instruction")
-//         };
-//         let bytes = bs58::decode(&ci.data).into_vec().unwrap();
-//         assert!(bytes.len() >= 16);
+    #[tokio::test]
+    async fn test_no_match() {
+        let txs = transaction_fixtures();
 
-//         let mut parser = ParserNativeGasPaid::new(tx.signature.to_string(), ci)
-//             .await
-//             .unwrap();
+        let tx = txs[0].clone();
+        let compiled_ix: UiCompiledInstruction = match tx.ixs[1].instructions[0].clone() {
+            UiInstruction::Compiled(ix) => ix,
+            _ => panic!("expected a compiled instruction"),
+        };
+        let parser = ParserNativeGasPaid::new(tx.signature.to_string(), compiled_ix)
+            .await
+            .unwrap();
 
-//         assert!(
-//             parser.is_match().await.unwrap(),
-//             "parser should match gas credit"
-//         );
-//         assert!(parser.parse().await.unwrap(), "parser should parse message");
-
-//         let key = parser.key().await.expect("key should be available");
-//         assert!(!key.destination_chain.is_empty());
-//         assert!(!key.destination_address.is_empty());
-
-//         let event = parser
-//             .event(Some("foo".to_string()))
-//             .await
-//             .expect("event should be produced");
-//         println!("{:?}", event);
-//         match event {
-//             Event::GasCredit {
-//                 message_id,
-//                 refund_address,
-//                 payment,
-//                 ..
-//             } => {
-//                 assert_eq!(message_id, "foo");
-//                 assert!(!refund_address.is_empty());
-//                 assert!(!payment.amount.is_empty());
-//             }
-//             other => panic!("Expected GasCredit, got {:?}", other),
-//         }
-//     }
-
-//     #[tokio::test]
-//     async fn test_parser_native_gas_paid() {
-//         let solana_transactions = fixtures();
-
-//         for tx in solana_transactions {
-//             let ix = tx.ixs[0].instructions[0].clone();
-//             let UiInstruction::Compiled(ci) = ix else {
-//                 panic!("expected compiled instruction")
-//             };
-//             let mut parser = ParserNativeGasPaid::new(tx.signature.to_string(), ci)
-//                 .await
-//                 .unwrap();
-//             assert!(parser.is_match().await.unwrap());
-//             assert!(parser.message_id().await.is_ok());
-//             parser.parse().await.unwrap();
-//             // let event = parser.event(Some("foo".to_string())).await.unwrap();
-//             // match event {
-//             //     Event::GasCredit {
-//             //         common,
-//             //         message_id,
-//             //         refund_address,
-//             //         payment,
-//             //     } => {
-//             //         assert_eq!(message_id, "foo");
-//             //         assert_eq!(
-//             //             refund_address,
-//             //             "0:e1e633eb701b118b44297716cee7069ee847b56db88c497efea681ed14b2d2c7"
-//             //         );
-//             //         assert_eq!(payment.amount, "28846800");
-
-//             //         let meta = &common.meta.as_ref().unwrap();
-//             //         assert_eq!(
-//             //             meta.tx_id.as_deref(),
-//             //             Some("Ptv+ldOh9sTQOvwx23nPD8t6iGmm2RZVgUBXBk/jyrU=")
-//             //         );
-//             //     }
-//             //     _ => panic!("Expected GasCredit event"),
-//             // }
-//         }
-//     }
-
-//     // #[tokio::test]
-//     // async fn test_parser_gas_paid() {
-//     //     let solana_transactions = fixture_native_gas_paid();
-
-//     //     let tx = solana_transactions[0].clone();
-//     //     let ix = tx.ixs[0].instructions[0].clone();
-//     //     let UiInstruction::Compiled(ci) = ix else {
-//     //         panic!("expected compiled instruction")
-//     //     };
-//     //     let mut parser = ParserNativeGasPaid::new(tx.signature.to_string(), ci)
-//     //         .await
-//     //         .unwrap();
-
-//     //     assert!(parser.is_match().await.unwrap());
-//     //     assert!(parser.message_id().await.is_ok());
-//     //     parser.parse().await.unwrap();
-//     //     let event = parser.event(Some("foo".to_string())).await.unwrap();
-//     //     match event {
-//     //         Event::GasCredit {
-//     //             common,
-//     //             message_id,
-//     //             refund_address,
-//     //             payment,
-//     //         } => {
-//     //             assert_eq!(message_id, "foo");
-//     //             assert_eq!(
-//     //                 refund_address,
-//     //                 "0:e1e633eb701b118b44297716cee7069ee847b56db88c497efea681ed14b2d2c7"
-//     //             );
-//     //             assert_eq!(payment.amount, "198639200");
-
-//     //             let meta = &common.meta.as_ref().unwrap();
-//     //             assert_eq!(
-//     //                 meta.tx_id.as_deref(),
-//     //                 Some("PzeZlujUPePAMw0Fz/eYeCRz11/X/f5YzUjfYXomzS8=")
-//     //             );
-//     //         }
-//     //         _ => panic!("Expected GasCredit event"),
-//     //     }
-//     // }
-
-//     // #[tokio::test]
-//     // async fn test_no_match() {
-//     //     let solana_transactions = fixture_native_gas_paid();
-
-//     //     let tx = solana_transactions[0].clone();
-//     //     let ix = tx.ixs[0].instructions[0].clone();
-//     //     let UiInstruction::Compiled(ci) = ix else {
-//     //         panic!("expected compiled instruction")
-//     //     };
-//     //     let parser = ParserNativeGasPaid::new(tx.signature.to_string(), ci)
-//     //         .await
-//     //         .unwrap();
-//     //     assert!(!parser.is_match().await.unwrap());
-//     // }
-// }
+        assert!(!parser.is_match().await.unwrap());
+    }
+}
