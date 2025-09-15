@@ -141,7 +141,7 @@ impl Parser for ParserMessageApproved {
                 source_chain: parsed.source_chain.clone(),
                 source_address: parsed.source_address.clone(),
                 destination_address: parsed.destination_address.to_string(),
-                // shold this be hex encoded?
+                // should this be hex encoded?
                 payload_hash: hex::encode(parsed.payload_hash),
             },
             cost: Amount {
