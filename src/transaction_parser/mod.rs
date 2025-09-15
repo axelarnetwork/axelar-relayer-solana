@@ -8,3 +8,4 @@ mod parser_message_executed;
 mod parser_native_gas_added;
 mod parser_native_gas_paid;
 mod parser_native_gas_refunded;
+mod parser_signers_rotated;

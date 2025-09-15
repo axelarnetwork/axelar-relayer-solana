@@ -5,6 +5,7 @@ use crate::transaction_parser::parser_message_executed::ParserMessageExecuted;
 use crate::transaction_parser::parser_native_gas_added::ParserNativeGasAdded;
 use crate::transaction_parser::parser_native_gas_paid::ParserNativeGasPaid;
 use crate::transaction_parser::parser_native_gas_refunded::ParserNativeGasRefunded;
+use crate::transaction_parser::parser_signers_rotated::ParserLogSignersRotated;
 use crate::types::SolanaTransaction;
 use crate::{
     error::TransactionParsingError,
@@ -272,7 +273,18 @@ impl TransactionParser {
                         parser.parse().await?;
                         parsers.push(Box::new(parser));
                     }
-                    index += 1;
+                    let mut parser =
+                        ParserLogSignersRotated::new(transaction.signature.to_string(), ci.clone())
+                            .await?;
+                    if parser.is_match().await? {
+                        info!(
+                            "ParserLogSignersRotated matched, transaction_id={}",
+                            transaction.signature
+                        );
+                        parser.parse().await?;
+                        parsers.push(Box::new(parser));
+                    }
+                    index += 1; // index is the position of the instruction in the transaction including the inner ones
                 }
             }
         }

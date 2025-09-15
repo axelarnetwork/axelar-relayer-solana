@@ -7,3 +7,6 @@ pub const CALL_CONTRACT_EVENT_DISC: [u8; 8] = [211, 211, 80, 126, 150, 98, 181, 
 pub const MESSAGE_APPROVED_EVENT_DISC: [u8; 8] = [250, 254, 29, 227, 159, 205, 114, 89];
 pub const MESSAGE_EXECUTED_EVENT_DISC: [u8; 8] = [214, 203, 124, 241, 94, 227, 41, 59];
 pub const CANNOT_EXECUTE_MESSAGE_EVENT_DISC: [u8; 8] = [232, 125, 221, 19, 212, 213, 137, 199]; // needs to be updated
+
+// ITS events
+pub const LOG_SIGNERS_ROTATED_EVENT_DISC: [u8; 8] = [198, 164, 144, 143, 104, 193, 181, 108];
