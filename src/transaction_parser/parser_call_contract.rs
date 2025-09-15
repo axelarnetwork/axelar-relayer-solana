@@ -174,3 +174,91 @@ impl Parser for ParserCallContract {
         Ok(Some(format!("{}-{}", self.signature, self.index)))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use solana_sdk::signature::Signature;
+    use solana_transaction_status::UiInstruction;
+
+    use super::*;
+    use crate::test_utils::fixtures::transaction_fixtures;
+    use crate::transaction_parser::parser_call_contract::ParserCallContract;
+    #[tokio::test]
+    async fn test_parser() {
+        let txs = transaction_fixtures();
+
+        let tx = txs[0].clone();
+        let compiled_ix: UiCompiledInstruction = match tx.ixs[1].instructions[0].clone() {
+            UiInstruction::Compiled(ix) => ix,
+            _ => panic!("expected a compiled instruction"),
+        };
+
+        let mut parser = ParserCallContract::new(
+            tx.signature.to_string(),
+            compiled_ix,
+            "solana".to_string(),
+            1,
+        )
+        .await
+        .unwrap();
+        assert!(parser.is_match().await.unwrap());
+        let sig = Signature::from([
+            13, 146, 133, 135, 22, 161, 247, 83, 30, 136, 203, 15, 188, 23, 239, 196, 10, 144, 112,
+            176, 21, 102, 85, 185, 180, 186, 52, 99, 159, 235, 208, 16, 199, 133, 34, 135, 175,
+            241, 214, 163, 19, 215, 71, 100, 19, 209, 117, 32, 171, 132, 220, 207, 185, 110, 237,
+            62, 187, 9, 143, 40, 213, 85, 104, 13,
+        ])
+        .to_string();
+        assert_eq!(
+            parser.message_id().await.unwrap().unwrap(),
+            format!("{}-1", sig)
+        );
+        parser.parse().await.unwrap();
+        let event = parser.event(None).await.unwrap();
+        match event {
+            Event::Call {
+                common,
+                message,
+                destination_chain,
+                payload,
+            } => {
+                assert_eq!(destination_chain, "ethereum");
+                assert_eq!(payload, "AQIDBAU=");
+                assert_eq!(message.message_id, format!("{}-1", sig));
+                assert_eq!(message.source_chain, "solana");
+                assert_eq!(
+                    message.payload_hash,
+                    "dPgf4WfZm0y0HW0MzagieMrunz4vJdXlo5Nv89zsYNA="
+                );
+                assert_eq!(
+                    message.source_address,
+                    "483jTxdFmFGRnzgx9nBoQM2Zao5mZxKvFgHzTb4Ytn1L"
+                );
+
+                let meta = &common.meta.as_ref().unwrap();
+                assert_eq!(meta.tx_id.as_deref(), Some(sig.as_str()));
+            }
+            _ => panic!("Expected CallContract event"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_no_match() {
+        let txs = transaction_fixtures();
+
+        let tx = txs[0].clone();
+        let compiled_ix: UiCompiledInstruction = match tx.ixs[0].instructions[0].clone() {
+            UiInstruction::Compiled(ix) => ix,
+            _ => panic!("expected a compiled instruction"),
+        };
+        let parser = ParserCallContract::new(
+            tx.signature.to_string(),
+            compiled_ix,
+            "solana".to_string(),
+            1,
+        )
+        .await
+        .unwrap();
+        assert!(!parser.is_match().await.unwrap());
+    }
+}
