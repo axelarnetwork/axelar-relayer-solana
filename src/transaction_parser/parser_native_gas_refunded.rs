@@ -4,8 +4,9 @@ use crate::transaction_parser::message_matching_key::MessageMatchingKey;
 use crate::transaction_parser::parser::{Parser, ParserConfig};
 use async_trait::async_trait;
 use borsh::BorshDeserialize;
-use relayer_core::gmp_api::gmp_types::{Amount, CommonEventFields, Event};
+use relayer_core::gmp_api::gmp_types::{Amount, CommonEventFields, Event, EventMetadata};
 use solana_sdk::pubkey::Pubkey;
+use solana_sdk::signature::Signature;
 use solana_transaction_status::UiCompiledInstruction;
 use tracing::{debug, warn};
 
@@ -28,12 +29,14 @@ pub struct ParserNativeGasRefunded {
     parsed: Option<NativeGasRefundedEvent>,
     instruction: UiCompiledInstruction,
     config: ParserConfig,
+    cost_units: u64,
 }
 
 impl ParserNativeGasRefunded {
     pub(crate) async fn new(
         signature: String,
         instruction: UiCompiledInstruction,
+        cost_units: u64,
     ) -> Result<Self, TransactionParsingError> {
         Ok(Self {
             signature,
@@ -43,6 +46,7 @@ impl ParserNativeGasRefunded {
                 event_cpi_discriminator: CPI_EVENT_DISC,
                 event_type_discriminator: NATIVE_GAS_REFUNDED_EVENT_DISC,
             },
+            cost_units,
         })
     }
 
@@ -125,7 +129,14 @@ impl Parser for ParserNativeGasRefunded {
             common: CommonEventFields {
                 r#type: "GAS_REFUNDED".to_owned(),
                 event_id: format!("{}-refund", self.signature.clone()),
-                meta: None,
+                meta: Some(EventMetadata {
+                    tx_id: Some(self.signature.to_string()),
+                    from_address: None,
+                    finalized: None,
+                    source_context: None,
+                    timestamp: chrono::Utc::now()
+                        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                }),
             },
             message_id,
             recipient_address: parsed.receiver.to_string(),
@@ -134,7 +145,7 @@ impl Parser for ParserNativeGasRefunded {
                 amount: parsed.fees.to_string(),
             },
             cost: Amount {
-                amount: "0".to_string(),
+                amount: self.cost_units.to_string(),
                 token_id: None,
             },
         })
@@ -142,68 +153,96 @@ impl Parser for ParserNativeGasRefunded {
 
     async fn message_id(&self) -> Result<Option<String>, TransactionParsingError> {
         if let Some(parsed) = self.parsed.clone() {
-            Ok(Some(format!("{:?}-{}", parsed.tx_hash, parsed.log_index)))
+            Ok(Some(format!(
+                "{}-{}",
+                Signature::from(parsed.tx_hash),
+                parsed.log_index
+            )))
         } else {
             Ok(None)
         }
     }
 }
 
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-//     use solana_transaction_status::UiCompiledInstruction;
+#[cfg(test)]
+mod tests {
+    use solana_sdk::signature::Signature;
+    use solana_transaction_status::UiInstruction;
 
-//     #[tokio::test]
-//     async fn test_decode_and_parse_gas_refunded_event() {
-//         let mut data: Vec<u8> = Vec::new();
-//         data.extend_from_slice(&CPI_EVENT_DISC);
-//         data.extend_from_slice(&NATIVE_GAS_REFUNDED_EVENT_DISC);
-//         let tx_hash_bytes = [0xABu8; 64];
-//         data.extend_from_slice(&tx_hash_bytes);
-//         data.extend_from_slice(&[0x11; 32]);
-//         data.extend_from_slice(&(7u64).to_le_bytes());
-//         data.extend_from_slice(&[0x33; 32]);
-//         data.extend_from_slice(&(4242u64).to_le_bytes());
+    use super::*;
+    use crate::test_utils::fixtures::transaction_fixtures;
+    use crate::transaction_parser::parser_native_gas_refunded::ParserNativeGasRefunded;
+    #[tokio::test]
+    async fn test_parser() {
+        let txs = transaction_fixtures();
 
-//         let ci = UiCompiledInstruction {
-//             program_id_index: 4,
-//             accounts: vec![3],
-//             data: bs58::encode(data).into_string(),
-//             stack_height: Some(2),
-//         };
+        let tx = txs[2].clone();
+        let compiled_ix: UiCompiledInstruction = match tx.ixs[0].instructions[0].clone() {
+            UiInstruction::Compiled(ix) => ix,
+            _ => panic!("expected a compiled instruction"),
+        };
 
-//         let mut parser = ParserNativeGasRefunded::new("dummy_sig".to_string(), ci)
-//             .await
-//             .unwrap();
+        let mut parser =
+            ParserNativeGasRefunded::new(tx.signature.to_string(), compiled_ix, tx.cost_units)
+                .await
+                .unwrap();
+        assert!(parser.is_match().await.unwrap());
+        let sig = Signature::from([
+            21, 54, 228, 195, 127, 81, 55, 72, 35, 80, 62, 172, 38, 18, 236, 72, 70, 136, 65, 235,
+            179, 121, 62, 7, 175, 238, 141, 146, 203, 196, 221, 250, 129, 97, 11, 134, 188, 216,
+            168, 98, 173, 10, 168, 209, 5, 5, 112, 212, 153, 179, 78, 88, 255, 232, 53, 75, 24,
+            116, 95, 191, 172, 206, 21, 0,
+        ])
+        .to_string();
+        parser.parse().await.unwrap();
+        let event = parser.event(None).await.unwrap();
+        match event {
+            Event::GasRefunded {
+                common,
+                message_id,
+                recipient_address,
+                refunded_amount,
+                cost,
+            } => {
+                assert_eq!(common.r#type, "GAS_REFUNDED");
+                assert_eq!(common.event_id, format!("{}-refund", sig));
+                assert_eq!(
+                    message_id,
+                    format!(
+                        "{}-{}",
+                        Signature::from(parser.parsed.as_ref().unwrap().tx_hash),
+                        parser.parsed.unwrap().log_index
+                    )
+                );
+                assert_eq!(
+                    recipient_address,
+                    "483jTxdFmFGRnzgx9nBoQM2Zao5mZxKvFgHzTb4Ytn1L"
+                );
+                assert_eq!(refunded_amount.token_id, None);
+                assert_eq!(refunded_amount.amount, "500");
+                assert_eq!(cost.amount, "13085");
 
-//         assert!(parser.is_match().await.unwrap(), "parser should match");
-//         assert!(parser.parse().await.unwrap(), "parser should parse message");
+                let meta = &common.meta.as_ref().unwrap();
+                assert_eq!(meta.tx_id.as_deref(), Some(sig.as_str()));
+            }
+            _ => panic!("Expected GasRefunded event"),
+        }
+    }
 
-//         let mid = parser
-//             .message_id()
-//             .await
-//             .expect("message_id ok")
-//             .expect("message_id some");
-//         let expected_mid = format!("0x{}", (0..64).map(|_| "ab").collect::<Vec<_>>().join(""));
-//         assert_eq!(mid, expected_mid);
+    #[tokio::test]
+    async fn test_no_match() {
+        let txs = transaction_fixtures();
 
-//         let event = parser.event(None).await.expect("event should be produced");
-//         match event {
-//             Event::GasRefunded {
-//                 common,
-//                 message_id,
-//                 recipient_address,
-//                 refunded_amount,
-//                 cost,
-//             } => {
-//                 assert_eq!(message_id, expected_mid);
-//                 assert_eq!(common.event_id, "dummy_sig");
-//                 assert!(!recipient_address.is_empty());
-//                 assert_eq!(refunded_amount.amount, "4242");
-//                 assert_eq!(cost.amount, "0");
-//             }
-//             other => panic!("Expected GasRefunded, got {:?}", other),
-//         }
-//     }
-// }
+        let tx = txs[0].clone();
+        let compiled_ix: UiCompiledInstruction = match tx.ixs[1].instructions[0].clone() {
+            UiInstruction::Compiled(ix) => ix,
+            _ => panic!("expected a compiled instruction"),
+        };
+        let parser =
+            ParserNativeGasRefunded::new(tx.signature.to_string(), compiled_ix, tx.cost_units)
+                .await
+                .unwrap();
+
+        assert!(!parser.is_match().await.unwrap());
+    }
+}
