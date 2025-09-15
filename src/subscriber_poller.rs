@@ -1,5 +1,6 @@
 use std::{future::Future, str::FromStr, sync::Arc, time::Duration};
 
+use crate::types::SolanaTransaction;
 use crate::{
     client::SolanaRpcClientTrait,
     models::{
@@ -12,7 +13,6 @@ use anyhow::anyhow;
 use relayer_core::{error::SubscriberError, queue::Queue};
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Signature;
-use crate::types::SolanaTransaction;
 use tokio::select;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};

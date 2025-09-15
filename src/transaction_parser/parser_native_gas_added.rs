@@ -145,7 +145,7 @@ impl Parser for ParserNativeGasAdded {
         if let Some(parsed) = self.parsed.clone() {
             Ok(Some(format!(
                 "{}-{}",
-                Signature::from(parsed.tx_hash).to_string(),
+                Signature::from(parsed.tx_hash),
                 parsed.log_index
             )))
         } else {

@@ -1,4 +1,3 @@
-mod common;
 mod discriminators;
 mod message_matching_key;
 pub mod parser;
