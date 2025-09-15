@@ -237,7 +237,7 @@ mod tests {
         let txs = transaction_fixtures();
 
         let tx = txs[0].clone();
-        let compiled_ix: UiCompiledInstruction = match tx.ixs[1].instructions[0].clone() {
+        let compiled_ix: UiCompiledInstruction = match tx.ixs[0].instructions[0].clone() {
             UiInstruction::Compiled(ix) => ix,
             _ => panic!("expected a compiled instruction"),
         };
