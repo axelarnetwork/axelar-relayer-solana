@@ -152,22 +152,6 @@ impl TransactionParserTrait for TransactionParser {
                         cost,
                     }
                 }
-                Event::GasRefunded {
-                    common,
-                    message_id,
-                    recipient_address,
-                    refunded_amount,
-                    mut cost,
-                } => {
-                    cost.amount = transaction.clone().cost_units.to_string();
-                    Event::GasRefunded {
-                        common,
-                        message_id,
-                        recipient_address,
-                        refunded_amount,
-                        cost,
-                    }
-                }
                 other => other,
             };
             parsed_events.push(event);
@@ -222,9 +206,12 @@ impl TransactionParser {
                         parser.parse().await?;
                         parsers.push(Box::new(parser));
                     }
-                    let mut parser =
-                        ParserNativeGasRefunded::new(transaction.signature.to_string(), ci.clone())
-                            .await?;
+                    let mut parser = ParserNativeGasRefunded::new(
+                        transaction.signature.to_string(),
+                        ci.clone(),
+                        transaction.cost_units,
+                    )
+                    .await?;
                     if parser.is_match().await? {
                         info!(
                             "ParserNativeGasRefunded matched, transaction_id={}",
