@@ -145,45 +145,85 @@ impl Parser for ParserMessageExecuted {
         Ok(None)
     }
 }
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-//     use crate::test_utils::fixtures::fixture_traces;
-//     use crate::transaction_parser::parser_message_executed::ParserMessageExecuted;
 
-//     #[tokio::test]
-//     async fn test_parser() {
-//         let traces = fixture_traces();
+#[cfg(test)]
+mod tests {
+    use solana_transaction_status::UiInstruction;
 
-//         let tx = traces[0].transactions[3].clone();
-//         let address = tx.clone().account;
+    use super::*;
+    use crate::test_utils::fixtures::transaction_fixtures;
+    use crate::transaction_parser::parser_message_executed::ParserMessageExecuted;
+    #[tokio::test]
+    async fn test_parser() {
+        let txs = transaction_fixtures();
 
-//         let mut parser = ParserMessageExecuted::new(tx, address).await.unwrap();
-//         assert!(parser.is_match().await.unwrap());
-//         parser.parse().await.unwrap();
-//         let event = parser.event(None).await.unwrap();
-//         match event {
-//             Event::MessageExecuted {
-//                 common,
-//                 message_id,
-//                 source_chain,
-//                 status,
-//                 cost,
-//             } => {
-//                 assert_eq!(
-//                     message_id,
-//                     "0xf2b741fb0b2c2fcf92aca82395bc65dab4dd8239a12f366d6045755e0b02c2a2-1"
-//                 );
-//                 assert_eq!(source_chain, "avalanche-fuji");
-//                 assert_eq!(status, MessageExecutionStatus::SUCCESSFUL);
-//                 assert_eq!(cost.amount, "0");
-//                 assert_eq!(cost.token_id.as_deref(), None);
+        let tx = txs[3].clone();
+        let compiled_ix: UiCompiledInstruction = match tx.ixs[0].instructions[0].clone() {
+            UiInstruction::Compiled(ix) => ix,
+            _ => panic!("expected a compiled instruction"),
+        };
 
-//                 let meta = &common.meta.as_ref().unwrap();
-//                 assert_eq!(meta.common_meta.tx_id.as_deref(), Some("aa4"));
-//                 assert_eq!(meta.revert_reason.as_deref(), None);
-//             }
-//             _ => panic!("Expected MessageExecuted event"),
-//         }
-//     }
-// }
+        let mut parser = ParserMessageExecuted::new(tx.signature.to_string(), compiled_ix)
+            .await
+            .unwrap();
+        assert!(parser.is_match().await.unwrap());
+        let sig = tx.signature.clone().to_string();
+        parser.parse().await.unwrap();
+        let event = parser.event(Some(format!("{}-1", sig))).await.unwrap();
+        match event {
+            Event::MessageExecuted { ref common, .. } => {
+                let expected_event = Event::MessageExecuted {
+                    common: CommonEventFields {
+                        r#type: "MESSAGE_EXECUTED".to_owned(),
+                        event_id: sig.clone(),
+                        meta: Some(MessageExecutedEventMetadata {
+                            common_meta: EventMetadata {
+                                tx_id: Some(sig.clone()),
+                                from_address: None,
+                                finalized: None,
+                                source_context: None,
+                                timestamp: common
+                                    .meta
+                                    .as_ref()
+                                    .unwrap()
+                                    .common_meta
+                                    .timestamp
+                                    .clone(),
+                            },
+                            command_id: Some(
+                                encode(parser.parsed.as_ref().unwrap().command_id).into_string(),
+                            ),
+                            child_message_ids: None,
+                            revert_reason: None,
+                        }),
+                    },
+                    message_id: parser.parsed.as_ref().unwrap().message_id.clone(),
+                    source_chain: parser.parsed.as_ref().unwrap().source_chain.clone(),
+                    status: MessageExecutionStatus::SUCCESSFUL,
+                    cost: Amount {
+                        token_id: None,
+                        amount: "0".to_string(),
+                    },
+                };
+                assert_eq!(event, expected_event);
+            }
+            _ => panic!("Expected MessageExecuted event"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_no_match() {
+        let txs = transaction_fixtures();
+
+        let tx = txs[0].clone();
+        let compiled_ix: UiCompiledInstruction = match tx.ixs[0].instructions[0].clone() {
+            UiInstruction::Compiled(ix) => ix,
+            _ => panic!("expected a compiled instruction"),
+        };
+        let parser = ParserMessageExecuted::new(tx.signature.to_string(), compiled_ix)
+            .await
+            .unwrap();
+
+        assert!(!parser.is_match().await.unwrap());
+    }
+}
