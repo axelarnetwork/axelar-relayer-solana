@@ -18,7 +18,7 @@ pub struct LinkTokenStarted {
     pub source_token_address: Pubkey,
     pub destination_token_address: Vec<u8>,
     pub token_manager_type: u8,
-    pub params: Vec<u8>,
+    pub _params: Vec<u8>,
 }
 
 pub struct ParserLinkTokenStarted {
