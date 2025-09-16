@@ -5,6 +5,7 @@ mod parser_call_contract;
 mod parser_execute_insufficient_gas;
 mod parser_its_interchain_token_deployment_started;
 mod parser_its_interchain_transfer;
+mod parser_its_link_token_started;
 mod parser_message_approved;
 mod parser_message_executed;
 mod parser_native_gas_added;
