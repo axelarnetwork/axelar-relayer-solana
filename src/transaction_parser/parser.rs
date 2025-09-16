@@ -1,6 +1,6 @@
 use super::message_matching_key::MessageMatchingKey;
 use crate::transaction_parser::parser_call_contract::ParserCallContract;
-use crate::transaction_parser::parser_its_interchain_transfer::ParserItsInterchainTransfer;
+use crate::transaction_parser::parser_its_interchain_transfer::ParserInterchainTransfer;
 use crate::transaction_parser::parser_message_approved::ParserMessageApproved;
 use crate::transaction_parser::parser_message_executed::ParserMessageExecuted;
 use crate::transaction_parser::parser_native_gas_added::ParserNativeGasAdded;
@@ -288,7 +288,7 @@ impl TransactionParser {
                         parser.parse().await?;
                         parsers.push(Box::new(parser));
                     }
-                    let mut parser = ParserItsInterchainTransfer::new(
+                    let mut parser = ParserInterchainTransfer::new(
                         transaction.signature.to_string(),
                         ci.clone(),
                     )
