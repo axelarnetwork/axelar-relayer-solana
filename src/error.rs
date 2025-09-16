@@ -2,12 +2,12 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum TransactionParsingError {
-    // #[error("BocParsingError: {0}")]
-    // BocParsing(String),
     #[error("MessageParsingError: {0}")]
     Message(String),
     #[error("GasError: {0}")]
     Gas(String),
+    #[error("ITSWithoutPair: {0}")]
+    ITSWithoutPair(String),
     #[error("GeneralError: {0}")]
     Generic(String),
 }
