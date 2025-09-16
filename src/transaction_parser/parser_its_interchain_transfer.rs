@@ -113,7 +113,7 @@ impl Parser for ParserInterchainTransfer {
         ))
     }
 
-    async fn event(&self, _: Option<String>) -> Result<Event, TransactionParsingError> {
+    async fn event(&self, message_id: Option<String>) -> Result<Event, TransactionParsingError> {
         let parsed = self
             .parsed
             .clone()
@@ -139,7 +139,9 @@ impl Parser for ParserInterchainTransfer {
             destination_chain: parsed.destination_chain.clone(),
             destination_address: hex::encode(parsed.destination_address),
             data_hash: hex::encode(parsed.data_hash),
-            message_id: self.signature.clone(),
+            message_id: message_id.ok_or_else(|| {
+                TransactionParsingError::Message("Missing message_id".to_string())
+            })?,
             token_spent: Amount {
                 token_id: Some(hex::encode(parsed.token_id)),
                 amount: parsed.amount.to_string(),
