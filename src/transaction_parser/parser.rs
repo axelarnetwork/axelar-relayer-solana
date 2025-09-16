@@ -273,9 +273,12 @@ impl TransactionParser {
                         parser.parse().await?;
                         parsers.push(Box::new(parser));
                     }
-                    let mut parser =
-                        ParserLogSignersRotated::new(transaction.signature.to_string(), ci.clone())
-                            .await?;
+                    let mut parser = ParserLogSignersRotated::new(
+                        transaction.signature.to_string(),
+                        ci.clone(),
+                        index,
+                    )
+                    .await?;
                     if parser.is_match().await? {
                         info!(
                             "ParserLogSignersRotated matched, transaction_id={}",

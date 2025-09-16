@@ -21,12 +21,14 @@ pub struct ParserLogSignersRotated {
     parsed: Option<LogSignersRotatedMessage>,
     instruction: UiCompiledInstruction,
     config: ParserConfig,
+    index: u64,
 }
 
 impl ParserLogSignersRotated {
     pub(crate) async fn new(
         signature: String,
         instruction: UiCompiledInstruction,
+        index: u64,
     ) -> Result<Self, TransactionParsingError> {
         Ok(Self {
             signature,
@@ -36,6 +38,7 @@ impl ParserLogSignersRotated {
                 event_cpi_discriminator: CPI_EVENT_DISC,
                 event_type_discriminator: LOG_SIGNERS_ROTATED_EVENT_DISC,
             },
+            index,
         })
     }
 
@@ -127,7 +130,7 @@ impl Parser for ParserLogSignersRotated {
     }
 
     async fn message_id(&self) -> Result<Option<String>, TransactionParsingError> {
-        Ok(Some(self.signature.clone()))
+        Ok(Some(format!("{}-{}", self.signature, self.index)))
     }
 }
 
