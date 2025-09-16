@@ -152,10 +152,8 @@ pub fn u8_to_token_manager_type(value: u8) -> Result<TokenManagerType, Transacti
         2 => Ok(TokenManagerType::LockUnlock),
         3 => Ok(TokenManagerType::LockUnlockFee),
         4 => Ok(TokenManagerType::MintBurn),
-        _ => {
-            return Err(TransactionParsingError::Message(
-                "Invalid token manager type".to_string(),
-            ))
-        }
+        _ => Err(TransactionParsingError::Message(
+            "Invalid token manager type".to_string(),
+        )),
     }
 }
