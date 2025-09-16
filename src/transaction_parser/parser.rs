@@ -1,5 +1,6 @@
 use super::message_matching_key::MessageMatchingKey;
 use crate::transaction_parser::parser_call_contract::ParserCallContract;
+use crate::transaction_parser::parser_its_interchain_token_deployment_started::ParserInterchainTokenDeploymentStarted;
 use crate::transaction_parser::parser_its_interchain_transfer::ParserInterchainTransfer;
 use crate::transaction_parser::parser_message_approved::ParserMessageApproved;
 use crate::transaction_parser::parser_message_executed::ParserMessageExecuted;
@@ -58,6 +59,7 @@ impl TransactionParserTrait for TransactionParser {
     ) -> Result<Vec<Event>, TransactionParsingError> {
         let mut events: Vec<Event> = Vec::new();
         let mut parsers: Vec<Box<dyn Parser + Send + Sync>> = Vec::new();
+        let mut its_parsers: Vec<Box<dyn Parser + Send + Sync>> = Vec::new(); // ITS events that need mapping to call contract
         let mut call_contract: Vec<Box<dyn Parser + Send + Sync>> = Vec::new();
         let mut gas_credit_map: HashMap<MessageMatchingKey, Box<dyn Parser + Send + Sync>> =
             HashMap::new();
@@ -67,6 +69,7 @@ impl TransactionParserTrait for TransactionParser {
             .create_parsers(
                 transaction.clone(),
                 &mut parsers,
+                &mut its_parsers,
                 &mut call_contract,
                 &mut gas_credit_map,
                 self.chain_name.clone(),
@@ -81,14 +84,14 @@ impl TransactionParserTrait for TransactionParser {
             gas_credit_map.len()
         );
 
-        if (parsers.len() + call_contract.len() + gas_credit_map.len()) == 0 {
+        if (parsers.len() + its_parsers.len() + call_contract.len() + gas_credit_map.len()) == 0 {
             warn!(
                 "Transaction did not produce any parsers: transaction_id={}",
                 transaction_id
             );
         }
 
-        for cc in call_contract {
+        for cc in call_contract.iter().clone() {
             let cc_key = cc.key().await?;
             events.push(cc.event(None).await?);
             if let Some(parser) = gas_credit_map.remove(&cc_key) {
@@ -101,65 +104,34 @@ impl TransactionParserTrait for TransactionParser {
             }
         }
 
+        for (i, its_parser) in its_parsers.iter().enumerate() {
+            match call_contract.get(i) {
+                Some(contract_parser) => {
+                    let message_id = contract_parser.message_id().await?;
+                    events.push(its_parser.event(message_id).await?);
+                }
+                None => {
+                    return Err(TransactionParsingError::ITSWithoutPair(format!(
+                        "No matching call_contract for ITS index {i}"
+                    )));
+                }
+            }
+        }
+
         for parser in parsers {
             let event = parser.event(None).await?;
             events.push(event);
         }
 
-        let mut parsed_events: Vec<Event> = Vec::new();
+        self.add_cost_units(
+            &mut events,
+            message_approved_count,
+            message_executed_count,
+            transaction.cost_units,
+        )
+        .await?;
 
-        for event in events {
-            let event = match event {
-                Event::MessageApproved {
-                    common,
-                    message,
-                    mut cost,
-                } => {
-                    let cost_units = transaction.clone().cost_units;
-                    if cost_units == 0 {
-                        return Err(TransactionParsingError::Generic(
-                            "Cost units for approved not found".to_string(),
-                        ));
-                    }
-                    cost.amount = (cost_units.checked_div(message_approved_count))
-                        .unwrap_or(0)
-                        .to_string();
-                    Event::MessageApproved {
-                        common,
-                        message,
-                        cost,
-                    }
-                }
-                Event::MessageExecuted {
-                    common,
-                    message_id,
-                    source_chain,
-                    status,
-                    mut cost,
-                } => {
-                    let cost_units = transaction.clone().cost_units;
-                    if cost_units == 0 {
-                        return Err(TransactionParsingError::Generic(
-                            "Cost units for executed not found".to_string(),
-                        ));
-                    }
-                    cost.amount = (cost_units.checked_div(message_executed_count))
-                        .unwrap_or(0)
-                        .to_string();
-                    Event::MessageExecuted {
-                        common,
-                        message_id,
-                        source_chain,
-                        status,
-                        cost,
-                    }
-                }
-                other => other,
-            };
-            parsed_events.push(event);
-        }
-
-        Ok(parsed_events)
+        Ok(events)
     }
 }
 
@@ -172,6 +144,7 @@ impl TransactionParser {
         &self,
         transaction: SolanaTransaction,
         parsers: &mut Vec<Box<dyn Parser + Send + Sync>>,
+        its_parsers: &mut Vec<Box<dyn Parser + Send + Sync>>,
         call_contract: &mut Vec<Box<dyn Parser + Send + Sync>>,
         gas_credit_map: &mut HashMap<MessageMatchingKey, Box<dyn Parser + Send + Sync>>,
         chain_name: String,
@@ -295,11 +268,24 @@ impl TransactionParser {
                     .await?;
                     if parser.is_match().await? {
                         info!(
-                            "ParserItsInterchainTransfer matched, transaction_id={}",
+                            "ParserInterchainTransfer matched, transaction_id={}",
                             transaction.signature
                         );
                         parser.parse().await?;
-                        parsers.push(Box::new(parser));
+                        its_parsers.push(Box::new(parser));
+                    }
+                    let mut parser = ParserInterchainTokenDeploymentStarted::new(
+                        transaction.signature.to_string(),
+                        ci.clone(),
+                    )
+                    .await?;
+                    if parser.is_match().await? {
+                        info!(
+                            "ParserInterchainTokenDeploymentStarted matched, transaction_id={}",
+                            transaction.signature
+                        );
+                        parser.parse().await?;
+                        its_parsers.push(Box::new(parser));
                     }
                     index += 1; // index is the position of the instruction in the transaction including the inner ones
                 }
@@ -307,6 +293,34 @@ impl TransactionParser {
         }
 
         Ok((message_approved_count, message_executed_count))
+    }
+
+    pub async fn add_cost_units(
+        &self,
+        events: &mut [Event],
+        message_approved_count: u64,
+        message_executed_count: u64,
+        cost_units: u64,
+    ) -> Result<(), TransactionParsingError> {
+        for e in events.iter_mut() {
+            match e {
+                Event::MessageApproved { cost, .. } => {
+                    cost.amount = (cost_units
+                        .checked_div(message_approved_count + message_executed_count))
+                    .unwrap_or(0)
+                    .to_string();
+                }
+                Event::MessageExecuted { cost, .. } => {
+                    cost.amount = (cost_units
+                        .checked_div(message_approved_count + message_executed_count))
+                    .unwrap_or(0)
+                    .to_string();
+                }
+                _ => {}
+            }
+        }
+
+        Ok(())
     }
 }
 
