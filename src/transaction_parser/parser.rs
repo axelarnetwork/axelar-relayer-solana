@@ -1,5 +1,6 @@
 use super::message_matching_key::MessageMatchingKey;
 use crate::transaction_parser::parser_call_contract::ParserCallContract;
+use crate::transaction_parser::parser_its_interchain_transfer::ParserItsInterchainTransfer;
 use crate::transaction_parser::parser_message_approved::ParserMessageApproved;
 use crate::transaction_parser::parser_message_executed::ParserMessageExecuted;
 use crate::transaction_parser::parser_native_gas_added::ParserNativeGasAdded;
@@ -26,7 +27,7 @@ pub struct ParserConfig {
 #[async_trait]
 pub trait Parser {
     async fn parse(&mut self) -> Result<bool, crate::error::TransactionParsingError>;
-    async fn is_match(&self) -> Result<bool, crate::error::TransactionParsingError>;
+    async fn is_match(&mut self) -> Result<bool, crate::error::TransactionParsingError>;
     async fn key(&self) -> Result<MessageMatchingKey, crate::error::TransactionParsingError>;
     async fn event(
         &self,
@@ -282,6 +283,19 @@ impl TransactionParser {
                     if parser.is_match().await? {
                         info!(
                             "ParserLogSignersRotated matched, transaction_id={}",
+                            transaction.signature
+                        );
+                        parser.parse().await?;
+                        parsers.push(Box::new(parser));
+                    }
+                    let mut parser = ParserItsInterchainTransfer::new(
+                        transaction.signature.to_string(),
+                        ci.clone(),
+                    )
+                    .await?;
+                    if parser.is_match().await? {
+                        info!(
+                            "ParserItsInterchainTransfer matched, transaction_id={}",
                             transaction.signature
                         );
                         parser.parse().await?;
