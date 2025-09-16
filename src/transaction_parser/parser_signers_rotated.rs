@@ -12,8 +12,8 @@ use tracing::{debug, warn};
 
 #[derive(BorshDeserialize, Clone, Debug)]
 pub struct LogSignersRotatedMessage {
-    pub(crate) signers_hash: String,
-    pub(crate) epoch: u64,
+    pub signers_hash: String,
+    pub epoch: u64,
 }
 
 pub struct ParserLogSignersRotated {
@@ -75,7 +75,7 @@ impl ParserLogSignersRotated {
         let payload = bytes.get(16..)?;
         match LogSignersRotatedMessage::try_from_slice(payload) {
             Ok(event) => {
-                debug!("Message Approved event={:?}", event);
+                debug!("Signers Rotated event={:?}", event);
                 Some(event)
             }
             Err(_) => None,
@@ -92,8 +92,14 @@ impl Parser for ParserLogSignersRotated {
         Ok(self.parsed.is_some())
     }
 
-    async fn is_match(&self) -> Result<bool, TransactionParsingError> {
-        Ok(Self::try_extract_with_config(&self.instruction, self.config).is_some())
+    async fn is_match(&mut self) -> Result<bool, TransactionParsingError> {
+        match Self::try_extract_with_config(&self.instruction, self.config) {
+            Some(parsed) => {
+                self.parsed = Some(parsed);
+                Ok(true)
+            }
+            None => Ok(false),
+        }
     }
 
     async fn key(&self) -> Result<MessageMatchingKey, TransactionParsingError> {
@@ -215,7 +221,7 @@ impl Parser for ParserLogSignersRotated {
 //             UiInstruction::Compiled(ix) => ix,
 //             _ => panic!("expected a compiled instruction"),
 //         };
-//         let parser = ParserMessageApproved::new(tx.signature.to_string(), compiled_ix)
+//         let mut parser = ParserMessageApproved::new(tx.signature.to_string(), compiled_ix)
 //             .await
 //             .unwrap();
 

@@ -72,7 +72,7 @@ impl ParserExecuteInsufficientGas {
         let payload = bytes.get(16..)?;
         match ExecuteInsufficientGasEvent::try_from_slice(payload) {
             Ok(event) => {
-                debug!("Message Executed event={:?}", event);
+                debug!("Execute Insufficient Gas event={:?}", event);
                 Some(event)
             }
             Err(_) => None,
@@ -89,8 +89,14 @@ impl Parser for ParserExecuteInsufficientGas {
         Ok(self.parsed.is_some())
     }
 
-    async fn is_match(&self) -> Result<bool, TransactionParsingError> {
-        Ok(Self::try_extract_with_config(&self.instruction, self.config).is_some())
+    async fn is_match(&mut self) -> Result<bool, TransactionParsingError> {
+        match Self::try_extract_with_config(&self.instruction, self.config) {
+            Some(parsed) => {
+                self.parsed = Some(parsed);
+                Ok(true)
+            }
+            None => Ok(false),
+        }
     }
 
     async fn key(&self) -> Result<MessageMatchingKey, TransactionParsingError> {

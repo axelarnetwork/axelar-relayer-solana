@@ -97,8 +97,14 @@ impl Parser for ParserMessageExecuted {
         Ok(self.parsed.is_some())
     }
 
-    async fn is_match(&self) -> Result<bool, TransactionParsingError> {
-        Ok(Self::try_extract_with_config(&self.instruction, self.config).is_some())
+    async fn is_match(&mut self) -> Result<bool, TransactionParsingError> {
+        match Self::try_extract_with_config(&self.instruction, self.config) {
+            Some(parsed) => {
+                self.parsed = Some(parsed);
+                Ok(true)
+            }
+            None => Ok(false),
+        }
     }
 
     async fn key(&self) -> Result<MessageMatchingKey, TransactionParsingError> {
@@ -220,7 +226,7 @@ mod tests {
             UiInstruction::Compiled(ix) => ix,
             _ => panic!("expected a compiled instruction"),
         };
-        let parser = ParserMessageExecuted::new(tx.signature.to_string(), compiled_ix)
+        let mut parser = ParserMessageExecuted::new(tx.signature.to_string(), compiled_ix)
             .await
             .unwrap();
 
