@@ -564,10 +564,10 @@ mod tests {
 
         match events[0].clone() {
             Event::Call { message, .. } => match events[1].clone() {
-                Event::ITSLinkTokenStarted { message_id, .. } => {
+                Event::ITSTokenMetadataRegistered { message_id, .. } => {
                     assert_eq!(message_id, message.message_id);
                 }
-                _ => panic!("Expected ITSLinkTokenStarted event"),
+                _ => panic!("Expected ITSTokenMetadataRegistered event"),
             },
             _ => panic!("Expected Call event"),
         }
