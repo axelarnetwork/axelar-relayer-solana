@@ -500,4 +500,76 @@ mod tests {
             _ => panic!("Expected GasCredit event"),
         }
     }
+
+    #[tokio::test]
+    async fn test_its_interchain_transfer() {
+        let txs = transaction_fixtures();
+        let parser = TransactionParser::new("solana".to_string());
+        let events = parser.parse_transaction(txs[7].clone()).await.unwrap();
+        assert_eq!(events.len(), 2);
+
+        match events[0].clone() {
+            Event::Call { message, .. } => match events[1].clone() {
+                Event::ITSInterchainTransfer { message_id, .. } => {
+                    assert_eq!(message_id, message.message_id);
+                }
+                _ => panic!("Expected ITSInterchainTransfer event"),
+            },
+            _ => panic!("Expected Call event"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_its_link_token_started() {
+        let txs = transaction_fixtures();
+        let parser = TransactionParser::new("solana".to_string());
+        let events = parser.parse_transaction(txs[8].clone()).await.unwrap();
+        assert_eq!(events.len(), 2);
+
+        match events[0].clone() {
+            Event::Call { message, .. } => match events[1].clone() {
+                Event::ITSLinkTokenStarted { message_id, .. } => {
+                    assert_eq!(message_id, message.message_id);
+                }
+                _ => panic!("Expected ITSLinkTokenStarted event"),
+            },
+            _ => panic!("Expected Call event"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_its_interchain_token_deployment_started() {
+        let txs = transaction_fixtures();
+        let parser = TransactionParser::new("solana".to_string());
+        let events = parser.parse_transaction(txs[9].clone()).await.unwrap();
+        assert_eq!(events.len(), 2);
+
+        match events[0].clone() {
+            Event::Call { message, .. } => match events[1].clone() {
+                Event::ITSInterchainTokenDeploymentStarted { message_id, .. } => {
+                    assert_eq!(message_id, message.message_id);
+                }
+                _ => panic!("Expected ITSInterchainTokenDeploymentStarted event"),
+            },
+            _ => panic!("Expected Call event"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_its_token_metadata_registered() {
+        let txs = transaction_fixtures();
+        let parser = TransactionParser::new("solana".to_string());
+        let events = parser.parse_transaction(txs[10].clone()).await.unwrap();
+        assert_eq!(events.len(), 2);
+
+        match events[0].clone() {
+            Event::Call { message, .. } => match events[1].clone() {
+                Event::ITSLinkTokenStarted { message_id, .. } => {
+                    assert_eq!(message_id, message.message_id);
+                }
+                _ => panic!("Expected ITSLinkTokenStarted event"),
+            },
+            _ => panic!("Expected Call event"),
+        }
+    }
 }
