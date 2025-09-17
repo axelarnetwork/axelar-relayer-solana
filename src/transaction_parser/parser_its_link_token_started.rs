@@ -18,7 +18,7 @@ pub struct LinkTokenStarted {
     pub source_token_address: Pubkey,
     pub destination_token_address: Vec<u8>,
     pub token_manager_type: u8,
-    pub params: Vec<u8>,
+    pub _params: Vec<u8>,
 }
 
 pub struct ParserLinkTokenStarted {
@@ -137,7 +137,7 @@ impl Parser for ParserLinkTokenStarted {
             source_token_address: hex::encode(parsed.source_token_address),
             destination_token_address: hex::encode(parsed.destination_token_address),
             token_manager_type: u8_to_token_manager_type(parsed.token_manager_type)?,
-            params: parsed.params,
+            //params: parsed.params, // TBD if we need this
         })
     }
 
