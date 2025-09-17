@@ -1,6 +1,6 @@
 use crate::error::TransactionParsingError;
 use crate::transaction_parser::discriminators::{
-    CPI_EVENT_DISC, LINK_TOKEN_DEPLOYMENT_STARTED_EVENT_DISC,
+    CPI_EVENT_DISC, ITS_LINK_TOKEN_STARTED_EVENT_DISC,
 };
 use crate::transaction_parser::message_matching_key::MessageMatchingKey;
 use crate::transaction_parser::parser::{Parser, ParserConfig};
@@ -39,7 +39,7 @@ impl ParserLinkTokenStarted {
             instruction,
             config: ParserConfig {
                 event_cpi_discriminator: CPI_EVENT_DISC,
-                event_type_discriminator: LINK_TOKEN_DEPLOYMENT_STARTED_EVENT_DISC,
+                event_type_discriminator: ITS_LINK_TOKEN_STARTED_EVENT_DISC,
             },
         })
     }
@@ -77,7 +77,7 @@ impl ParserLinkTokenStarted {
         let payload = bytes.get(16..)?;
         match LinkTokenStarted::try_from_slice(payload) {
             Ok(event) => {
-                debug!("Link Token Deployment Started event={:?}", event);
+                debug!("Link Token Started event={:?}", event);
                 Some(event)
             }
             Err(_) => None,
@@ -118,7 +118,7 @@ impl Parser for ParserLinkTokenStarted {
 
         Ok(Event::ITSLinkTokenStarted {
             common: CommonEventFields {
-                r#type: "LINK/LINK_TOKEN_STARTED".to_owned(),
+                r#type: "ITS/LINK_TOKEN_STARTED".to_owned(),
                 event_id: format!("{}-its-link-token-started", self.signature.clone()),
                 meta: Some(EventMetadata {
                     tx_id: Some(self.signature.clone()),
