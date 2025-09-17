@@ -3,6 +3,7 @@ use crate::transaction_parser::parser_call_contract::ParserCallContract;
 use crate::transaction_parser::parser_its_interchain_token_deployment_started::ParserInterchainTokenDeploymentStarted;
 use crate::transaction_parser::parser_its_interchain_transfer::ParserInterchainTransfer;
 use crate::transaction_parser::parser_its_link_token_started::ParserLinkTokenStarted;
+use crate::transaction_parser::parser_its_token_metadata_registered::ParserTokenMetadataRegistered;
 use crate::transaction_parser::parser_message_approved::ParserMessageApproved;
 use crate::transaction_parser::parser_message_executed::ParserMessageExecuted;
 use crate::transaction_parser::parser_native_gas_added::ParserNativeGasAdded;
@@ -294,6 +295,19 @@ impl TransactionParser {
                     if parser.is_match().await? {
                         info!(
                             "ParserLinkTokenStarted matched, transaction_id={}",
+                            transaction.signature
+                        );
+                        parser.parse().await?;
+                        its_parsers.push(Box::new(parser));
+                    }
+                    let mut parser = ParserTokenMetadataRegistered::new(
+                        transaction.signature.to_string(),
+                        ci.clone(),
+                    )
+                    .await?;
+                    if parser.is_match().await? {
+                        info!(
+                            "ParserTokenMetadataRegistered matched, transaction_id={}",
                             transaction.signature
                         );
                         parser.parse().await?;
