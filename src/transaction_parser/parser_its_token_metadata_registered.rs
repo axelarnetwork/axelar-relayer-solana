@@ -124,3 +124,81 @@ impl Parser for ParserTokenMetadataRegistered {
         Ok(None)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use solana_transaction_status::UiInstruction;
+
+    use super::*;
+    use crate::test_utils::fixtures::transaction_fixtures;
+    use crate::transaction_parser::parser_its_token_metadata_registered::ParserTokenMetadataRegistered;
+    #[tokio::test]
+    async fn test_parser() {
+        let txs = transaction_fixtures();
+
+        let tx = txs[10].clone();
+        let compiled_ix: UiCompiledInstruction = match tx.ixs[1].instructions[0].clone() {
+            UiInstruction::Compiled(ix) => ix,
+            _ => panic!("expected a compiled instruction"),
+        };
+
+        let mut parser = ParserTokenMetadataRegistered::new(
+            tx.signature.to_string(),
+            compiled_ix,
+            Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
+            tx.account_keys,
+        )
+        .await
+        .unwrap();
+        assert!(parser.is_match().await.unwrap());
+        let sig = tx.signature.clone().to_string();
+        parser.parse().await.unwrap();
+        let event = parser.event(Some(format!("{}-1", sig))).await.unwrap();
+        match event {
+            Event::ITSTokenMetadataRegistered { .. } => {
+                let expected_event = Event::ITSTokenMetadataRegistered {
+                    common: CommonEventFields {
+                        r#type: "ITS/TOKEN_METADATA_REGISTERED".to_owned(),
+                        event_id: format!("{}-its-metadata", sig),
+                        meta: Some(EventMetadata {
+                            tx_id: Some(sig.to_string()),
+                            from_address: None,
+                            finalized: None,
+                            source_context: None,
+                            timestamp: chrono::Utc::now()
+                                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                        }),
+                    },
+                    message_id: format!("{}-1", sig),
+                    address: parser.parsed.as_ref().unwrap().token_address.to_string(),
+                    decimals: parser.parsed.as_ref().unwrap().decimals,
+                };
+                assert_eq!(event, expected_event);
+            }
+            _ => panic!("Expected ITSTokenMetadataRegistered event"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_no_match() {
+        let txs = transaction_fixtures();
+
+        let tx = txs[0].clone();
+        let compiled_ix: UiCompiledInstruction = match tx.ixs[0].instructions[0].clone() {
+            UiInstruction::Compiled(ix) => ix,
+            _ => panic!("expected a compiled instruction"),
+        };
+
+        let mut parser = ParserTokenMetadataRegistered::new(
+            tx.signature.to_string(),
+            compiled_ix,
+            Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
+            tx.account_keys,
+        )
+        .await
+        .unwrap();
+        assert!(!parser.is_match().await.unwrap());
+    }
+}
