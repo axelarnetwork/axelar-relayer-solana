@@ -568,5 +568,40 @@
             "6RBM7jAFCCx9L7k2PVo2T8est66tmXcDw318UBJtqwMN",
             "7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc"
         ]
+    },
+    {
+        "cost_units": 5000,
+        "ixs": [
+            {
+                "index": 0,
+                "instructions": [
+                    {
+                        "programIdIndex": 2,
+                        "accounts": [
+                            1
+                        ],
+                        "data": "B2oooT9jgC5hr1S4TS4wiv6SpZFsJYu63rc2towQWFuA3w7LoX3dGUNbMKFUsu9hoiF7BiZpHYnghXQcpd81X92y2VEVXwZR",
+                        "stackHeight": 2
+                    }
+                ]
+            }
+        ],
+        "logs": [
+            "Program 7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc invoke [1]",
+            "Program log: Instruction: SignersRotated",
+            "Program 7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc invoke [2]",
+            "Program 7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc consumed 2123 of 194617 compute units",
+            "Program 7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc success",
+            "Program 7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc consumed 7686 of 200000 compute units",
+            "Program 7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc success"
+        ],
+        "signature": [207, 12, 113, 37, 4, 191, 176, 115, 194, 248, 178, 20, 59, 4, 148, 245, 196, 130, 251, 127, 0, 252, 65, 185, 123, 125, 236, 181, 201, 197, 98, 134, 89, 32, 10, 110, 164, 60, 212, 242, 125, 211, 20, 76, 121, 30, 11, 127, 207, 32, 216, 133, 36, 130, 46, 186, 56, 227, 42, 48, 132, 116, 152, 10],
+        "slot": 187,
+        "timestamp": null,
+        "account_keys": [
+            "483jTxdFmFGRnzgx9nBoQM2Zao5mZxKvFgHzTb4Ytn1L",
+            "5m85qicoxxbWNbfAVFZ1DuUDKBchmBtUmMc7T5SrCXEB",
+            "7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc"
+        ]
     }
 ]

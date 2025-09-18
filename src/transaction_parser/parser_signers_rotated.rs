@@ -1,6 +1,6 @@
 use crate::error::TransactionParsingError;
 use crate::transaction_parser::common::check_discriminators_and_address;
-use crate::transaction_parser::discriminators::{CPI_EVENT_DISC, LOG_SIGNERS_ROTATED_EVENT_DISC};
+use crate::transaction_parser::discriminators::{CPI_EVENT_DISC, SIGNERS_ROTATED_EVENT_DISC};
 use crate::transaction_parser::message_matching_key::MessageMatchingKey;
 use crate::transaction_parser::parser::{Parser, ParserConfig};
 use async_trait::async_trait;
@@ -13,21 +13,21 @@ use solana_transaction_status::UiCompiledInstruction;
 use tracing::debug;
 
 #[derive(BorshDeserialize, Clone, Debug)]
-pub struct LogSignersRotatedMessage {
+pub struct SignersRotatedMessage {
     pub signers_hash: String,
     pub epoch: u64,
 }
 
-pub struct ParserLogSignersRotated {
+pub struct ParserSignersRotated {
     signature: String,
-    parsed: Option<LogSignersRotatedMessage>,
+    parsed: Option<SignersRotatedMessage>,
     instruction: UiCompiledInstruction,
     config: ParserConfig,
     index: u64,
     accounts: Vec<String>,
 }
 
-impl ParserLogSignersRotated {
+impl ParserSignersRotated {
     pub(crate) async fn new(
         signature: String,
         instruction: UiCompiledInstruction,
@@ -41,7 +41,7 @@ impl ParserLogSignersRotated {
             instruction,
             config: ParserConfig {
                 event_cpi_discriminator: CPI_EVENT_DISC,
-                event_type_discriminator: LOG_SIGNERS_ROTATED_EVENT_DISC,
+                event_type_discriminator: SIGNERS_ROTATED_EVENT_DISC,
                 expected_contract_address,
             },
             index,
@@ -53,22 +53,22 @@ impl ParserLogSignersRotated {
         instruction: &UiCompiledInstruction,
         config: ParserConfig,
         accounts: &[String],
-    ) -> Result<LogSignersRotatedMessage, TransactionParsingError> {
+    ) -> Result<SignersRotatedMessage, TransactionParsingError> {
         let payload = check_discriminators_and_address(instruction, config, accounts)?;
-        match LogSignersRotatedMessage::try_from_slice(payload.into_iter().as_slice()) {
+        match SignersRotatedMessage::try_from_slice(payload.into_iter().as_slice()) {
             Ok(event) => {
-                debug!("Log Signers Rotated event={:?}", event);
+                debug!("Signers Rotated event={:?}", event);
                 Ok(event)
             }
             Err(_) => Err(TransactionParsingError::InvalidInstructionData(
-                "invalid log signers rotated event".to_string(),
+                "invalid signers rotated event".to_string(),
             )),
         }
     }
 }
 
 #[async_trait]
-impl Parser for ParserLogSignersRotated {
+impl Parser for ParserSignersRotated {
     async fn parse(&mut self) -> Result<bool, TransactionParsingError> {
         if self.parsed.is_none() {
             self.parsed = Some(Self::try_extract_with_config(
@@ -92,7 +92,7 @@ impl Parser for ParserLogSignersRotated {
 
     async fn key(&self) -> Result<MessageMatchingKey, TransactionParsingError> {
         Err(TransactionParsingError::Message(
-            "MessageMatchingKey is not available for LogSignersRotatedEvent".to_string(),
+            "MessageMatchingKey is not available for SignersRotatedEvent".to_string(),
         ))
     }
 
@@ -136,18 +136,18 @@ mod tests {
 
     use super::*;
     use crate::test_utils::fixtures::transaction_fixtures;
-    use crate::transaction_parser::parser_signers_rotated::ParserLogSignersRotated;
+    use crate::transaction_parser::parser_signers_rotated::ParserSignersRotated;
     #[tokio::test]
     async fn test_parser() {
         let txs = transaction_fixtures();
 
-        let tx = txs[2].clone();
+        let tx = txs[11].clone();
         let compiled_ix: UiCompiledInstruction = match tx.ixs[0].instructions[0].clone() {
             UiInstruction::Compiled(ix) => ix,
             _ => panic!("expected a compiled instruction"),
         };
 
-        let mut parser = ParserLogSignersRotated::new(
+        let mut parser = ParserSignersRotated::new(
             tx.signature.to_string(),
             compiled_ix,
             1,
@@ -181,11 +181,7 @@ mod tests {
                             epoch: Some(parser.parsed.as_ref().unwrap().epoch),
                         }),
                     },
-                    message_id: format!(
-                        "{}-{}",
-                        parser.parsed.as_ref().unwrap().signers_hash,
-                        parser.parsed.as_ref().unwrap().epoch
-                    ),
+                    message_id: format!("{}-{}", sig, parser.index),
                 };
                 assert_eq!(event, expected_event);
             }
@@ -202,7 +198,7 @@ mod tests {
             UiInstruction::Compiled(ix) => ix,
             _ => panic!("expected a compiled instruction"),
         };
-        let mut parser = ParserLogSignersRotated::new(
+        let mut parser = ParserSignersRotated::new(
             tx.signature.to_string(),
             compiled_ix,
             1,

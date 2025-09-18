@@ -9,7 +9,7 @@ use crate::transaction_parser::parser_message_executed::ParserMessageExecuted;
 use crate::transaction_parser::parser_native_gas_added::ParserNativeGasAdded;
 use crate::transaction_parser::parser_native_gas_paid::ParserNativeGasPaid;
 use crate::transaction_parser::parser_native_gas_refunded::ParserNativeGasRefunded;
-use crate::transaction_parser::parser_signers_rotated::ParserLogSignersRotated;
+use crate::transaction_parser::parser_signers_rotated::ParserSignersRotated;
 use crate::types::SolanaTransaction;
 use crate::{
     error::TransactionParsingError,
@@ -286,7 +286,7 @@ impl TransactionParser {
                         parser.parse().await?;
                         parsers.push(Box::new(parser));
                     }
-                    let mut parser = ParserLogSignersRotated::new(
+                    let mut parser = ParserSignersRotated::new(
                         transaction.signature.to_string(),
                         ci.clone(),
                         index,
@@ -296,7 +296,7 @@ impl TransactionParser {
                     .await?;
                     if parser.is_match().await? {
                         info!(
-                            "ParserLogSignersRotated matched, transaction_id={}",
+                            "ParserSignersRotated matched, transaction_id={}",
                             transaction.signature
                         );
                         parser.parse().await?;
