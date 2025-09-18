@@ -32,6 +32,7 @@ pub struct ParserCallContract {
     parsed: Option<CallContractEvent>,
     instruction: UiCompiledInstruction,
     config: ParserConfig,
+    accounts: Vec<String>,
     chain_name: String,
     index: u64,
 }
@@ -40,6 +41,7 @@ impl ParserCallContract {
     pub(crate) async fn new(
         signature: String,
         instruction: UiCompiledInstruction,
+        accounts: Vec<String>,
         chain_name: String,
         index: u64,
         expected_contract_address: Pubkey,
@@ -53,6 +55,7 @@ impl ParserCallContract {
                 event_type_discriminator: CALL_CONTRACT_EVENT_DISC,
                 expected_contract_address,
             },
+            accounts,
             chain_name,
             index,
         })
@@ -61,14 +64,17 @@ impl ParserCallContract {
     fn try_extract_with_config(
         instruction: &UiCompiledInstruction,
         config: ParserConfig,
-    ) -> Option<CallContractEvent> {
-        let payload = check_discriminators_and_address(instruction, config)?;
+        accounts: &Vec<String>,
+    ) -> Result<CallContractEvent, TransactionParsingError> {
+        let payload = check_discriminators_and_address(instruction, config, accounts)?;
         match CallContractEvent::try_from_slice(payload.into_iter().as_slice()) {
             Ok(event) => {
                 debug!("Call Contract event={:?}", event);
-                Some(event)
+                Ok(event)
             }
-            Err(_) => None,
+            Err(_) => Err(TransactionParsingError::InvalidInstructionData(
+                "invalid call contract event".to_string(),
+            )),
         }
     }
 }
@@ -77,18 +83,22 @@ impl ParserCallContract {
 impl Parser for ParserCallContract {
     async fn parse(&mut self) -> Result<bool, TransactionParsingError> {
         if self.parsed.is_none() {
-            self.parsed = Self::try_extract_with_config(&self.instruction, self.config);
+            self.parsed = Some(Self::try_extract_with_config(
+                &self.instruction,
+                self.config,
+                &self.accounts,
+            )?);
         }
         Ok(self.parsed.is_some())
     }
 
     async fn is_match(&mut self) -> Result<bool, TransactionParsingError> {
-        match Self::try_extract_with_config(&self.instruction, self.config) {
-            Some(parsed) => {
+        match Self::try_extract_with_config(&self.instruction, self.config, &self.accounts) {
+            Ok(parsed) => {
                 self.parsed = Some(parsed);
                 Ok(true)
             }
-            None => Ok(false),
+            Err(_) => Ok(false),
         }
     }
 
@@ -180,6 +190,7 @@ mod tests {
         let mut parser = ParserCallContract::new(
             tx.signature.to_string(),
             compiled_ix,
+            tx.account_keys,
             "solana".to_string(),
             1,
             Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
@@ -235,13 +246,24 @@ mod tests {
                     message: GatewayV2Message {
                         message_id: format!("{}-1", sig),
                         source_chain: "solana".to_string(),
-                        source_address: "483jTxdFmFGRnzgx9nBoQM2Zao5mZxKvFgHzTb4Ytn1L".to_string(),
-                        destination_address: "0x7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fdd"
+                        source_address: parser.parsed.as_ref().unwrap().sender_key.to_string(),
+                        destination_address: parser
+                            .parsed
+                            .as_ref()
+                            .unwrap()
+                            .destination_contract_address
                             .to_string(),
-                        payload_hash: "dPgf4WfZm0y0HW0MzagieMrunz4vJdXlo5Nv89zsYNA=".to_string(),
+                        payload_hash: BASE64_STANDARD
+                            .encode(parser.parsed.as_ref().unwrap().payload_hash),
                     },
-                    destination_chain: "ethereum".to_string(),
-                    payload: "AQIDBAU=".to_string(),
+                    destination_chain: parser
+                        .parsed
+                        .as_ref()
+                        .unwrap()
+                        .destination_chain
+                        .to_string(),
+                    payload: BASE64_STANDARD
+                        .encode(parser.parsed.as_ref().unwrap().payload.clone()),
                 };
                 assert_eq!(event, expected_event);
             }
@@ -258,9 +280,11 @@ mod tests {
             UiInstruction::Compiled(ix) => ix,
             _ => panic!("expected a compiled instruction"),
         };
+
         let mut parser = ParserCallContract::new(
             tx.signature.to_string(),
             compiled_ix,
+            tx.account_keys,
             "solana".to_string(),
             1,
             Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),

@@ -10,6 +10,10 @@ pub enum TransactionParsingError {
     ITSWithoutPair(String),
     #[error("GeneralError: {0}")]
     Generic(String),
+    #[error("InvalidAccountAddress: {0}")]
+    InvalidAccountAddress(String),
+    #[error("InvalidInstructionData: {0}")]
+    InvalidInstructionData(String),
 }
 
 #[derive(Error, Debug)]

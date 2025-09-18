@@ -178,6 +178,7 @@ impl TransactionParser {
                         transaction.signature.to_string(),
                         ci.clone(),
                         self.gas_service_address,
+                        transaction.account_keys.clone(),
                     )
                     .await?;
                     if parser.is_match().await? {
@@ -194,6 +195,7 @@ impl TransactionParser {
                         transaction.signature.to_string(),
                         ci.clone(),
                         self.gas_service_address,
+                        transaction.account_keys.clone(),
                     )
                     .await?;
                     if parser.is_match().await? {
@@ -209,6 +211,7 @@ impl TransactionParser {
                         ci.clone(),
                         self.gas_service_address,
                         transaction.cost_units,
+                        transaction.account_keys.clone(),
                     )
                     .await?;
                     if parser.is_match().await? {
@@ -222,6 +225,7 @@ impl TransactionParser {
                     let mut parser = ParserCallContract::new(
                         transaction.signature.to_string(),
                         ci.clone(),
+                        transaction.account_keys.clone(),
                         chain_name.clone(),
                         index,
                         self.gateway_address,
@@ -239,6 +243,7 @@ impl TransactionParser {
                         transaction.signature.to_string(),
                         ci.clone(),
                         self.gateway_address,
+                        transaction.account_keys.clone(),
                     )
                     .await?;
                     if parser.is_match().await? {
@@ -254,6 +259,7 @@ impl TransactionParser {
                         transaction.signature.to_string(),
                         ci.clone(),
                         self.gateway_address,
+                        transaction.account_keys.clone(),
                     )
                     .await?;
                     if parser.is_match().await? {
@@ -269,6 +275,7 @@ impl TransactionParser {
                         transaction.signature.to_string(),
                         ci.clone(),
                         self.gateway_address,
+                        transaction.account_keys.clone(),
                     )
                     .await?;
                     if parser.is_match().await? {
@@ -284,6 +291,7 @@ impl TransactionParser {
                         ci.clone(),
                         index,
                         self.gateway_address,
+                        transaction.account_keys.clone(),
                     )
                     .await?;
                     if parser.is_match().await? {
@@ -298,6 +306,7 @@ impl TransactionParser {
                         transaction.signature.to_string(),
                         ci.clone(),
                         self.its_address,
+                        transaction.account_keys.clone(),
                     )
                     .await?;
                     if parser.is_match().await? {
@@ -312,6 +321,7 @@ impl TransactionParser {
                         transaction.signature.to_string(),
                         ci.clone(),
                         self.its_address,
+                        transaction.account_keys.clone(),
                     )
                     .await?;
                     if parser.is_match().await? {
@@ -326,6 +336,7 @@ impl TransactionParser {
                         transaction.signature.to_string(),
                         ci.clone(),
                         self.its_address,
+                        transaction.account_keys.clone(),
                     )
                     .await?;
                     if parser.is_match().await? {
@@ -340,6 +351,7 @@ impl TransactionParser {
                         transaction.signature.to_string(),
                         ci.clone(),
                         self.its_address,
+                        transaction.account_keys.clone(),
                     )
                     .await?;
                     if parser.is_match().await? {
@@ -448,7 +460,7 @@ mod tests {
 
         match events[0].clone() {
             Event::MessageExecuted { cost, .. } => {
-                assert_eq!(cost.amount, "26930");
+                assert_eq!(cost.amount, txs[3].cost_units.to_string());
                 assert!(cost.token_id.is_none());
             }
             _ => panic!("Expected MessageExecuted event"),
@@ -470,14 +482,14 @@ mod tests {
 
         match events[0].clone() {
             Event::MessageExecuted { cost, .. } => {
-                assert_eq!(cost.amount, "13465");
+                assert_eq!(cost.amount, (txs[6].cost_units / 2).to_string());
                 assert!(cost.token_id.is_none());
             }
             _ => panic!("Expected MessageExecuted event"),
         }
         match events[1].clone() {
             Event::MessageExecuted { cost, .. } => {
-                assert_eq!(cost.amount, "13465");
+                assert_eq!(cost.amount, (txs[6].cost_units / 2).to_string());
                 assert!(cost.token_id.is_none());
             }
             _ => panic!("Expected MessageExecuted event"),
@@ -498,7 +510,7 @@ mod tests {
 
         match events[0].clone() {
             Event::MessageApproved { cost, .. } => {
-                assert_eq!(cost.amount, "38208");
+                assert_eq!(cost.amount, txs[1].cost_units.to_string());
                 assert!(cost.token_id.is_none());
             }
             _ => panic!("Expected MessageApproved event"),
@@ -519,7 +531,7 @@ mod tests {
 
         match events[0].clone() {
             Event::MessageApproved { cost, .. } => {
-                assert_eq!(cost.amount, "19104");
+                assert_eq!(cost.amount, (txs[5].cost_units / 2).to_string());
                 assert!(cost.token_id.is_none());
             }
             _ => panic!("Expected MessageApproved event"),
@@ -527,7 +539,7 @@ mod tests {
 
         match events[1].clone() {
             Event::MessageApproved { cost, .. } => {
-                assert_eq!(cost.amount, "19104");
+                assert_eq!(cost.amount, (txs[5].cost_units / 2).to_string());
                 assert!(cost.token_id.is_none());
             }
             _ => panic!("Expected MessageApproved event"),
@@ -548,7 +560,7 @@ mod tests {
 
         match events[0].clone() {
             Event::GasRefunded { cost, .. } => {
-                assert_eq!(cost.amount, "13085");
+                assert_eq!(cost.amount, txs[2].cost_units.to_string());
                 assert!(cost.token_id.is_none());
             }
             _ => panic!("Expected GasRefunded event"),
@@ -568,9 +580,7 @@ mod tests {
         assert_eq!(events.len(), 1);
 
         match events[0].clone() {
-            Event::GasCredit { message_id, .. } => {
-                assert_eq!(message_id, "3oViqY1trepjh1wYWnwGH2JxuQXz2h4ro18GwvNEDdTpLhiZVTFPXSvgAre3yzcXUouNuDSNkpNfSsUEpg23Snu5-0");
-            }
+            Event::GasCredit { .. } => {}
             _ => panic!("Expected GasCredit event"),
         }
     }

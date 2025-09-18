@@ -24,6 +24,7 @@ pub struct ParserLogSignersRotated {
     instruction: UiCompiledInstruction,
     config: ParserConfig,
     index: u64,
+    accounts: Vec<String>,
 }
 
 impl ParserLogSignersRotated {
@@ -32,6 +33,7 @@ impl ParserLogSignersRotated {
         instruction: UiCompiledInstruction,
         index: u64,
         expected_contract_address: Pubkey,
+        accounts: Vec<String>,
     ) -> Result<Self, TransactionParsingError> {
         Ok(Self {
             signature,
@@ -43,20 +45,24 @@ impl ParserLogSignersRotated {
                 expected_contract_address,
             },
             index,
+            accounts,
         })
     }
 
     fn try_extract_with_config(
         instruction: &UiCompiledInstruction,
         config: ParserConfig,
-    ) -> Option<LogSignersRotatedMessage> {
-        let payload = check_discriminators_and_address(instruction, config)?;
+        accounts: &Vec<String>,
+    ) -> Result<LogSignersRotatedMessage, TransactionParsingError> {
+        let payload = check_discriminators_and_address(instruction, config, accounts)?;
         match LogSignersRotatedMessage::try_from_slice(payload.into_iter().as_slice()) {
             Ok(event) => {
-                debug!("Signers Rotated event={:?}", event);
-                Some(event)
+                debug!("Log Signers Rotated event={:?}", event);
+                Ok(event)
             }
-            Err(_) => None,
+            Err(_) => Err(TransactionParsingError::InvalidInstructionData(
+                "invalid log signers rotated event".to_string(),
+            )),
         }
     }
 }
@@ -65,18 +71,22 @@ impl ParserLogSignersRotated {
 impl Parser for ParserLogSignersRotated {
     async fn parse(&mut self) -> Result<bool, TransactionParsingError> {
         if self.parsed.is_none() {
-            self.parsed = Self::try_extract_with_config(&self.instruction, self.config);
+            self.parsed = Some(Self::try_extract_with_config(
+                &self.instruction,
+                self.config,
+                &self.accounts,
+            )?);
         }
         Ok(self.parsed.is_some())
     }
 
     async fn is_match(&mut self) -> Result<bool, TransactionParsingError> {
-        match Self::try_extract_with_config(&self.instruction, self.config) {
-            Some(parsed) => {
+        match Self::try_extract_with_config(&self.instruction, self.config, &self.accounts) {
+            Ok(parsed) => {
                 self.parsed = Some(parsed);
                 Ok(true)
             }
-            None => Ok(false),
+            Err(_) => Ok(false),
         }
     }
 

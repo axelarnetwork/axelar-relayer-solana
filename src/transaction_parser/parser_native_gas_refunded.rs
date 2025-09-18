@@ -31,6 +31,7 @@ pub struct ParserNativeGasRefunded {
     instruction: UiCompiledInstruction,
     config: ParserConfig,
     cost_units: u64,
+    accounts: Vec<String>,
 }
 
 impl ParserNativeGasRefunded {
@@ -39,6 +40,7 @@ impl ParserNativeGasRefunded {
         instruction: UiCompiledInstruction,
         expected_contract_address: Pubkey,
         cost_units: u64,
+        accounts: Vec<String>,
     ) -> Result<Self, TransactionParsingError> {
         Ok(Self {
             signature,
@@ -50,20 +52,24 @@ impl ParserNativeGasRefunded {
                 expected_contract_address,
             },
             cost_units,
+            accounts,
         })
     }
 
     fn try_extract_with_config(
         instruction: &UiCompiledInstruction,
         config: ParserConfig,
-    ) -> Option<NativeGasRefundedEvent> {
-        let payload = check_discriminators_and_address(instruction, config)?;
+        accounts: &Vec<String>,
+    ) -> Result<NativeGasRefundedEvent, TransactionParsingError> {
+        let payload = check_discriminators_and_address(instruction, config, accounts)?;
         match NativeGasRefundedEvent::try_from_slice(payload.into_iter().as_slice()) {
             Ok(event) => {
                 debug!("Native Gas Refunded event={:?}", event);
-                Some(event)
+                Ok(event)
             }
-            Err(_) => None,
+            Err(_) => Err(TransactionParsingError::InvalidInstructionData(
+                "invalid native gas refunded event".to_string(),
+            )),
         }
     }
 }
@@ -72,18 +78,22 @@ impl ParserNativeGasRefunded {
 impl Parser for ParserNativeGasRefunded {
     async fn parse(&mut self) -> Result<bool, TransactionParsingError> {
         if self.parsed.is_none() {
-            self.parsed = Self::try_extract_with_config(&self.instruction, self.config);
+            self.parsed = Some(Self::try_extract_with_config(
+                &self.instruction,
+                self.config,
+                &self.accounts,
+            )?);
         }
         Ok(self.parsed.is_some())
     }
 
     async fn is_match(&mut self) -> Result<bool, TransactionParsingError> {
-        match Self::try_extract_with_config(&self.instruction, self.config) {
-            Some(parsed) => {
+        match Self::try_extract_with_config(&self.instruction, self.config, &self.accounts) {
+            Ok(parsed) => {
                 self.parsed = Some(parsed);
                 Ok(true)
             }
-            None => Ok(false),
+            Err(_) => Ok(false),
         }
     }
 
@@ -172,6 +182,7 @@ mod tests {
             compiled_ix,
             Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
             tx.cost_units,
+            tx.account_keys,
         )
         .await
         .unwrap();
@@ -197,12 +208,12 @@ mod tests {
                     message_id: format!(
                         "{}-{}",
                         Signature::from(parser.parsed.as_ref().unwrap().tx_hash),
-                        parser.parsed.unwrap().log_index
+                        parser.parsed.as_ref().unwrap().log_index
                     ),
-                    recipient_address: "483jTxdFmFGRnzgx9nBoQM2Zao5mZxKvFgHzTb4Ytn1L".to_string(),
+                    recipient_address: parser.parsed.as_ref().unwrap().receiver.to_string(),
                     refunded_amount: Amount {
                         token_id: None,
-                        amount: "500".to_string(),
+                        amount: parser.parsed.as_ref().unwrap().fees.to_string(),
                     },
                     cost: Amount {
                         amount: tx.cost_units.to_string(),
@@ -229,6 +240,7 @@ mod tests {
             compiled_ix,
             Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
             tx.cost_units,
+            tx.account_keys,
         )
         .await
         .unwrap();

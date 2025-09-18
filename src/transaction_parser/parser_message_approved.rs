@@ -29,6 +29,7 @@ pub struct ParserMessageApproved {
     parsed: Option<MessageApprovedEvent>,
     instruction: UiCompiledInstruction,
     config: ParserConfig,
+    accounts: Vec<String>,
 }
 
 impl ParserMessageApproved {
@@ -36,6 +37,7 @@ impl ParserMessageApproved {
         signature: String,
         instruction: UiCompiledInstruction,
         expected_contract_address: Pubkey,
+        accounts: Vec<String>,
     ) -> Result<Self, TransactionParsingError> {
         Ok(Self {
             signature,
@@ -46,20 +48,24 @@ impl ParserMessageApproved {
                 event_type_discriminator: MESSAGE_APPROVED_EVENT_DISC,
                 expected_contract_address,
             },
+            accounts,
         })
     }
 
     fn try_extract_with_config(
         instruction: &UiCompiledInstruction,
         config: ParserConfig,
-    ) -> Option<MessageApprovedEvent> {
-        let payload = check_discriminators_and_address(instruction, config)?;
+        accounts: &Vec<String>,
+    ) -> Result<MessageApprovedEvent, TransactionParsingError> {
+        let payload = check_discriminators_and_address(instruction, config, accounts)?;
         match MessageApprovedEvent::try_from_slice(payload.into_iter().as_slice()) {
             Ok(event) => {
                 debug!("Message Approved event={:?}", event);
-                Some(event)
+                Ok(event)
             }
-            Err(_) => None,
+            Err(_) => Err(TransactionParsingError::InvalidInstructionData(
+                "invalid message approved event".to_string(),
+            )),
         }
     }
 }
@@ -68,18 +74,22 @@ impl ParserMessageApproved {
 impl Parser for ParserMessageApproved {
     async fn parse(&mut self) -> Result<bool, TransactionParsingError> {
         if self.parsed.is_none() {
-            self.parsed = Self::try_extract_with_config(&self.instruction, self.config);
+            self.parsed = Some(Self::try_extract_with_config(
+                &self.instruction,
+                self.config,
+                &self.accounts,
+            )?);
         }
         Ok(self.parsed.is_some())
     }
 
     async fn is_match(&mut self) -> Result<bool, TransactionParsingError> {
-        match Self::try_extract_with_config(&self.instruction, self.config) {
-            Some(parsed) => {
+        match Self::try_extract_with_config(&self.instruction, self.config, &self.accounts) {
+            Ok(parsed) => {
                 self.parsed = Some(parsed);
                 Ok(true)
             }
-            None => Ok(false),
+            Err(_) => Ok(false),
         }
     }
 
@@ -162,6 +172,7 @@ mod tests {
             tx.signature.to_string(),
             compiled_ix,
             Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
+            tx.account_keys,
         )
         .await
         .unwrap();
@@ -230,6 +241,7 @@ mod tests {
             tx.signature.to_string(),
             compiled_ix,
             Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
+            tx.account_keys,
         )
         .await
         .unwrap();

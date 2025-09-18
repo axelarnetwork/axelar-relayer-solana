@@ -96,9 +96,9 @@ impl SolanaRpcClientTrait for SolanaRpcClient {
         signature: Signature,
     ) -> Result<SolanaTransaction, anyhow::Error> {
         let config = RpcTransactionConfig {
-            encoding: Some(UiTransactionEncoding::Binary),
+            encoding: Some(UiTransactionEncoding::Json),
             commitment: Some(self.client.commitment()),
-            max_supported_transaction_version: None,
+            max_supported_transaction_version: Some(0),
         };
 
         let mut retries = 0;
