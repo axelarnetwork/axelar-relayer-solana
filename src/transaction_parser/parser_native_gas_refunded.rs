@@ -36,6 +36,7 @@ impl ParserNativeGasRefunded {
     pub(crate) async fn new(
         signature: String,
         instruction: UiCompiledInstruction,
+        expected_contract_address: Pubkey,
         cost_units: u64,
     ) -> Result<Self, TransactionParsingError> {
         Ok(Self {
@@ -45,6 +46,7 @@ impl ParserNativeGasRefunded {
             config: ParserConfig {
                 event_cpi_discriminator: CPI_EVENT_DISC,
                 event_type_discriminator: NATIVE_GAS_REFUNDED_EVENT_DISC,
+                expected_contract_address,
             },
             cost_units,
         })
@@ -172,6 +174,8 @@ impl Parser for ParserNativeGasRefunded {
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+
     use solana_sdk::signature::Signature;
     use solana_transaction_status::UiInstruction;
 
@@ -188,10 +192,14 @@ mod tests {
             _ => panic!("expected a compiled instruction"),
         };
 
-        let mut parser =
-            ParserNativeGasRefunded::new(tx.signature.to_string(), compiled_ix, tx.cost_units)
-                .await
-                .unwrap();
+        let mut parser = ParserNativeGasRefunded::new(
+            tx.signature.to_string(),
+            compiled_ix,
+            Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
+            tx.cost_units,
+        )
+        .await
+        .unwrap();
         assert!(parser.is_match().await.unwrap());
         let sig = tx.signature.clone().to_string();
         parser.parse().await.unwrap();
@@ -241,10 +249,14 @@ mod tests {
             UiInstruction::Compiled(ix) => ix,
             _ => panic!("expected a compiled instruction"),
         };
-        let mut parser =
-            ParserNativeGasRefunded::new(tx.signature.to_string(), compiled_ix, tx.cost_units)
-                .await
-                .unwrap();
+        let mut parser = ParserNativeGasRefunded::new(
+            tx.signature.to_string(),
+            compiled_ix,
+            Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
+            tx.cost_units,
+        )
+        .await
+        .unwrap();
 
         assert!(!parser.is_match().await.unwrap());
     }

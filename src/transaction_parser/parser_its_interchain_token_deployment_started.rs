@@ -11,6 +11,7 @@ use borsh::BorshDeserialize;
 use relayer_core::gmp_api::gmp_types::{
     CommonEventFields, Event, EventMetadata, InterchainTokenDefinition,
 };
+use solana_sdk::pubkey::Pubkey;
 use solana_transaction_status::UiCompiledInstruction;
 use tracing::{debug, warn};
 
@@ -35,6 +36,7 @@ impl ParserInterchainTokenDeploymentStarted {
     pub(crate) async fn new(
         signature: String,
         instruction: UiCompiledInstruction,
+        expected_contract_address: Pubkey,
     ) -> Result<Self, TransactionParsingError> {
         Ok(Self {
             signature,
@@ -43,6 +45,7 @@ impl ParserInterchainTokenDeploymentStarted {
             config: ParserConfig {
                 event_cpi_discriminator: CPI_EVENT_DISC,
                 event_type_discriminator: ITS_INTERCHAIN_TOKEN_DEPLOYMENT_STARTED_EVENT_DISC,
+                expected_contract_address,
             },
         })
     }

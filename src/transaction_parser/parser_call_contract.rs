@@ -41,6 +41,7 @@ impl ParserCallContract {
         instruction: UiCompiledInstruction,
         chain_name: String,
         index: u64,
+        expected_contract_address: Pubkey,
     ) -> Result<Self, TransactionParsingError> {
         Ok(Self {
             signature,
@@ -49,6 +50,7 @@ impl ParserCallContract {
             config: ParserConfig {
                 event_cpi_discriminator: CPI_EVENT_DISC,
                 event_type_discriminator: CALL_CONTRACT_EVENT_DISC,
+                expected_contract_address,
             },
             chain_name,
             index,
@@ -183,6 +185,8 @@ impl Parser for ParserCallContract {
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+
     use solana_transaction_status::UiInstruction;
 
     use super::*;
@@ -203,6 +207,7 @@ mod tests {
             compiled_ix,
             "solana".to_string(),
             1,
+            Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
         )
         .await
         .unwrap();
@@ -283,6 +288,7 @@ mod tests {
             compiled_ix,
             "solana".to_string(),
             1,
+            Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
         )
         .await
         .unwrap();

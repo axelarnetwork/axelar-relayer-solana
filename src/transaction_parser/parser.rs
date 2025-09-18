@@ -17,6 +17,7 @@ use crate::{
 };
 use async_trait::async_trait;
 use relayer_core::gmp_api::gmp_types::Event;
+use solana_sdk::pubkey::Pubkey;
 use solana_transaction_status::UiInstruction;
 use std::collections::HashMap;
 use tracing::{info, warn};
@@ -25,6 +26,7 @@ use tracing::{info, warn};
 pub struct ParserConfig {
     pub event_cpi_discriminator: [u8; 8],
     pub event_type_discriminator: [u8; 8],
+    pub expected_contract_address: Pubkey,
 }
 
 #[async_trait]
@@ -42,6 +44,9 @@ pub trait Parser {
 #[derive(Clone)]
 pub struct TransactionParser {
     chain_name: String,
+    gas_service_address: Pubkey,
+    gateway_address: Pubkey,
+    its_address: Pubkey,
 }
 
 #[cfg_attr(test, mockall::automock)]
@@ -138,8 +143,18 @@ impl TransactionParserTrait for TransactionParser {
 }
 
 impl TransactionParser {
-    pub fn new(chain_name: String) -> Self {
-        Self { chain_name }
+    pub fn new(
+        chain_name: String,
+        gas_service_address: Pubkey,
+        gateway_address: Pubkey,
+        its_address: Pubkey,
+    ) -> Self {
+        Self {
+            chain_name,
+            gas_service_address,
+            gateway_address,
+            its_address,
+        }
     }
 
     async fn create_parsers(
@@ -159,9 +174,12 @@ impl TransactionParser {
             for inst in group.instructions.iter() {
                 if let UiInstruction::Compiled(ci) = inst {
                     // Should we check from which account the event was emitted?
-                    let mut parser =
-                        ParserNativeGasPaid::new(transaction.signature.to_string(), ci.clone())
-                            .await?;
+                    let mut parser = ParserNativeGasPaid::new(
+                        transaction.signature.to_string(),
+                        ci.clone(),
+                        self.gas_service_address,
+                    )
+                    .await?;
                     if parser.is_match().await? {
                         info!(
                             "ParserNativeGasPaid matched, transaction_id={}",
@@ -172,9 +190,12 @@ impl TransactionParser {
                         gas_credit_map.insert(key, Box::new(parser));
                     }
 
-                    let mut parser =
-                        ParserNativeGasAdded::new(transaction.signature.to_string(), ci.clone())
-                            .await?;
+                    let mut parser = ParserNativeGasAdded::new(
+                        transaction.signature.to_string(),
+                        ci.clone(),
+                        self.gas_service_address,
+                    )
+                    .await?;
                     if parser.is_match().await? {
                         info!(
                             "ParserNativeGasAdded matched, transaction_id={}",
@@ -186,6 +207,7 @@ impl TransactionParser {
                     let mut parser = ParserNativeGasRefunded::new(
                         transaction.signature.to_string(),
                         ci.clone(),
+                        self.gas_service_address,
                         transaction.cost_units,
                     )
                     .await?;
@@ -202,6 +224,7 @@ impl TransactionParser {
                         ci.clone(),
                         chain_name.clone(),
                         index,
+                        self.gateway_address,
                     )
                     .await?;
                     if parser.is_match().await? {
@@ -212,9 +235,12 @@ impl TransactionParser {
                         parser.parse().await?;
                         call_contract.push(Box::new(parser));
                     }
-                    let mut parser =
-                        ParserMessageApproved::new(transaction.signature.to_string(), ci.clone())
-                            .await?;
+                    let mut parser = ParserMessageApproved::new(
+                        transaction.signature.to_string(),
+                        ci.clone(),
+                        self.gateway_address,
+                    )
+                    .await?;
                     if parser.is_match().await? {
                         info!(
                             "ParserMessageApproved matched, transaction_id={}",
@@ -224,9 +250,12 @@ impl TransactionParser {
                         parsers.push(Box::new(parser));
                         message_approved_count += 1;
                     }
-                    let mut parser =
-                        ParserMessageExecuted::new(transaction.signature.to_string(), ci.clone())
-                            .await?;
+                    let mut parser = ParserMessageExecuted::new(
+                        transaction.signature.to_string(),
+                        ci.clone(),
+                        self.gateway_address,
+                    )
+                    .await?;
                     if parser.is_match().await? {
                         info!(
                             "ParserMessageExecuted matched, transaction_id={}",
@@ -239,6 +268,7 @@ impl TransactionParser {
                     let mut parser = ParserExecuteInsufficientGas::new(
                         transaction.signature.to_string(),
                         ci.clone(),
+                        self.gateway_address,
                     )
                     .await?;
                     if parser.is_match().await? {
@@ -253,6 +283,7 @@ impl TransactionParser {
                         transaction.signature.to_string(),
                         ci.clone(),
                         index,
+                        self.gateway_address,
                     )
                     .await?;
                     if parser.is_match().await? {
@@ -266,6 +297,7 @@ impl TransactionParser {
                     let mut parser = ParserInterchainTransfer::new(
                         transaction.signature.to_string(),
                         ci.clone(),
+                        self.its_address,
                     )
                     .await?;
                     if parser.is_match().await? {
@@ -279,6 +311,7 @@ impl TransactionParser {
                     let mut parser = ParserInterchainTokenDeploymentStarted::new(
                         transaction.signature.to_string(),
                         ci.clone(),
+                        self.its_address,
                     )
                     .await?;
                     if parser.is_match().await? {
@@ -289,9 +322,12 @@ impl TransactionParser {
                         parser.parse().await?;
                         its_parsers.push(Box::new(parser));
                     }
-                    let mut parser =
-                        ParserLinkTokenStarted::new(transaction.signature.to_string(), ci.clone())
-                            .await?;
+                    let mut parser = ParserLinkTokenStarted::new(
+                        transaction.signature.to_string(),
+                        ci.clone(),
+                        self.its_address,
+                    )
+                    .await?;
                     if parser.is_match().await? {
                         info!(
                             "ParserLinkTokenStarted matched, transaction_id={}",
@@ -303,6 +339,7 @@ impl TransactionParser {
                     let mut parser = ParserTokenMetadataRegistered::new(
                         transaction.signature.to_string(),
                         ci.clone(),
+                        self.its_address,
                     )
                     .await?;
                     if parser.is_match().await? {
@@ -352,13 +389,20 @@ impl TransactionParser {
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+
     use super::*;
     use crate::test_utils::fixtures::transaction_fixtures;
 
     #[tokio::test]
     async fn test_parser_converted_and_message_id_set() {
         let txs = transaction_fixtures();
-        let parser = TransactionParser::new("solana".to_string());
+        let parser = TransactionParser::new(
+            "solana".to_string(),
+            Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
+            Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
+            Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
+        );
         let events = parser.parse_transaction(txs[0].clone()).await.unwrap();
         assert_eq!(events.len(), 2);
 
@@ -392,7 +436,12 @@ mod tests {
     #[tokio::test]
     async fn test_message_executed() {
         let txs = transaction_fixtures();
-        let parser = TransactionParser::new("solana".to_string());
+        let parser = TransactionParser::new(
+            "solana".to_string(),
+            Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
+            Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
+            Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
+        );
         let events = parser.parse_transaction(txs[3].clone()).await.unwrap();
 
         assert_eq!(events.len(), 1);
@@ -409,7 +458,12 @@ mod tests {
     #[tokio::test]
     async fn test_multiple_message_executed() {
         let txs = transaction_fixtures();
-        let parser = TransactionParser::new("solana".to_string());
+        let parser = TransactionParser::new(
+            "solana".to_string(),
+            Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
+            Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
+            Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
+        );
         let events = parser.parse_transaction(txs[6].clone()).await.unwrap();
 
         assert_eq!(events.len(), 2);
@@ -433,7 +487,12 @@ mod tests {
     #[tokio::test]
     async fn test_message_approved() {
         let txs = transaction_fixtures();
-        let parser = TransactionParser::new("solana".to_string());
+        let parser = TransactionParser::new(
+            "solana".to_string(),
+            Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
+            Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
+            Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
+        );
         let events = parser.parse_transaction(txs[1].clone()).await.unwrap();
         assert_eq!(events.len(), 1);
 
@@ -449,7 +508,12 @@ mod tests {
     #[tokio::test]
     async fn test_multiple_message_approved() {
         let txs = transaction_fixtures();
-        let parser = TransactionParser::new("solana".to_string());
+        let parser = TransactionParser::new(
+            "solana".to_string(),
+            Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
+            Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
+            Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
+        );
         let events = parser.parse_transaction(txs[5].clone()).await.unwrap();
         assert_eq!(events.len(), 2);
 
@@ -473,7 +537,12 @@ mod tests {
     #[tokio::test]
     async fn test_gas_refunded() {
         let txs = transaction_fixtures();
-        let parser = TransactionParser::new("solana".to_string());
+        let parser = TransactionParser::new(
+            "solana".to_string(),
+            Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
+            Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
+            Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
+        );
         let events = parser.parse_transaction(txs[2].clone()).await.unwrap();
         assert_eq!(events.len(), 1);
 
@@ -489,7 +558,12 @@ mod tests {
     #[tokio::test]
     async fn test_gas_added() {
         let txs = transaction_fixtures();
-        let parser = TransactionParser::new("solana".to_string());
+        let parser = TransactionParser::new(
+            "solana".to_string(),
+            Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
+            Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
+            Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
+        );
         let events = parser.parse_transaction(txs[4].clone()).await.unwrap();
         assert_eq!(events.len(), 1);
 
@@ -504,7 +578,12 @@ mod tests {
     #[tokio::test]
     async fn test_its_interchain_transfer() {
         let txs = transaction_fixtures();
-        let parser = TransactionParser::new("solana".to_string());
+        let parser = TransactionParser::new(
+            "solana".to_string(),
+            Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
+            Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
+            Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
+        );
         let events = parser.parse_transaction(txs[7].clone()).await.unwrap();
         assert_eq!(events.len(), 2);
 
@@ -522,7 +601,12 @@ mod tests {
     #[tokio::test]
     async fn test_its_link_token_started() {
         let txs = transaction_fixtures();
-        let parser = TransactionParser::new("solana".to_string());
+        let parser = TransactionParser::new(
+            "solana".to_string(),
+            Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
+            Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
+            Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
+        );
         let events = parser.parse_transaction(txs[8].clone()).await.unwrap();
         assert_eq!(events.len(), 2);
 
@@ -540,7 +624,12 @@ mod tests {
     #[tokio::test]
     async fn test_its_interchain_token_deployment_started() {
         let txs = transaction_fixtures();
-        let parser = TransactionParser::new("solana".to_string());
+        let parser = TransactionParser::new(
+            "solana".to_string(),
+            Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
+            Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
+            Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
+        );
         let events = parser.parse_transaction(txs[9].clone()).await.unwrap();
         assert_eq!(events.len(), 2);
 
@@ -558,7 +647,12 @@ mod tests {
     #[tokio::test]
     async fn test_its_token_metadata_registered() {
         let txs = transaction_fixtures();
-        let parser = TransactionParser::new("solana".to_string());
+        let parser = TransactionParser::new(
+            "solana".to_string(),
+            Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
+            Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
+            Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
+        );
         let events = parser.parse_transaction(txs[10].clone()).await.unwrap();
         assert_eq!(events.len(), 2);
 

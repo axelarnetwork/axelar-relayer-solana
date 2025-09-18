@@ -35,6 +35,7 @@ impl ParserInterchainTransfer {
     pub(crate) async fn new(
         signature: String,
         instruction: UiCompiledInstruction,
+        expected_contract_address: Pubkey,
     ) -> Result<Self, TransactionParsingError> {
         Ok(Self {
             signature,
@@ -43,6 +44,7 @@ impl ParserInterchainTransfer {
             config: ParserConfig {
                 event_cpi_discriminator: CPI_EVENT_DISC,
                 event_type_discriminator: ITS_INTERCHAIN_TRANSFER_EVENT_DISC,
+                expected_contract_address,
             },
         })
     }

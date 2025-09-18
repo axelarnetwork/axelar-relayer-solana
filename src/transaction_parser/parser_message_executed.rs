@@ -35,6 +35,7 @@ impl ParserMessageExecuted {
     pub(crate) async fn new(
         signature: String,
         instruction: UiCompiledInstruction,
+        expected_contract_address: Pubkey,
     ) -> Result<Self, TransactionParsingError> {
         Ok(Self {
             signature,
@@ -43,6 +44,7 @@ impl ParserMessageExecuted {
             config: ParserConfig {
                 event_cpi_discriminator: CPI_EVENT_DISC,
                 event_type_discriminator: MESSAGE_EXECUTED_EVENT_DISC,
+                expected_contract_address,
             },
         })
     }
@@ -154,6 +156,8 @@ impl Parser for ParserMessageExecuted {
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+
     use solana_transaction_status::UiInstruction;
 
     use super::*;
@@ -169,9 +173,13 @@ mod tests {
             _ => panic!("expected a compiled instruction"),
         };
 
-        let mut parser = ParserMessageExecuted::new(tx.signature.to_string(), compiled_ix)
-            .await
-            .unwrap();
+        let mut parser = ParserMessageExecuted::new(
+            tx.signature.to_string(),
+            compiled_ix,
+            Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
+        )
+        .await
+        .unwrap();
         assert!(parser.is_match().await.unwrap());
         let sig = tx.signature.clone().to_string();
         parser.parse().await.unwrap();
@@ -226,9 +234,13 @@ mod tests {
             UiInstruction::Compiled(ix) => ix,
             _ => panic!("expected a compiled instruction"),
         };
-        let mut parser = ParserMessageExecuted::new(tx.signature.to_string(), compiled_ix)
-            .await
-            .unwrap();
+        let mut parser = ParserMessageExecuted::new(
+            tx.signature.to_string(),
+            compiled_ix,
+            Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
+        )
+        .await
+        .unwrap();
 
         assert!(!parser.is_match().await.unwrap());
     }

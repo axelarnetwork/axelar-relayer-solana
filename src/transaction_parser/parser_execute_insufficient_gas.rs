@@ -7,6 +7,7 @@ use crate::transaction_parser::parser::{Parser, ParserConfig};
 use async_trait::async_trait;
 use borsh::BorshDeserialize;
 use relayer_core::gmp_api::gmp_types::{CannotExecuteMessageReason, CommonEventFields, Event};
+use solana_sdk::pubkey::Pubkey;
 use solana_transaction_status::UiCompiledInstruction;
 use tracing::{debug, warn};
 
@@ -27,6 +28,7 @@ impl ParserExecuteInsufficientGas {
     pub(crate) async fn new(
         signature: String,
         instruction: UiCompiledInstruction,
+        expected_contract_address: Pubkey,
     ) -> Result<Self, TransactionParsingError> {
         Ok(Self {
             signature,
@@ -35,6 +37,7 @@ impl ParserExecuteInsufficientGas {
             config: ParserConfig {
                 event_cpi_discriminator: CPI_EVENT_DISC,
                 event_type_discriminator: CANNOT_EXECUTE_MESSAGE_EVENT_DISC,
+                expected_contract_address,
             },
         })
     }

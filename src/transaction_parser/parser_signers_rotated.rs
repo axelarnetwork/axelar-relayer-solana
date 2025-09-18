@@ -7,6 +7,7 @@ use borsh::BorshDeserialize;
 use relayer_core::gmp_api::gmp_types::{
     CommonEventFields, Event, EventMetadata, SignersRotatedEventMetadata,
 };
+use solana_sdk::pubkey::Pubkey;
 use solana_transaction_status::UiCompiledInstruction;
 use tracing::{debug, warn};
 
@@ -29,6 +30,7 @@ impl ParserLogSignersRotated {
         signature: String,
         instruction: UiCompiledInstruction,
         index: u64,
+        expected_contract_address: Pubkey,
     ) -> Result<Self, TransactionParsingError> {
         Ok(Self {
             signature,
@@ -37,6 +39,7 @@ impl ParserLogSignersRotated {
             config: ParserConfig {
                 event_cpi_discriminator: CPI_EVENT_DISC,
                 event_type_discriminator: LOG_SIGNERS_ROTATED_EVENT_DISC,
+                expected_contract_address,
             },
             index,
         })
@@ -139,92 +142,3 @@ impl Parser for ParserLogSignersRotated {
         Ok(Some(format!("{}-{}", self.signature, self.index)))
     }
 }
-
-// #[cfg(test)]
-// mod tests {
-//     use solana_transaction_status::UiInstruction;
-
-//     use super::*;
-//     use crate::test_utils::fixtures::transaction_fixtures;
-//     use crate::transaction_parser::parser_message_approved::ParserMessageApproved;
-//     #[tokio::test]
-//     async fn test_parser() {
-//         let txs = transaction_fixtures();
-
-//         let tx = txs[1].clone();
-//         let compiled_ix: UiCompiledInstruction = match tx.ixs[0].instructions[1].clone() {
-//             UiInstruction::Compiled(ix) => ix,
-//             _ => panic!("expected a compiled instruction"),
-//         };
-
-//         let mut parser = ParserMessageApproved::new(tx.signature.to_string(), compiled_ix)
-//             .await
-//             .unwrap();
-//         assert!(parser.is_match().await.unwrap());
-//         let sig = tx.signature.clone().to_string();
-//         parser.parse().await.unwrap();
-//         let event = parser.event(Some(format!("{}-1", sig))).await.unwrap();
-//         match event {
-//             Event::MessageApproved { ref common, .. } => {
-//                 let expected_event = Event::MessageApproved {
-//                     common: CommonEventFields {
-//                         r#type: "MESSAGE_APPROVED".to_owned(),
-//                         event_id: sig.clone(),
-//                         meta: Some(MessageApprovedEventMetadata {
-//                             common_meta: EventMetadata {
-//                                 tx_id: Some(sig.clone()),
-//                                 from_address: None,
-//                                 finalized: None,
-//                                 source_context: None,
-//                                 timestamp: common
-//                                     .meta
-//                                     .as_ref()
-//                                     .unwrap()
-//                                     .common_meta
-//                                     .timestamp
-//                                     .clone(),
-//                             },
-//                             command_id: Some(
-//                                 encode(parser.parsed.as_ref().unwrap().command_id).into_string(),
-//                             ),
-//                         }),
-//                     },
-//                     message: GatewayV2Message {
-//                         message_id: parser.parsed.as_ref().unwrap().message_id.clone(),
-//                         source_chain: parser.parsed.as_ref().unwrap().source_chain.clone(),
-//                         source_address: parser.parsed.as_ref().unwrap().source_address.clone(),
-//                         destination_address: parser
-//                             .parsed
-//                             .as_ref()
-//                             .unwrap()
-//                             .destination_address
-//                             .to_string(),
-//                         payload_hash: hex::encode(parser.parsed.as_ref().unwrap().payload_hash),
-//                     },
-//                     cost: Amount {
-//                         token_id: None,
-//                         amount: "0".to_string(),
-//                     },
-//                 };
-//                 assert_eq!(event, expected_event);
-//             }
-//             _ => panic!("Expected MessageApproved event"),
-//         }
-//     }
-
-//     #[tokio::test]
-//     async fn test_no_match() {
-//         let txs = transaction_fixtures();
-
-//         let tx = txs[0].clone();
-//         let compiled_ix: UiCompiledInstruction = match tx.ixs[0].instructions[0].clone() {
-//             UiInstruction::Compiled(ix) => ix,
-//             _ => panic!("expected a compiled instruction"),
-//         };
-//         let mut parser = ParserMessageApproved::new(tx.signature.to_string(), compiled_ix)
-//             .await
-//             .unwrap();
-
-//         assert!(!parser.is_match().await.unwrap());
-//     }
-// }
