@@ -52,7 +52,7 @@ impl ParserLogSignersRotated {
     fn try_extract_with_config(
         instruction: &UiCompiledInstruction,
         config: ParserConfig,
-        accounts: &Vec<String>,
+        accounts: &[String],
     ) -> Result<LogSignersRotatedMessage, TransactionParsingError> {
         let payload = check_discriminators_and_address(instruction, config, accounts)?;
         match LogSignersRotatedMessage::try_from_slice(payload.into_iter().as_slice()) {
@@ -105,7 +105,7 @@ impl Parser for ParserLogSignersRotated {
         Ok(Event::SignersRotated {
             common: CommonEventFields {
                 r#type: "SIGNERS_ROTATED".to_owned(),
-                event_id: self.signature.clone(),
+                event_id: format!("{}-signers-rotated", self.signature.clone()),
                 meta: Some(SignersRotatedEventMetadata {
                     common_meta: EventMetadata {
                         tx_id: Some(self.signature.clone()),
@@ -119,11 +119,99 @@ impl Parser for ParserLogSignersRotated {
                     epoch: Some(parsed.epoch),
                 }),
             },
-            message_id: self.signature.clone(),
+            message_id: format!("{}-{}", self.signature, self.index),
         })
     }
 
     async fn message_id(&self) -> Result<Option<String>, TransactionParsingError> {
         Ok(Some(format!("{}-{}", self.signature, self.index)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use solana_transaction_status::UiInstruction;
+
+    use super::*;
+    use crate::test_utils::fixtures::transaction_fixtures;
+    use crate::transaction_parser::parser_signers_rotated::ParserLogSignersRotated;
+    #[tokio::test]
+    async fn test_parser() {
+        let txs = transaction_fixtures();
+
+        let tx = txs[2].clone();
+        let compiled_ix: UiCompiledInstruction = match tx.ixs[0].instructions[0].clone() {
+            UiInstruction::Compiled(ix) => ix,
+            _ => panic!("expected a compiled instruction"),
+        };
+
+        let mut parser = ParserLogSignersRotated::new(
+            tx.signature.to_string(),
+            compiled_ix,
+            1,
+            Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
+            tx.account_keys,
+        )
+        .await
+        .unwrap();
+        assert!(parser.is_match().await.unwrap());
+        let sig = tx.signature.clone().to_string();
+        parser.parse().await.unwrap();
+        let event = parser.event(None).await.unwrap();
+        match event {
+            Event::SignersRotated { .. } => {
+                let expected_event = Event::SignersRotated {
+                    common: CommonEventFields {
+                        r#type: "SIGNERS_ROTATED".to_owned(),
+                        event_id: format!("{}-signers-rotated", sig),
+                        meta: Some(SignersRotatedEventMetadata {
+                            common_meta: EventMetadata {
+                                tx_id: Some(sig.to_string()),
+                                from_address: None,
+                                finalized: None,
+                                source_context: None,
+                                timestamp: chrono::Utc::now()
+                                    .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                            },
+                            signers_hash: Some(
+                                parser.parsed.as_ref().unwrap().signers_hash.clone(),
+                            ),
+                            epoch: Some(parser.parsed.as_ref().unwrap().epoch),
+                        }),
+                    },
+                    message_id: format!(
+                        "{}-{}",
+                        parser.parsed.as_ref().unwrap().signers_hash,
+                        parser.parsed.as_ref().unwrap().epoch
+                    ),
+                };
+                assert_eq!(event, expected_event);
+            }
+            _ => panic!("Expected GasRefunded event"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_no_match() {
+        let txs = transaction_fixtures();
+
+        let tx = txs[0].clone();
+        let compiled_ix: UiCompiledInstruction = match tx.ixs[0].instructions[0].clone() {
+            UiInstruction::Compiled(ix) => ix,
+            _ => panic!("expected a compiled instruction"),
+        };
+        let mut parser = ParserLogSignersRotated::new(
+            tx.signature.to_string(),
+            compiled_ix,
+            1,
+            Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
+            tx.account_keys,
+        )
+        .await
+        .unwrap();
+
+        assert!(!parser.is_match().await.unwrap());
     }
 }

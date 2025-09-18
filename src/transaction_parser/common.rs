@@ -9,7 +9,7 @@ use tracing::{debug, warn};
 pub fn check_discriminators_and_address(
     instruction: &UiCompiledInstruction,
     config: ParserConfig,
-    accounts: &Vec<String>,
+    accounts: &[String],
 ) -> Result<Vec<u8>, TransactionParsingError> {
     let account_keys: Vec<Pubkey> = accounts
         .iter()
@@ -72,7 +72,7 @@ pub fn check_discriminators_and_address(
 fn validate_account_address(
     required_account: &Pubkey,
     instruction: &UiCompiledInstruction,
-    account_keys: &Vec<Pubkey>,
+    account_keys: &[Pubkey],
 ) -> Result<bool, TransactionParsingError> {
     let actual_account = account_keys
         .get(instruction.program_id_index as usize)

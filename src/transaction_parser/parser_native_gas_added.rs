@@ -57,7 +57,7 @@ impl ParserNativeGasAdded {
     fn try_extract_with_config(
         instruction: &UiCompiledInstruction,
         config: ParserConfig,
-        accounts: &Vec<String>,
+        accounts: &[String],
     ) -> Result<NativeGasAddedEvent, TransactionParsingError> {
         let payload = check_discriminators_and_address(instruction, config, accounts)?;
         match NativeGasAddedEvent::try_from_slice(payload.into_iter().as_slice()) {
