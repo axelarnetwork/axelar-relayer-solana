@@ -12,6 +12,7 @@ solana_poll_rpc: ""
 solana_faucet_url: ""
 solana_gas_service: ""
 solana_gateway: ""
+solana_its: ""
 solana_commitment:
   commitment: confirmed
 axelar_contracts:

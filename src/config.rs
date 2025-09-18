@@ -14,6 +14,7 @@ pub struct SolanaConfig {
     pub solana_faucet_url: String,
     pub solana_gas_service: String,
     pub solana_gateway: String,
+    pub solana_its: String,
     pub solana_commitment: CommitmentConfig,
     pub wallets: Vec<WalletConfig>,
 }
