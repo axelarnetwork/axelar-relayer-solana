@@ -193,6 +193,11 @@ mod tests {
                 .map(|ix| serde_json::from_str(ix).unwrap())
                 .collect::<Vec<UiInnerInstructions>>(),
             cost_units: saved.cost_units as u64,
+            account_keys: vec![
+                "7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc".to_string(),
+                "11111111111111111111111111111111".to_string(),
+                "SysvarC1ock11111111111111111111111111111111".to_string(),
+            ],
         };
 
         assert_eq!(tx_from_data, *solana_tx);

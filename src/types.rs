@@ -3,8 +3,9 @@ use chrono::{offset::Utc, DateTime};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use solana_sdk::signature::Signature;
+use solana_transaction_status::UiMessage;
 use solana_transaction_status_client_types::{
-    EncodedConfirmedTransactionWithStatusMeta, UiInnerInstructions,
+    EncodedConfirmedTransactionWithStatusMeta, EncodedTransaction, UiInnerInstructions,
 };
 use std::str::FromStr;
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -15,6 +16,7 @@ pub struct SolanaTransaction {
     pub slot: i64,
     pub ixs: Vec<UiInnerInstructions>,
     pub cost_units: u64,
+    pub account_keys: Vec<String>,
 }
 
 impl SolanaTransaction {
@@ -45,6 +47,15 @@ impl SolanaTransaction {
         let ixs = meta.inner_instructions.clone();
         let cost_units = meta.cost_units.unwrap_or(0) + meta.fee; // base fee + gas paid for the tx
 
+        let account_keys = result
+            .transaction
+            .message
+            .account_keys
+            .clone()
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<String>>();
+
         Ok(Self {
             signature,
             timestamp,
@@ -52,6 +63,7 @@ impl SolanaTransaction {
             slot,
             ixs,
             cost_units,
+            account_keys,
         })
     }
 
@@ -63,6 +75,27 @@ impl SolanaTransaction {
             .transaction
             .meta
             .ok_or_else(|| anyhow!("No meta found"))?;
+        let account_keys = match &tx.transaction.transaction {
+            EncodedTransaction::LegacyBinary(_) => {
+                Err(anyhow!("Legacy binary transactions are not supported"))
+            }
+            EncodedTransaction::Binary(_, _) => {
+                Err(anyhow!("Binary transactions are not supported"))
+            }
+            EncodedTransaction::Json(json_transaction) => match &json_transaction.message {
+                UiMessage::Parsed(parsed_message) => Ok(parsed_message
+                    .account_keys
+                    .iter()
+                    .map(|key| key.pubkey.to_string())
+                    .collect::<Vec<String>>()),
+                UiMessage::Raw(raw_message) => Ok(raw_message.account_keys.clone()),
+            },
+            EncodedTransaction::Accounts(accounts_transaction) => Ok(accounts_transaction
+                .account_keys
+                .iter()
+                .map(|key| key.pubkey.to_string())
+                .collect::<Vec<String>>()),
+        }?;
         Ok(Self {
             signature,
             timestamp: None,
@@ -77,6 +110,7 @@ impl SolanaTransaction {
                     .ok_or_else(|| anyhow!("No inner instructions found"))?
             },
             cost_units: meta.compute_units_consumed.clone().unwrap_or(0) + meta.fee, // base fee + gas paid for the tx
+            account_keys,
         })
     }
 }
@@ -197,6 +231,10 @@ mod tests {
             slot: 404139482,
             ixs: vec![],
             cost_units: 6654,
+            account_keys: vec![
+                "483jTxdFmFGRnzgx9nBoQM2Zao5mZxKvFgHzTb4Ytn1L".to_string(),
+                "DaejccUfXqoAFTiDTxDuMQfQ9oa6crjtR9cT52v1AvGK".to_string()
+            ]
         };
         assert_eq!(transaction, expected_tx);
     }
@@ -237,6 +275,7 @@ mod tests {
                         ]
                     }"#).unwrap()],
             cost_units: 14725,
+            account_keys: vec!["483jTxdFmFGRnzgx9nBoQM2Zao5mZxKvFgHzTb4Ytn1L".to_string(), "11111111111111111111111111111111".to_string(), "4BMYqAenKkzMtzdHieH9w5FhKKMkZTPGgccbUGwrRqTk".to_string(), "5m85qicoxxbWNbfAVFZ1DuUDKBchmBtUmMc7T5SrCXEB".to_string(), "7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc".to_string()],
         };
         assert_eq!(transaction, expected_tx);
     }
