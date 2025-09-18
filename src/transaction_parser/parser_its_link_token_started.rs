@@ -145,3 +145,96 @@ pub fn u8_to_token_manager_type(value: u8) -> Result<TokenManagerType, Transacti
         )),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use solana_transaction_status::UiInstruction;
+
+    use super::*;
+    use crate::test_utils::fixtures::transaction_fixtures;
+    use crate::transaction_parser::parser_its_link_token_started::ParserLinkTokenStarted;
+    #[tokio::test]
+    async fn test_parser() {
+        let txs = transaction_fixtures();
+
+        let tx = txs[8].clone();
+        let compiled_ix: UiCompiledInstruction = match tx.ixs[1].instructions[0].clone() {
+            UiInstruction::Compiled(ix) => ix,
+            _ => panic!("expected a compiled instruction"),
+        };
+
+        let mut parser = ParserLinkTokenStarted::new(
+            tx.signature.to_string(),
+            compiled_ix,
+            Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
+            tx.account_keys,
+        )
+        .await
+        .unwrap();
+        assert!(parser.is_match().await.unwrap());
+        let sig = tx.signature.clone().to_string();
+        parser.parse().await.unwrap();
+        let event = parser.event(Some(format!("{}-1", sig))).await.unwrap();
+        match event {
+            Event::ITSLinkTokenStarted { .. } => {
+                let expected_event = Event::ITSLinkTokenStarted {
+                    common: CommonEventFields {
+                        r#type: "ITS/LINK_TOKEN_STARTED".to_owned(),
+                        event_id: format!("{}-its-link-token-started", sig),
+                        meta: Some(EventMetadata {
+                            tx_id: Some(sig.to_string()),
+                            from_address: None,
+                            finalized: None,
+                            source_context: None,
+                            timestamp: chrono::Utc::now()
+                                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                        }),
+                    },
+                    message_id: format!("{}-1", sig),
+                    token_id: hex::encode(parser.parsed.as_ref().unwrap().token_id),
+                    source_token_address: hex::encode(
+                        parser.parsed.as_ref().unwrap().source_token_address,
+                    ),
+                    destination_token_address: hex::encode(
+                        parser
+                            .parsed
+                            .as_ref()
+                            .unwrap()
+                            .destination_token_address
+                            .clone(),
+                    ),
+                    token_manager_type: u8_to_token_manager_type(
+                        parser.parsed.as_ref().unwrap().token_manager_type,
+                    )
+                    .unwrap(),
+                    destination_chain: parser.parsed.as_ref().unwrap().destination_chain.clone(),
+                };
+                assert_eq!(event, expected_event);
+            }
+            _ => panic!("Expected ITSLinkTokenStarted event"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_no_match() {
+        let txs = transaction_fixtures();
+
+        let tx = txs[0].clone();
+        let compiled_ix: UiCompiledInstruction = match tx.ixs[0].instructions[0].clone() {
+            UiInstruction::Compiled(ix) => ix,
+            _ => panic!("expected a compiled instruction"),
+        };
+
+        let mut parser = ParserLinkTokenStarted::new(
+            tx.signature.to_string(),
+            compiled_ix,
+            Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
+            tx.account_keys,
+        )
+        .await
+        .unwrap();
+        assert!(!parser.is_match().await.unwrap());
+    }
+}
