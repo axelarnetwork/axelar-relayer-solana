@@ -72,10 +72,10 @@ impl<STR: SolanaStreamClientTrait, SM: SolanaTransactionModel> SolanaListener<ST
         &self,
         gas_service_account: Pubkey,
         gateway_account: Pubkey,
+        its_account: Pubkey,
         config: SolanaConfig,
         cancellation_token: CancellationToken,
     ) {
-        let solana_stream_rpc_clone = config.clone().solana_stream_rpc;
         let solana_config_clone = config.clone();
         let queue_clone = Arc::clone(&self.queue);
         let transaction_model_clone = Arc::clone(&self.transaction_model);
@@ -83,7 +83,6 @@ impl<STR: SolanaStreamClientTrait, SM: SolanaTransactionModel> SolanaListener<ST
 
         let handle_gas_service = tokio::spawn(async move {
             Self::setup_connection_and_work(
-                &solana_stream_rpc_clone,
                 solana_config_clone,
                 gas_service_account,
                 &queue_clone,
@@ -96,7 +95,6 @@ impl<STR: SolanaStreamClientTrait, SM: SolanaTransactionModel> SolanaListener<ST
 
         tokio::pin!(handle_gas_service);
 
-        let solana_stream_rpc_clone = config.clone().solana_stream_rpc;
         let solana_config_clone = config.clone();
         let queue_clone = Arc::clone(&self.queue);
         let transaction_model_clone = Arc::clone(&self.transaction_model);
@@ -104,7 +102,6 @@ impl<STR: SolanaStreamClientTrait, SM: SolanaTransactionModel> SolanaListener<ST
 
         let handle_gateway = tokio::spawn(async move {
             Self::setup_connection_and_work(
-                &solana_stream_rpc_clone,
                 solana_config_clone,
                 gateway_account,
                 &queue_clone,
@@ -115,7 +112,26 @@ impl<STR: SolanaStreamClientTrait, SM: SolanaTransactionModel> SolanaListener<ST
             .await;
         });
 
+        let solana_config_clone = config.clone();
+        let queue_clone = Arc::clone(&self.queue);
+        let transaction_model_clone = Arc::clone(&self.transaction_model);
+        let cancellation_token_clone = cancellation_token.clone();
+
         tokio::pin!(handle_gateway);
+
+        let handle_its = tokio::spawn(async move {
+            Self::setup_connection_and_work(
+                solana_config_clone,
+                its_account,
+                &queue_clone,
+                &transaction_model_clone,
+                "ITS",
+                cancellation_token_clone,
+            )
+            .await;
+        });
+
+        tokio::pin!(handle_its);
 
         tokio::select! {
             _ = &mut handle_gas_service => {
@@ -124,14 +140,15 @@ impl<STR: SolanaStreamClientTrait, SM: SolanaTransactionModel> SolanaListener<ST
             _ = &mut handle_gateway => {
                 info!("Gateway stopped");
             },
-
+            _ = &mut handle_its => {
+                info!("ITS stopped");
+            },
         }
 
         info!("Shut down solana listener");
     }
 
     async fn setup_connection_and_work(
-        solana_stream_rpc: &str,
         solana_config: SolanaConfig,
         account: Pubkey,
         queue: &Arc<Queue>,
@@ -141,19 +158,21 @@ impl<STR: SolanaStreamClientTrait, SM: SolanaTransactionModel> SolanaListener<ST
     ) {
         loop {
             // TODO: Connection Pool
-            let solana_stream_client =
-                match SolanaStreamClient::new(solana_stream_rpc, solana_config.solana_commitment)
-                    .await
-                {
-                    Ok(solana_stream_client) => solana_stream_client,
-                    Err(e) => {
-                        error!(
-                            "Error creating solana stream client for {}: {:?}",
-                            stream_name, e
-                        );
-                        break;
-                    }
-                };
+            let solana_stream_client = match SolanaStreamClient::new(
+                &solana_config.solana_stream_rpc,
+                solana_config.solana_commitment,
+            )
+            .await
+            {
+                Ok(solana_stream_client) => solana_stream_client,
+                Err(e) => {
+                    error!(
+                        "Error creating solana stream client for {}: {:?}",
+                        stream_name, e
+                    );
+                    break;
+                }
+            };
 
             let mut subscriber_stream = match solana_stream_client
                 .logs_subscriber(account.to_string())

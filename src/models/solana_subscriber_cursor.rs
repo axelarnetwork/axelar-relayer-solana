@@ -25,6 +25,8 @@ pub enum AccountPollerEnum {
     GasService,
     #[sqlx(rename = "gateway")]
     Gateway,
+    #[sqlx(rename = "its")]
+    ITS,
 }
 
 #[derive(Clone, Debug)]

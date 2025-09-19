@@ -65,6 +65,7 @@ impl<RPC: SolanaRpcClientTrait, SC: SubscriberCursor, SM: SolanaTransactionModel
         &self,
         gas_service_account: Pubkey,
         gateway_account: Pubkey,
+        its_account: Pubkey,
         cancellation_token: CancellationToken,
     ) {
         select! {
@@ -73,6 +74,9 @@ impl<RPC: SolanaRpcClientTrait, SC: SubscriberCursor, SM: SolanaTransactionModel
             },
             _ = self.work(gateway_account, AccountPollerEnum::Gateway, cancellation_token.clone()) => {
                 warn!("Gateway subscriber stream ended");
+            },
+            _ = self.work(its_account, AccountPollerEnum::ITS, cancellation_token.clone()) => {
+                warn!("ITS subscriber stream ended");
             }
         };
     }
