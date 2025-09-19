@@ -35,6 +35,7 @@ tokio-util = "0.7.12"
 bs58 = "0.5"
 borsh = "1"
 base64 = "0.22.1"
+httpmock = "0.7.0"
 
 [dev-dependencies]
 mockall = "0.13.1"
