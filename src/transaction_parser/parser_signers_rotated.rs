@@ -1,42 +1,37 @@
 use crate::error::TransactionParsingError;
 use crate::transaction_parser::common::check_discriminators_and_address;
-use crate::transaction_parser::discriminators::{CPI_EVENT_DISC, MESSAGE_EXECUTED_EVENT_DISC};
+use crate::transaction_parser::discriminators::{CPI_EVENT_DISC, SIGNERS_ROTATED_EVENT_DISC};
 use crate::transaction_parser::message_matching_key::MessageMatchingKey;
 use crate::transaction_parser::parser::{Parser, ParserConfig};
 use async_trait::async_trait;
 use borsh::BorshDeserialize;
-use bs58::encode;
 use relayer_core::gmp_api::gmp_types::{
-    Amount, CommonEventFields, Event, EventMetadata, MessageExecutedEventMetadata,
-    MessageExecutionStatus,
+    CommonEventFields, Event, EventMetadata, SignersRotatedEventMetadata,
 };
 use solana_sdk::pubkey::Pubkey;
 use solana_transaction_status::UiCompiledInstruction;
 use tracing::debug;
 
 #[derive(BorshDeserialize, Clone, Debug)]
-pub struct MessageExecutedEvent {
-    pub command_id: [u8; 32],
-    pub _destination_address: Pubkey,
-    pub _payload_hash: [u8; 32],
-    pub source_chain: String,
-    pub message_id: String,
-    pub _source_address: String,
-    pub _destination_chain: String,
+pub struct SignersRotatedMessage {
+    pub signers_hash: String,
+    pub epoch: u64,
 }
 
-pub struct ParserMessageExecuted {
+pub struct ParserSignersRotated {
     signature: String,
-    parsed: Option<MessageExecutedEvent>,
+    parsed: Option<SignersRotatedMessage>,
     instruction: UiCompiledInstruction,
     config: ParserConfig,
+    index: u64,
     accounts: Vec<String>,
 }
 
-impl ParserMessageExecuted {
+impl ParserSignersRotated {
     pub(crate) async fn new(
         signature: String,
         instruction: UiCompiledInstruction,
+        index: u64,
         expected_contract_address: Pubkey,
         accounts: Vec<String>,
     ) -> Result<Self, TransactionParsingError> {
@@ -46,9 +41,10 @@ impl ParserMessageExecuted {
             instruction,
             config: ParserConfig {
                 event_cpi_discriminator: CPI_EVENT_DISC,
-                event_type_discriminator: MESSAGE_EXECUTED_EVENT_DISC,
+                event_type_discriminator: SIGNERS_ROTATED_EVENT_DISC,
                 expected_contract_address,
             },
+            index,
             accounts,
         })
     }
@@ -57,22 +53,22 @@ impl ParserMessageExecuted {
         instruction: &UiCompiledInstruction,
         config: ParserConfig,
         accounts: &[String],
-    ) -> Result<MessageExecutedEvent, TransactionParsingError> {
+    ) -> Result<SignersRotatedMessage, TransactionParsingError> {
         let payload = check_discriminators_and_address(instruction, config, accounts)?;
-        match MessageExecutedEvent::try_from_slice(payload.into_iter().as_slice()) {
+        match SignersRotatedMessage::try_from_slice(payload.into_iter().as_slice()) {
             Ok(event) => {
-                debug!("Message Executed event={:?}", event);
+                debug!("Signers Rotated event={:?}", event);
                 Ok(event)
             }
             Err(_) => Err(TransactionParsingError::InvalidInstructionData(
-                "invalid message executed event".to_string(),
+                "invalid signers rotated event".to_string(),
             )),
         }
     }
 }
 
 #[async_trait]
-impl Parser for ParserMessageExecuted {
+impl Parser for ParserSignersRotated {
     async fn parse(&mut self) -> Result<bool, TransactionParsingError> {
         if self.parsed.is_none() {
             self.parsed = Some(Self::try_extract_with_config(
@@ -96,7 +92,7 @@ impl Parser for ParserMessageExecuted {
 
     async fn key(&self) -> Result<MessageMatchingKey, TransactionParsingError> {
         Err(TransactionParsingError::Message(
-            "MessageMatchingKey is not available for MessageExecutedEvent".to_string(),
+            "MessageMatchingKey is not available for SignersRotatedEvent".to_string(),
         ))
     }
 
@@ -106,11 +102,11 @@ impl Parser for ParserMessageExecuted {
             .clone()
             .ok_or_else(|| TransactionParsingError::Message("Missing parsed".to_string()))?;
 
-        Ok(Event::MessageExecuted {
+        Ok(Event::SignersRotated {
             common: CommonEventFields {
-                r#type: "MESSAGE_EXECUTED".to_owned(),
-                event_id: self.signature.clone(),
-                meta: Some(MessageExecutedEventMetadata {
+                r#type: "SIGNERS_ROTATED".to_owned(),
+                event_id: format!("{}-signers-rotated", self.signature.clone()),
+                meta: Some(SignersRotatedEventMetadata {
                     common_meta: EventMetadata {
                         tx_id: Some(self.signature.clone()),
                         from_address: None,
@@ -119,23 +115,16 @@ impl Parser for ParserMessageExecuted {
                         timestamp: chrono::Utc::now()
                             .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
                     },
-                    command_id: Some(encode(parsed.command_id).into_string()),
-                    child_message_ids: None,
-                    revert_reason: None,
+                    signers_hash: Some(parsed.signers_hash.clone()),
+                    epoch: Some(parsed.epoch),
                 }),
             },
-            message_id: parsed.message_id.clone(),
-            source_chain: parsed.source_chain,
-            status: MessageExecutionStatus::SUCCESSFUL,
-            cost: Amount {
-                token_id: None,
-                amount: "0".to_string(),
-            },
+            message_id: format!("{}-{}", self.signature, self.index),
         })
     }
 
     async fn message_id(&self) -> Result<Option<String>, TransactionParsingError> {
-        Ok(None)
+        Ok(Some(format!("{}-{}", self.signature, self.index)))
     }
 }
 
@@ -147,20 +136,21 @@ mod tests {
 
     use super::*;
     use crate::test_utils::fixtures::transaction_fixtures;
-    use crate::transaction_parser::parser_message_executed::ParserMessageExecuted;
+    use crate::transaction_parser::parser_signers_rotated::ParserSignersRotated;
     #[tokio::test]
     async fn test_parser() {
         let txs = transaction_fixtures();
 
-        let tx = txs[3].clone();
+        let tx = txs[11].clone();
         let compiled_ix: UiCompiledInstruction = match tx.ixs[0].instructions[0].clone() {
             UiInstruction::Compiled(ix) => ix,
             _ => panic!("expected a compiled instruction"),
         };
 
-        let mut parser = ParserMessageExecuted::new(
+        let mut parser = ParserSignersRotated::new(
             tx.signature.to_string(),
             compiled_ix,
+            1,
             Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
             tx.account_keys,
         )
@@ -169,45 +159,33 @@ mod tests {
         assert!(parser.is_match().await.unwrap());
         let sig = tx.signature.clone().to_string();
         parser.parse().await.unwrap();
-        let event = parser.event(Some(format!("{}-1", sig))).await.unwrap();
+        let event = parser.event(None).await.unwrap();
         match event {
-            Event::MessageExecuted { ref common, .. } => {
-                let expected_event = Event::MessageExecuted {
+            Event::SignersRotated { .. } => {
+                let expected_event = Event::SignersRotated {
                     common: CommonEventFields {
-                        r#type: "MESSAGE_EXECUTED".to_owned(),
-                        event_id: sig.clone(),
-                        meta: Some(MessageExecutedEventMetadata {
+                        r#type: "SIGNERS_ROTATED".to_owned(),
+                        event_id: format!("{}-signers-rotated", sig),
+                        meta: Some(SignersRotatedEventMetadata {
                             common_meta: EventMetadata {
-                                tx_id: Some(sig.clone()),
+                                tx_id: Some(sig.to_string()),
                                 from_address: None,
                                 finalized: None,
                                 source_context: None,
-                                timestamp: common
-                                    .meta
-                                    .as_ref()
-                                    .unwrap()
-                                    .common_meta
-                                    .timestamp
-                                    .clone(),
+                                timestamp: chrono::Utc::now()
+                                    .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
                             },
-                            command_id: Some(
-                                encode(parser.parsed.as_ref().unwrap().command_id).into_string(),
+                            signers_hash: Some(
+                                parser.parsed.as_ref().unwrap().signers_hash.clone(),
                             ),
-                            child_message_ids: None,
-                            revert_reason: None,
+                            epoch: Some(parser.parsed.as_ref().unwrap().epoch),
                         }),
                     },
-                    message_id: parser.parsed.as_ref().unwrap().message_id.clone(),
-                    source_chain: parser.parsed.as_ref().unwrap().source_chain.clone(),
-                    status: MessageExecutionStatus::SUCCESSFUL,
-                    cost: Amount {
-                        token_id: None,
-                        amount: "0".to_string(),
-                    },
+                    message_id: format!("{}-{}", sig, parser.index),
                 };
                 assert_eq!(event, expected_event);
             }
-            _ => panic!("Expected MessageExecuted event"),
+            _ => panic!("Expected GasRefunded event"),
         }
     }
 
@@ -220,9 +198,10 @@ mod tests {
             UiInstruction::Compiled(ix) => ix,
             _ => panic!("expected a compiled instruction"),
         };
-        let mut parser = ParserMessageExecuted::new(
+        let mut parser = ParserSignersRotated::new(
             tx.signature.to_string(),
             compiled_ix,
+            1,
             Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
             tx.account_keys,
         )

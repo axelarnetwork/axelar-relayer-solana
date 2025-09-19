@@ -47,7 +47,12 @@ async fn main() -> anyhow::Result<()> {
     our_addresses.push(gateway);
     our_addresses.push(gas_service);
 
-    let parser = TransactionParser::new(config.common_config.chain_name);
+    let parser = TransactionParser::new(
+        config.common_config.chain_name,
+        Pubkey::from_str(&config.solana_gas_service)?,
+        Pubkey::from_str(&config.solana_gateway)?,
+        Pubkey::from_str(&config.solana_its)?,
+    );
 
     let redis_client = redis::Client::open(config.common_config.redis_server.clone())?;
     let redis_conn = connection_manager(redis_client, None, None, None).await?;

@@ -96,6 +96,7 @@ pub async fn upsert_and_publish<SM: SolanaTransactionModel>(
             ixs,
             events: Vec::<String>::new(),
             cost_units: tx.cost_units as i64,
+            account_keys: tx.account_keys.clone(),
             retries: 3,
             created_at: None,
         })

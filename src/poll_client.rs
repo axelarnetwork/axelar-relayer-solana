@@ -1,10 +1,11 @@
-use std::{future::Future, str::FromStr, time::Duration};
+use std::{str::FromStr, time::Duration};
 
 use anyhow::anyhow;
+use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::types::{RpcGetTransactionResponse, SolanaTransaction};
-use relayer_core::error::ClientError;
+use relayer_core::{error::ClientError, utils::ThreadSafe};
 use solana_client::{
     rpc_client::GetConfirmedSignaturesForAddress2Config, rpc_config::RpcTransactionConfig,
 };
@@ -19,20 +20,22 @@ use crate::utils::{exec_curl_batch, get_tx_batch_command};
 
 const SIGNATURE_PAGE_LIMIT: usize = 100;
 
-pub trait SolanaRpcClientTrait: Send + Sync {
+#[async_trait]
+#[cfg_attr(any(test), mockall::automock)]
+pub trait SolanaRpcClientTrait: ThreadSafe {
     fn inner(&self) -> &RpcClient;
 
-    fn get_transaction_by_signature(
+    async fn get_transaction_by_signature(
         &self,
         signature: Signature,
-    ) -> impl Future<Output = Result<SolanaTransaction, anyhow::Error>>;
+    ) -> Result<SolanaTransaction, anyhow::Error>;
 
-    fn get_transactions_for_account(
+    async fn get_transactions_for_account(
         &self,
         address: &Pubkey,
         before: Option<Signature>,
         until: Option<Signature>,
-    ) -> impl Future<Output = Result<Vec<SolanaTransaction>, anyhow::Error>>;
+    ) -> Result<Vec<SolanaTransaction>, anyhow::Error>;
 }
 
 pub struct SolanaRpcClient {
@@ -55,6 +58,7 @@ impl SolanaRpcClient {
     }
 }
 
+#[async_trait]
 impl SolanaRpcClientTrait for SolanaRpcClient {
     fn inner(&self) -> &RpcClient {
         &self.client
@@ -65,9 +69,9 @@ impl SolanaRpcClientTrait for SolanaRpcClient {
         signature: Signature,
     ) -> Result<SolanaTransaction, anyhow::Error> {
         let config = RpcTransactionConfig {
-            encoding: Some(UiTransactionEncoding::Binary),
+            encoding: Some(UiTransactionEncoding::Json),
             commitment: Some(self.client.commitment()),
-            max_supported_transaction_version: None,
+            max_supported_transaction_version: Some(0),
         };
 
         let mut retries = 0;
