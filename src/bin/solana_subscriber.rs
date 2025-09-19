@@ -80,10 +80,16 @@ async fn main() -> anyhow::Result<()> {
 
     let gas_service_account = Pubkey::from_str(&config.solana_gas_service)?;
     let gateway_account = Pubkey::from_str(&config.solana_gateway)?;
+    let its_account = Pubkey::from_str(&config.solana_its)?;
 
     let handle_poller = tokio::spawn(async move {
         solana_poller
-            .run(gas_service_account, gateway_account, poller_cloned_token)
+            .run(
+                gas_service_account,
+                gateway_account,
+                its_account,
+                poller_cloned_token,
+            )
             .await;
     });
 
@@ -94,6 +100,7 @@ async fn main() -> anyhow::Result<()> {
             .run(
                 gas_service_account,
                 gateway_account,
+                its_account,
                 config,
                 listener_cloned_token,
             )

@@ -1,4 +1,4 @@
-CREATE TYPE account_poller_enum AS ENUM ('gas_service', 'gateway');
+CREATE TYPE account_poller_enum AS ENUM ('gas_service', 'gateway', 'its');
 
 CREATE TABLE IF NOT EXISTS solana_subscriber_cursors (
     context	TEXT NOT NULL,
