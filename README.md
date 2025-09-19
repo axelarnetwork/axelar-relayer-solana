@@ -1,5 +1,7 @@
 # Solana Relayer
 
+
+
 Relayer has four primary components:
 
 - **Subscriber** – Reads relevant transactions from Solana and publishes tasks to RabbitMQ.
@@ -108,3 +110,93 @@ The Distributor fetches unseen tasks from the GMP API and enqueues them in Rabbi
 ## Includer
 
 The Includer consumes tasks from RabbitMQ and sends corresponding messages to the Solana chain. It has not been implemented yet.
+
+# Setup
+
+### Prerequisites
+
+Ensure the following services are installed and running on your system:
+- **Redis Server**  
+- **RabbitMQ**
+- **PostgreSQL**
+
+### Installation
+
+1. **Clone the Repository**
+
+    ```bash
+    git clone https://github.com/axelarnetwork/axelar-relayer-solana.git
+    cd axelar-relayer-solana/
+    ```
+
+2. **Build the Project**
+
+    Compile the project using Cargo:
+
+    ```bash
+    cargo build --release
+    ```
+
+3. **Configure Environment and Config Variables**
+
+    Create a `.env` file by copying the provided template and update the necessary configurations:
+
+    ```bash
+    cp .env_template .env
+    ```
+
+    Open the `.env` file in your preferred text editor and set the environment variables.
+
+    Create a `config.{NETOWRK}.yaml` file by copying the provided template, where `NETOWRK` can be `localnet`,`devnet`,`testnet` or `mainnet` and update the necessary configurations:
+
+    ```bash
+    cp .config.template.yaml .config.{NETOWRK}.yaml
+    ```
+
+    Open the `config` file in your preferred text editor and set the environment variables.
+
+4. **Run the migrations for the Database**
+
+    Create a Database called `relayer` in PostgreSQL and then run 
+
+     ```bash
+    sqlx migrate run --database-url postgres://<USERNAME>:<PASSWORD>@<HOST>:<PORT>/<DATABASE>
+    ```
+    An common set-up example is: 
+
+     ```bash
+    sqlx migrate run --database-url postgres://postgres:postgres@localhost:5432/relayer
+    ```
+
+
+
+
+
+### Running the Components
+
+Each component can be run individually. It's recommended to use separate terminal sessions or a process manager to handle multiple components concurrently.
+Chains are run using separate binaries, so adjust the following commands accordingly: 
+
+- **Subscriber**
+
+    ```bash
+    cargo run --bin subscriber
+    ```
+
+- **Distributor**
+
+    ```bash
+    cargo run --bin distributor
+    ```
+
+- **Ingestor**
+
+    ```bash
+    cargo run --bin ingestor
+    ```
+
+- **Includer**
+
+    ```bash
+    cargo run --bin includer
+    ```
