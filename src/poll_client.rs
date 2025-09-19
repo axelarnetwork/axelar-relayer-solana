@@ -1,20 +1,14 @@
-use std::{future::Future, pin::Pin, str::FromStr, time::Duration};
+use std::{future::Future, str::FromStr, time::Duration};
 
 use anyhow::anyhow;
 use serde_json::Value;
 
 use crate::types::{RpcGetTransactionResponse, SolanaTransaction};
-use futures::lock::Mutex;
-use futures_util::stream::BoxStream;
 use relayer_core::error::ClientError;
 use solana_client::{
-    rpc_client::GetConfirmedSignaturesForAddress2Config,
-    rpc_config::{RpcTransactionConfig, RpcTransactionLogsConfig, RpcTransactionLogsFilter},
-    rpc_response::RpcLogsResponse,
+    rpc_client::GetConfirmedSignaturesForAddress2Config, rpc_config::RpcTransactionConfig,
 };
-use solana_pubsub_client::nonblocking::pubsub_client::PubsubClient;
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
-use solana_rpc_client_api::response::Response as RpcResponse;
 use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Signature;
@@ -24,14 +18,6 @@ use tracing::{debug, info};
 use crate::utils::{exec_curl_batch, get_tx_batch_command};
 
 const SIGNATURE_PAGE_LIMIT: usize = 100;
-
-// Match the nonblocking PubsubClient logs_subscribe return type
-// (BoxStream<'a, RpcResponse<RpcLogsResponse>>, UnsubscribeFn)
-// UnsubscribeFn = Box<dyn FnOnce() -> BoxFuture<'static, ()> + Send>
-pub type LogsSubscription<'a> = BoxStream<'a, RpcResponse<RpcLogsResponse>>;
-
-type UnsubFn =
-    Box<dyn FnOnce() -> Pin<Box<dyn core::future::Future<Output = ()> + Send>> + Send + 'static>;
 
 pub trait SolanaRpcClientTrait: Send + Sync {
     fn inner(&self) -> &RpcClient;
@@ -49,27 +35,10 @@ pub trait SolanaRpcClientTrait: Send + Sync {
     ) -> impl Future<Output = Result<Vec<SolanaTransaction>, anyhow::Error>>;
 }
 
-pub trait SolanaStreamClientTrait: Send + Sync {
-    fn inner(&self) -> &PubsubClient;
-
-    fn logs_subscriber(
-        &self,
-        account: String,
-    ) -> impl Future<Output = Result<LogsSubscription<'_>, anyhow::Error>>;
-
-    fn unsubscribe(&self) -> impl Future<Output = ()>;
-}
-
 pub struct SolanaRpcClient {
     client: RpcClient,
     max_retries: usize,
     rpc_url: String,
-}
-
-pub struct SolanaStreamClient {
-    client: PubsubClient,
-    commitment: CommitmentConfig,
-    unsub: Mutex<Option<UnsubFn>>,
 }
 
 impl SolanaRpcClient {
@@ -241,106 +210,3 @@ impl SolanaRpcClientTrait for SolanaRpcClient {
         }
     }
 }
-
-impl SolanaStreamClient {
-    pub async fn new(url: &str, commitment: CommitmentConfig) -> Result<Self, ClientError> {
-        Ok(Self {
-            client: PubsubClient::new(url)
-                .await
-                .map_err(|e| ClientError::ConnectionFailed(e.to_string()))?,
-            commitment,
-            unsub: Mutex::new(None),
-        })
-    }
-
-    pub async fn shutdown(self) -> Result<(), ClientError> {
-        self.client
-            .shutdown()
-            .await
-            .map_err(|e| ClientError::ConnectionFailed(e.to_string()))
-    }
-}
-
-impl SolanaStreamClientTrait for SolanaStreamClient {
-    fn inner(&self) -> &PubsubClient {
-        &self.client
-    }
-
-    async fn logs_subscriber(
-        &self,
-        account: String,
-    ) -> Result<LogsSubscription<'_>, anyhow::Error> {
-        let (sub, unsub) = self
-            .client
-            .logs_subscribe(
-                RpcTransactionLogsFilter::Mentions(vec![account]),
-                RpcTransactionLogsConfig {
-                    commitment: Some(self.commitment),
-                },
-            )
-            .await
-            .map_err(|e| anyhow!(e.to_string()))?;
-        *self.unsub.lock().await = Some(unsub);
-        Ok(sub)
-    }
-
-    async fn unsubscribe(&self) {
-        if let Some(unsub) = self.unsub.lock().await.take() {
-            unsub().await; // consume the FnOnce
-        }
-    }
-}
-
-// #[cfg(test)]
-// mod tests {
-//     use std::str::FromStr;
-
-//     use dotenv::dotenv;
-//     use relayer_core::config::config_from_yaml;
-
-//     use crate::config::SolanaConfig;
-
-//     use super::*;
-
-//     //comment out tests to not spam RPC on every push
-
-//     #[tokio::test]
-//     async fn test_get_transaction_by_signature() {
-//         dotenv().ok();
-//         let network = std::env::var("NETWORK").expect("NETWORK must be set");
-//         let config: SolanaConfig = config_from_yaml(&format!("config.{}.yaml", network)).unwrap();
-
-//         let solana_client: SolanaRpcClient =
-//             SolanaRpcClient::new(&config.solana_poll_rpc, CommitmentConfig::confirmed(), 3)
-//                 .unwrap();
-
-//         let signature = Signature::from_str("3ayECdJeV7uQSrzkgGuxMhcG1LMksRnSXGjciNowJZmEnoWWKcGRHU6WKvLa5i5KV7FJDGnwJF2Y3nFYmHmkaAnx").unwrap();
-//         let transaction = solana_client
-//             .get_transaction_by_signature(signature)
-//             .await
-//             .unwrap();
-
-//         println!("Transaction: {:?}", transaction);
-//         println!("Transaction logs: {:?}", transaction.logs);
-//     }
-
-// #[tokio::test]
-// async fn test_get_transactions_for_account() {
-//     dotenv().ok();
-//     let network = std::env::var("NETWORK").expect("NETWORK must be set");
-//     let config: SolanaConfig = config_from_yaml(&format!("config.{}.yaml", network)).unwrap();
-
-//     let solana_client: SolanaRpcClient =
-//         SolanaRpcClient::new(&config.solana_poll_rpc, CommitmentConfig::confirmed(), 3)
-//             .unwrap();
-
-//     let _transactions = solana_client
-//         .get_transactions_for_account(
-//             &Pubkey::from_str("9EHADvhP1vnYsk1XVYjJ4qpZ9jP33nHy84wo2CGnDDij").unwrap(),
-//             None,
-//             None,
-//         )
-//         .await
-//         .unwrap();
-// }
-//}
