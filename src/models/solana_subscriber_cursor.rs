@@ -1,24 +1,26 @@
 use anyhow::Result;
+use async_trait::async_trait;
+use relayer_core::utils::ThreadSafe;
 use sqlx::PgPool;
-use std::future::Future;
 
+#[async_trait]
 #[cfg_attr(any(test), mockall::automock)]
-pub trait SubscriberCursor {
+pub trait SubscriberCursor: ThreadSafe {
     // Subscriber functions
-    fn store_latest_signature(
+    async fn store_latest_signature(
         &self,
         context: String,
         signature: String,
         account_type: AccountPollerEnum,
-    ) -> impl Future<Output = Result<()>>;
-    fn get_latest_signature(
+    ) -> Result<()>;
+    async fn get_latest_signature(
         &self,
         context: String,
         account_type: AccountPollerEnum,
-    ) -> impl Future<Output = Result<Option<String>>>;
+    ) -> Result<Option<String>>;
 }
 
-#[derive(Clone, Debug, sqlx::Type)]
+#[derive(Clone, Debug, sqlx::Type, PartialEq)]
 #[sqlx(type_name = "account_poller_enum")]
 pub enum AccountPollerEnum {
     #[sqlx(rename = "gas_service")]
@@ -41,6 +43,7 @@ impl PostgresDB {
     }
 }
 
+#[async_trait]
 impl SubscriberCursor for PostgresDB {
     async fn store_latest_signature(
         &self,

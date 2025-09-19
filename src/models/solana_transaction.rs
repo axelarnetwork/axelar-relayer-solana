@@ -6,6 +6,7 @@ use relayer_core::utils::ThreadSafe;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 
+#[cfg_attr(any(test), mockall::automock)]
 #[async_trait]
 pub trait SolanaTransactionModel: ThreadSafe {
     async fn find(&self, id: String) -> Result<Option<SolanaTransactionData>>;
