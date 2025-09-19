@@ -1,5 +1,7 @@
 # Solana Relayer
 
+
+
 Relayer has four primary components:
 
 - **Subscriber** – Reads relevant transactions from Solana and publishes tasks to RabbitMQ.
@@ -34,15 +36,15 @@ These program addresses are configured via the `solana_gateway`, `solana_gas_ser
 
 The first and primary way a subscriber receives relevant transactions is by subscribing to real-time events emitted by the Programs it monitors. On launch, the listener opens 3 different socket connections in parallel, using [Tokio](https://docs.rs/tokio/latest/tokio/) tasks, one for each of the Programs. Upon receiving a transaction, it spawns a new task to parse it and publish it to the Queue, and it also saves it in a PostgreSQL instance.
 
-While real time streaming is great for low latency, there are pitfalls that need to be avoided. First off, while the subscriber is down (for maintenance, due to restarts etc), all events emitted by the Programs will be missed. Also, socket connection failures are sometimes silent and hard to detect. Thus, we employ a second back-up strategy:
+While real-time streaming is great for low latency, there are pitfalls that need to be avoided. First off, while the subscriber is down (for maintenance, due to restarts etc), all events emitted by the Programs will be missed. Also, socket connection failures are sometimes silent and hard to detect. Thus, we employ a second back-up strategy:
 
 ### Poller
 
-There is a separate Task running in the background for each Program, which periodically polls the RPC for any transactions with the addresses of the Programs, using a configurable interval. In case of a failure, it has an exponential back-off retry mechanism. In order to avoid duplicate transaction parsing (in case the listener has already processed this transaction), the poller only processes the transactions it got if they have not been persisted before in the database. There is also a cursor saved which indicates the last transaction that was checked by the poller, so as to only make RPC requests for new transactions (from last_checked up-to-date). The poller and the listener act independently and are agnostic of each other.
+There is a separate Task running in the background for each Program, which periodically polls the RPC for any transactions with the addresses of the Programs, using a configurable interval. In case of a failure, it has an exponential back-off retry mechanism. In order to avoid duplicate transaction parsing (in case the listener has already processed this transaction), the poller only processes the transactions it received if they have not been persisted before in the database. There is also a cursor saved which indicates the last transaction that was checked by the poller, so as to only make RPC requests for new transactions (from last_checked up-to-date). The poller and the listener act independently and are agnostic of each other.
 
 You can find the different implementations under `src/subscriber_listener.rs` and `src/subscriber_poller.rs` accordingly.
 
-These two subscriber mechanisms together ensure that all relevant events are processed real-time, and in cases of restarts or connection downtimes, we never miss a transaction (or have duplicates). Functions and tasks are non-blocking, to ensure parallel processing and high throughput.
+These two subscriber mechanisms together ensure that all relevant events are processed real-time, and in cases of restarts or connection downtime, we never miss a transaction (or have duplicates). Functions and tasks are non-blocking, to ensure parallel processing and high throughput.
 
 ## Ingestor
 
@@ -108,3 +110,93 @@ The Distributor fetches unseen tasks from the GMP API and enqueues them in Rabbi
 ## Includer
 
 The Includer consumes tasks from RabbitMQ and sends corresponding messages to the Solana chain. It has not been implemented yet.
+
+# Setup
+
+### Prerequisites
+
+Ensure the following services are installed and running on your system:
+- **Redis Server**  
+- **RabbitMQ**
+- **PostgreSQL**
+
+### Installation
+
+1. **Clone the Repository**
+
+    ```bash
+    git clone https://github.com/axelarnetwork/axelar-relayer-solana.git
+    cd axelar-relayer-solana/
+    ```
+
+2. **Build the Project**
+
+    Compile the project using Cargo:
+
+    ```bash
+    cargo build --release
+    ```
+
+3. **Configure Environment and Config Variables**
+
+    Create a `.env` file by copying the provided template and update the necessary configurations:
+
+    ```bash
+    cp .env_template .env
+    ```
+
+    Open the `.env` file in your preferred text editor and set the environment variables.
+
+    Create a `config.{NETWORK}.yaml` file by copying the provided template, where `NETWORK` can be `localnet`, `devnet`, `testnet` or `mainnet` and update the necessary configurations:
+
+    ```bash
+    cp config.template.yaml config.{NETWORK}.yaml
+    ```
+
+    Open the `config` file in your preferred text editor and set the environment variables.
+
+4. **Run the migrations for the Database**
+
+    Create a Database called `relayer` in PostgreSQL and then run 
+
+     ```bash
+    sqlx migrate run --database-url postgres://<USERNAME>:<PASSWORD>@<HOST>:<PORT>/<DATABASE>
+    ```
+    An common set-up example is: 
+
+     ```bash
+    sqlx migrate run --database-url postgres://postgres:postgres@localhost:5432/relayer
+    ```
+
+
+
+
+
+### Running the Components
+
+Each component can be run individually. It's recommended to use separate terminal sessions or a process manager to handle multiple components concurrently.
+Chains are run using separate binaries, so adjust the following commands accordingly: 
+
+- **Subscriber**
+
+    ```bash
+    cargo run --bin subscriber
+    ```
+
+- **Distributor**
+
+    ```bash
+    cargo run --bin distributor
+    ```
+
+- **Ingestor**
+
+    ```bash
+    cargo run --bin ingestor
+    ```
+
+- **Includer**
+
+    ```bash
+    cargo run --bin includer
+    ```
