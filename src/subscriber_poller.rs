@@ -2,11 +2,11 @@ use std::{future::Future, str::FromStr, sync::Arc, time::Duration};
 
 use crate::types::SolanaTransaction;
 use crate::{
-    client::SolanaRpcClientTrait,
     models::{
         solana_subscriber_cursor::{AccountPollerEnum, SubscriberCursor},
         solana_transaction::SolanaTransactionModel,
     },
+    poll_client::SolanaRpcClientTrait,
     utils::upsert_and_publish,
 };
 use anyhow::anyhow;

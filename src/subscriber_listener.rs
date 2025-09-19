@@ -1,12 +1,10 @@
 use std::{future::Future, str::FromStr, sync::Arc, time::Duration};
 
 use crate::{
-    client::{
-        LogsSubscription, SolanaRpcClient, SolanaRpcClientTrait, SolanaStreamClient,
-        SolanaStreamClientTrait,
-    },
     config::SolanaConfig,
     models::solana_transaction::SolanaTransactionModel,
+    poll_client::{SolanaRpcClient, SolanaRpcClientTrait},
+    stream_client::{LogsSubscription, SolanaStreamClient, SolanaStreamClientTrait},
 };
 
 use crate::types::SolanaTransaction;

@@ -5,9 +5,10 @@ use relayer_core::logging::setup_logging;
 use relayer_core::redis::connection_manager;
 use relayer_core::{queue::Queue, utils::setup_heartbeat};
 use solana::{
-    client::{SolanaRpcClient, SolanaStreamClient},
     config::SolanaConfig,
     models::{solana_subscriber_cursor::PostgresDB, solana_transaction::PgSolanaTransactionModel},
+    poll_client::SolanaRpcClient,
+    stream_client::SolanaStreamClient,
     subscriber_listener::SolanaListener,
     subscriber_poller::SolanaPoller,
 };
