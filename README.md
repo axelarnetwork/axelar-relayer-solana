@@ -5,8 +5,8 @@
 Relayer has four primary components:
 
 - **Subscriber** – Reads relevant transactions from Solana and publishes tasks to RabbitMQ.
-- **Distributor** – Reads upcoming tasks from the GMP API and publishes them to RabbitMQ.
-- **Ingestor** – Consumes transactions from RabbitMQ published by the Subscriber, parses them and forwards them to the GMP API.
+- **Distributor** – Reads incoming tasks from the GMP API and publishes them to RabbitMQ.
+- **Ingestor** – Consumes transactions and tasks from RabbitMQ published by the Subscriber and the Distributor, parses them and forwards them to the GMP API.
 - **Includer** – Consumes tasks from RabbitMQ published by the Distributor and performs the necessary actions on Solana.
 
 A big part of the code which is chain-agnostic and the same across different chain integrations to Axelar can be found in the [relayer-core](https://github.com/commonprefix/axelar-relayer-core) repo. That includes most of the Queue and Database specific code, as well as mechanisms for retries, tracing and other features.
@@ -40,7 +40,7 @@ While real-time streaming is great for low latency, there are pitfalls that need
 
 ### Poller
 
-There is a separate Task running in the background for each Program, which periodically polls the RPC for any transactions with the addresses of the Programs, using a configurable interval. In case of a failure, it has an exponential back-off retry mechanism. In order to avoid duplicate transaction parsing (in case the listener has already processed this transaction), the poller only processes the transactions it received if they have not been persisted before in the database. There is also a cursor saved which indicates the last transaction that was checked by the poller, so as to only make RPC requests for new transactions (from last_checked up-to-date). The poller and the listener act independently and are agnostic of each other.
+There is a separate Task running in the background for each Program, which periodically polls the RPC for any transactions with the addresses of the Programs, using a configurable interval. In case of a failure, it has an exponential back-off retry mechanism. In order to avoid duplicate transaction parsing (in case the listener has already processed this transaction), the poller only processes the transactions it received if they have not been persisted before in the database. There is also a cursor saved which indicates the last transaction that was checked by the poller, so as to only make RPC requests for new transactions (from `last_checked` up-to-date). The poller and the listener act independently and are agnostic of each other.
 
 You can find the different implementations under `src/subscriber_listener.rs` and `src/subscriber_poller.rs` accordingly.
 
@@ -54,7 +54,7 @@ directory. Each parser must:
 1. Determine whether it should handle the transaction.
 2. Create an event to send to the GMP API.
 
-The parser is constructed to parse [Anchor's](https://www.anchor-lang.com/docs) `emit_cpi!` events. While normal `sol_log_data` and `emit!` events live in the `logs` field of a transaction, that is not the case for the `emit_cpi!` events. Instead, the program calls itself in an instruction known as Self-CPI ([Cross Program Invocation](https://solana.com/docs/core/cpi)), and encodes the event emitted in the `data` field of that instruction. This is done to prevent various attacks and to provide a more structured way to parse events in place of the normal `logs` which are just Strings. Thus, each parser tries to decode the `data` field and see if it matches the Event struct it expects, while also making security checks (e.g. confirming that the Program that emitted the event matches the expected Program).
+The parser is constructed to parse [Anchor's](https://www.anchor-lang.com/docs) `emit_cpi!` events. While normal `sol_log_data` and `emit!` events live in the `logs` field of a transaction, that is not the case for the `emit_cpi!` events. Instead, the program calls itself in an instruction known as Self-CPI ([Cross Program Invocation](https://solana.com/docs/core/cpi)), and encodes the event emitted in the `data` field of that instruction. This is done to prevent various attacks and to provide a more structured way to parse events in place of the normal `logs`. Thus, each parser tries to decode the `data` field and see if it matches the Event struct it expects, while also making security checks (e.g. confirming that the Program that emitted the event matches the expected Program).
 
 ### Supported Event Types
 
@@ -167,10 +167,6 @@ Ensure the following services are installed and running on your system:
      ```bash
     sqlx migrate run --database-url postgres://postgres:postgres@localhost:5432/relayer
     ```
-
-
-
-
 
 ### Running the Components
 
