@@ -33,9 +33,13 @@ thiserror = "2.0.3"
 hex = "0.4.3"
 tokio-util = "0.7.12"
 bs58 = "0.5"
-borsh = "1"
+borsh = { version = "1", features = ["derive"] }
 base64 = "0.22.1"
 httpmock = "0.7.0"
+#axelar-solana-gateway-v2 = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "v2-anchor-gw", package = "axelar-solana-gateway-v2" }
+axelar-solana-gateway = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "gateway-event-cpi", package = "axelar-solana-gateway" }
+event-cpi = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "gateway-event-cpi", package = "event-cpi" }
+anchor-lang = "0.31.1"
 
 [dev-dependencies]
 mockall = "0.13.1"

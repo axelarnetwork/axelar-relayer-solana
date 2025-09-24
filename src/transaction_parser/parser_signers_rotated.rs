@@ -1,10 +1,11 @@
 use crate::error::TransactionParsingError;
 use crate::transaction_parser::common::check_discriminators_and_address;
-use crate::transaction_parser::discriminators::{CPI_EVENT_DISC, SIGNERS_ROTATED_EVENT_DISC};
+use crate::transaction_parser::discriminators::CPI_EVENT_DISC;
 use crate::transaction_parser::message_matching_key::MessageMatchingKey;
 use crate::transaction_parser::parser::{Parser, ParserConfig};
 use async_trait::async_trait;
 use borsh::BorshDeserialize;
+use event_cpi::Discriminator;
 use relayer_core::gmp_api::gmp_types::{
     CommonEventFields, Event, EventMetadata, SignersRotatedEventMetadata,
 };
@@ -12,15 +13,11 @@ use solana_sdk::pubkey::Pubkey;
 use solana_transaction_status::UiCompiledInstruction;
 use tracing::debug;
 
-#[derive(BorshDeserialize, Clone, Debug)]
-pub struct SignersRotatedMessage {
-    pub signers_hash: String,
-    pub epoch: u64,
-}
+use axelar_solana_gateway::events::VerifierSetRotatedEvent;
 
 pub struct ParserSignersRotated {
     signature: String,
-    parsed: Option<SignersRotatedMessage>,
+    parsed: Option<VerifierSetRotatedEvent>,
     instruction: UiCompiledInstruction,
     config: ParserConfig,
     index: u64,
@@ -41,7 +38,13 @@ impl ParserSignersRotated {
             instruction,
             config: ParserConfig {
                 event_cpi_discriminator: CPI_EVENT_DISC,
-                event_type_discriminator: SIGNERS_ROTATED_EVENT_DISC,
+                event_type_discriminator: VerifierSetRotatedEvent::DISCRIMINATOR
+                    .get(0..8)
+                    .ok_or_else(|| {
+                        TransactionParsingError::Message("Invalid discriminator".to_string())
+                    })?
+                    .try_into()
+                    .expect("8-byte discriminator"),
                 expected_contract_address,
             },
             index,
@@ -53,15 +56,15 @@ impl ParserSignersRotated {
         instruction: &UiCompiledInstruction,
         config: ParserConfig,
         accounts: &[String],
-    ) -> Result<SignersRotatedMessage, TransactionParsingError> {
+    ) -> Result<VerifierSetRotatedEvent, TransactionParsingError> {
         let payload = check_discriminators_and_address(instruction, config, accounts)?;
-        match SignersRotatedMessage::try_from_slice(payload.into_iter().as_slice()) {
+        match VerifierSetRotatedEvent::try_from_slice(payload.into_iter().as_slice()) {
             Ok(event) => {
-                debug!("Signers Rotated event={:?}", event);
+                debug!("Verifier Set Rotated event={:?}", event);
                 Ok(event)
             }
             Err(_) => Err(TransactionParsingError::InvalidInstructionData(
-                "invalid signers rotated event".to_string(),
+                "invalid verifier set rotated event".to_string(),
             )),
         }
     }
@@ -92,7 +95,7 @@ impl Parser for ParserSignersRotated {
 
     async fn key(&self) -> Result<MessageMatchingKey, TransactionParsingError> {
         Err(TransactionParsingError::Message(
-            "MessageMatchingKey is not available for SignersRotatedEvent".to_string(),
+            "MessageMatchingKey is not available for VerifierSetRotatedEvent".to_string(),
         ))
     }
 
@@ -101,6 +104,17 @@ impl Parser for ParserSignersRotated {
             .parsed
             .clone()
             .ok_or_else(|| TransactionParsingError::Message("Missing parsed".to_string()))?;
+
+        let epoch = {
+            let le = parsed.epoch.to_le_bytes();
+            let first8 = le.get(..8).ok_or_else(|| {
+                TransactionParsingError::InvalidInstructionData("epoch too short".to_string())
+            })?;
+            let arr: [u8; 8] = first8.try_into().map_err(|_| {
+                TransactionParsingError::InvalidInstructionData("epoch cast failed".to_string())
+            })?;
+            u64::from_le_bytes(arr)
+        };
 
         Ok(Event::SignersRotated {
             common: CommonEventFields {
@@ -115,8 +129,8 @@ impl Parser for ParserSignersRotated {
                         timestamp: chrono::Utc::now()
                             .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
                     },
-                    signers_hash: Some(parsed.signers_hash.clone()),
-                    epoch: Some(parsed.epoch),
+                    signers_hash: Some(hex::encode(parsed.verifier_set_hash)),
+                    epoch: Some(epoch),
                 }),
             },
             message_id: format!("{}-{}", self.signature, self.index),
@@ -175,10 +189,14 @@ mod tests {
                                 timestamp: chrono::Utc::now()
                                     .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
                             },
-                            signers_hash: Some(
-                                parser.parsed.as_ref().unwrap().signers_hash.clone(),
-                            ),
-                            epoch: Some(parser.parsed.as_ref().unwrap().epoch),
+                            signers_hash: Some(hex::encode(
+                                parser.parsed.as_ref().unwrap().verifier_set_hash,
+                            )),
+                            epoch: Some(u64::from_le_bytes(
+                                parser.parsed.as_ref().unwrap().epoch.to_le_bytes()[..8]
+                                    .try_into()
+                                    .unwrap(),
+                            )),
                         }),
                     },
                     message_id: format!("{}-{}", sig, parser.index),

@@ -1,31 +1,19 @@
 use crate::error::TransactionParsingError;
 use crate::transaction_parser::common::check_discriminators_and_address;
-use crate::transaction_parser::discriminators::{CALL_CONTRACT_EVENT_DISC, CPI_EVENT_DISC};
+use crate::transaction_parser::discriminators::CPI_EVENT_DISC;
 use crate::transaction_parser::message_matching_key::MessageMatchingKey;
 use crate::transaction_parser::parser::{Parser, ParserConfig};
 use async_trait::async_trait;
+use axelar_solana_gateway::events::CallContractEvent;
 use base64::prelude::BASE64_STANDARD;
 use base64::Engine;
 use borsh::BorshDeserialize;
+use event_cpi::Discriminator;
 use relayer_core::gmp_api::gmp_types::{CommonEventFields, Event, EventMetadata, GatewayV2Message};
 use solana_sdk::pubkey::Pubkey;
 use solana_transaction_status::UiCompiledInstruction;
 use std::collections::HashMap;
 use tracing::debug;
-
-#[derive(BorshDeserialize, Clone, Debug)]
-pub struct CallContractEvent {
-    /// Sender's public key.
-    pub sender_key: Pubkey,
-    /// Payload hash, 32 bytes.
-    pub payload_hash: [u8; 32],
-    /// Destination chain as a `String`.
-    pub destination_chain: String,
-    /// Destination contract address as a `String`.
-    pub destination_contract_address: String,
-    /// Payload data as a `Vec<u8>`.
-    pub payload: Vec<u8>,
-}
 
 pub struct ParserCallContract {
     signature: String,
@@ -46,13 +34,18 @@ impl ParserCallContract {
         index: u64,
         expected_contract_address: Pubkey,
     ) -> Result<Self, TransactionParsingError> {
+        let event_type_discriminator: [u8; 8] = CallContractEvent::DISCRIMINATOR
+            .get(0..8)
+            .ok_or_else(|| TransactionParsingError::Message("Invalid discriminator".to_string()))?
+            .try_into()
+            .expect("8-byte discriminator");
         Ok(Self {
             signature,
             parsed: None,
             instruction,
             config: ParserConfig {
                 event_cpi_discriminator: CPI_EVENT_DISC,
-                event_type_discriminator: CALL_CONTRACT_EVENT_DISC,
+                event_type_discriminator,
                 expected_contract_address,
             },
             accounts,
@@ -67,7 +60,7 @@ impl ParserCallContract {
         accounts: &[String],
     ) -> Result<CallContractEvent, TransactionParsingError> {
         let payload = check_discriminators_and_address(instruction, config, accounts)?;
-        match CallContractEvent::try_from_slice(payload.into_iter().as_slice()) {
+        match CallContractEvent::try_from_slice(&payload) {
             Ok(event) => {
                 debug!("Call Contract event={:?}", event);
                 Ok(event)
@@ -127,7 +120,7 @@ impl Parser for ParserCallContract {
             .ok_or_else(|| TransactionParsingError::Message("Missing message_id".to_string()))?;
 
         let source_context = HashMap::from([
-            ("source_address".to_owned(), parsed.sender_key.to_string()),
+            ("source_address".to_owned(), parsed.sender.to_string()),
             (
                 "destination_address".to_owned(),
                 parsed.destination_contract_address.to_string(),
@@ -154,7 +147,7 @@ impl Parser for ParserCallContract {
             message: GatewayV2Message {
                 message_id,
                 source_chain: self.chain_name.to_string(),
-                source_address: parsed.sender_key.to_string(),
+                source_address: parsed.sender.to_string(),
                 destination_address: parsed.destination_contract_address.to_string(),
                 payload_hash: BASE64_STANDARD.encode(parsed.payload_hash),
             },
@@ -218,7 +211,7 @@ mod tests {
                             source_context: Some(HashMap::from([
                                 (
                                     "source_address".to_owned(),
-                                    parser.parsed.as_ref().unwrap().sender_key.to_string(),
+                                    parser.parsed.as_ref().unwrap().sender.to_string(),
                                 ),
                                 (
                                     "destination_address".to_owned(),
@@ -246,7 +239,7 @@ mod tests {
                     message: GatewayV2Message {
                         message_id: format!("{}-1", sig),
                         source_chain: "solana".to_string(),
-                        source_address: parser.parsed.as_ref().unwrap().sender_key.to_string(),
+                        source_address: parser.parsed.as_ref().unwrap().sender.to_string(),
                         destination_address: parser
                             .parsed
                             .as_ref()

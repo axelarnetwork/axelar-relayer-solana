@@ -1,28 +1,19 @@
 use crate::error::TransactionParsingError;
 use crate::transaction_parser::common::check_discriminators_and_address;
-use crate::transaction_parser::discriminators::{CPI_EVENT_DISC, MESSAGE_APPROVED_EVENT_DISC};
+use crate::transaction_parser::discriminators::CPI_EVENT_DISC;
 use crate::transaction_parser::message_matching_key::MessageMatchingKey;
 use crate::transaction_parser::parser::{Parser, ParserConfig};
 use async_trait::async_trait;
+use axelar_solana_gateway::events::MessageApprovedEvent;
 use borsh::BorshDeserialize;
 use bs58::encode;
+use event_cpi::Discriminator;
 use relayer_core::gmp_api::gmp_types::{
     Amount, CommonEventFields, Event, EventMetadata, GatewayV2Message, MessageApprovedEventMetadata,
 };
 use solana_sdk::pubkey::Pubkey;
 use solana_transaction_status::UiCompiledInstruction;
 use tracing::debug;
-
-#[derive(BorshDeserialize, Clone, Debug)]
-pub struct MessageApprovedEvent {
-    pub command_id: [u8; 32],
-    pub destination_address: Pubkey,
-    pub payload_hash: [u8; 32],
-    pub source_chain: String,
-    pub message_id: String,
-    pub source_address: String,
-    pub destination_chain: String,
-}
 
 pub struct ParserMessageApproved {
     signature: String,
@@ -39,13 +30,18 @@ impl ParserMessageApproved {
         expected_contract_address: Pubkey,
         accounts: Vec<String>,
     ) -> Result<Self, TransactionParsingError> {
+        let event_type_discriminator: [u8; 8] = MessageApprovedEvent::DISCRIMINATOR
+            .get(0..8)
+            .ok_or_else(|| TransactionParsingError::Message("Invalid discriminator".to_string()))?
+            .try_into()
+            .expect("8-byte discriminator");
         Ok(Self {
             signature,
             parsed: None,
             instruction,
             config: ParserConfig {
                 event_cpi_discriminator: CPI_EVENT_DISC,
-                event_type_discriminator: MESSAGE_APPROVED_EVENT_DISC,
+                event_type_discriminator,
                 expected_contract_address,
             },
             accounts,
@@ -130,7 +126,7 @@ impl Parser for ParserMessageApproved {
                 }),
             },
             message: GatewayV2Message {
-                message_id: parsed.message_id.clone(),
+                message_id: parsed.cc_id.clone(),
                 source_chain: parsed.source_chain.clone(),
                 source_address: parsed.source_address.clone(),
                 destination_address: parsed.destination_address.to_string(),
@@ -206,7 +202,7 @@ mod tests {
                         }),
                     },
                     message: GatewayV2Message {
-                        message_id: parser.parsed.as_ref().unwrap().message_id.clone(),
+                        message_id: parser.parsed.as_ref().unwrap().cc_id.clone(),
                         source_chain: parser.parsed.as_ref().unwrap().source_chain.clone(),
                         source_address: parser.parsed.as_ref().unwrap().source_address.clone(),
                         destination_address: parser
