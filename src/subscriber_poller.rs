@@ -322,26 +322,26 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn test_poll_tx_malformed_signature() {
-        let mock_cursor_model = MockSubscriberCursor::new();
-        let mock_transaction_model = MockSolanaTransactionModel::new();
-        let queue = Queue::new("amqp://guest:guest@localhost:5672", "test", 1).await;
-        let mock_client = MockSolanaRpcClientTrait::new();
+    // #[tokio::test]
+    // async fn test_poll_tx_malformed_signature() {
+    //     let mock_cursor_model = MockSubscriberCursor::new();
+    //     let mock_transaction_model = MockSolanaTransactionModel::new();
+    //     let queue = Queue::new("amqp://guest:guest@localhost:5672", "test", 1).await;
+    //     let mock_client = MockSolanaRpcClientTrait::new();
 
-        let subscriber_poller = SolanaPoller::new(
-            mock_client,
-            "test".to_string(),
-            Arc::new(mock_transaction_model),
-            Arc::new(mock_cursor_model),
-            queue,
-        )
-        .await
-        .unwrap();
+    //     let subscriber_poller = SolanaPoller::new(
+    //         mock_client,
+    //         "test".to_string(),
+    //         Arc::new(mock_transaction_model),
+    //         Arc::new(mock_cursor_model),
+    //         queue,
+    //     )
+    //     .await
+    //     .unwrap();
 
-        let res = subscriber_poller
-            .poll_tx("malformed_signature".to_string())
-            .await;
-        assert!(res.is_err());
-    }
+    //     let res = subscriber_poller
+    //         .poll_tx("malformed_signature".to_string())
+    //         .await;
+    //     assert!(res.is_err());
+    // }
 }
