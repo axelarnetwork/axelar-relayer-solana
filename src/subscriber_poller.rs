@@ -11,7 +11,7 @@ use crate::{
 };
 use anyhow::anyhow;
 use async_trait::async_trait;
-use relayer_core::{error::SubscriberError, queue::Queue};
+use relayer_core::{error::SubscriberError, queue::QueueTrait};
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Signature;
 use tokio::select;
@@ -38,7 +38,7 @@ pub struct SolanaPoller<RPC: SolanaRpcClientTrait, SC: SubscriberCursor, SM: Sol
     cursor_model: Arc<SC>,
     context: String,
     transaction_model: Arc<SM>,
-    queue: Arc<Queue>,
+    queue: Arc<dyn QueueTrait>,
 }
 
 impl<RPC: SolanaRpcClientTrait, SC: SubscriberCursor, SM: SolanaTransactionModel>
@@ -49,7 +49,7 @@ impl<RPC: SolanaRpcClientTrait, SC: SubscriberCursor, SM: SolanaTransactionModel
         context: String,
         transaction_model: Arc<SM>,
         cursor_model: Arc<SC>,
-        queue: Arc<Queue>,
+        queue: Arc<dyn QueueTrait>,
     ) -> Result<Self, SubscriberError> {
         Ok(SolanaPoller {
             client,
@@ -198,13 +198,16 @@ mod tests {
     use crate::models::solana_transaction::MockSolanaTransactionModel;
     use crate::poll_client::MockSolanaRpcClientTrait;
 
+    #[cfg(test)]
+    use relayer_core::queue::MockQueueTrait;
+
     use super::*;
 
     #[tokio::test]
     async fn test_poll_account() {
         let mut mock_cursor_model = MockSubscriberCursor::new();
         let mock_transaction_model = MockSolanaTransactionModel::new();
-        let queue = Queue::new("amqp://guest:guest@localhost:5672", "test", 1).await;
+        let queue: Arc<dyn QueueTrait> = Arc::new(MockQueueTrait::new());
         let mut mock_client = MockSolanaRpcClientTrait::new();
 
         mock_client
@@ -273,7 +276,7 @@ mod tests {
     async fn test_poll_tx() {
         let mock_cursor_model = MockSubscriberCursor::new();
         let mock_transaction_model = MockSolanaTransactionModel::new();
-        let queue = Queue::new("amqp://guest:guest@localhost:5672", "test", 1).await;
+        let queue: Arc<dyn QueueTrait> = Arc::new(MockQueueTrait::new());
         let mut mock_client = MockSolanaRpcClientTrait::new();
 
         mock_client
@@ -322,26 +325,26 @@ mod tests {
         );
     }
 
-    // #[tokio::test]
-    // async fn test_poll_tx_malformed_signature() {
-    //     let mock_cursor_model = MockSubscriberCursor::new();
-    //     let mock_transaction_model = MockSolanaTransactionModel::new();
-    //     let queue = Queue::new("amqp://guest:guest@localhost:5672", "test", 1).await;
-    //     let mock_client = MockSolanaRpcClientTrait::new();
+    #[tokio::test]
+    async fn test_poll_tx_malformed_signature() {
+        let mock_cursor_model = MockSubscriberCursor::new();
+        let mock_transaction_model = MockSolanaTransactionModel::new();
+        let queue: Arc<dyn QueueTrait> = Arc::new(MockQueueTrait::new());
+        let mock_client = MockSolanaRpcClientTrait::new();
 
-    //     let subscriber_poller = SolanaPoller::new(
-    //         mock_client,
-    //         "test".to_string(),
-    //         Arc::new(mock_transaction_model),
-    //         Arc::new(mock_cursor_model),
-    //         queue,
-    //     )
-    //     .await
-    //     .unwrap();
+        let subscriber_poller = SolanaPoller::new(
+            mock_client,
+            "test".to_string(),
+            Arc::new(mock_transaction_model),
+            Arc::new(mock_cursor_model),
+            queue,
+        )
+        .await
+        .unwrap();
 
-    //     let res = subscriber_poller
-    //         .poll_tx("malformed_signature".to_string())
-    //         .await;
-    //     assert!(res.is_err());
-    // }
+        let res = subscriber_poller
+            .poll_tx("malformed_signature".to_string())
+            .await;
+        assert!(res.is_err());
+    }
 }

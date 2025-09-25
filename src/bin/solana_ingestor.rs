@@ -2,7 +2,7 @@ use dotenv::dotenv;
 use relayer_core::config::config_from_yaml;
 use relayer_core::logging::setup_logging;
 use relayer_core::logging_ctx_cache::RedisLoggingCtxCache;
-use relayer_core::queue::Queue;
+use relayer_core::queue::{Queue, QueueTrait};
 use relayer_core::redis::connection_manager;
 use relayer_core::{gmp_api, ingestor};
 use solana::config::SolanaConfig;
@@ -21,13 +21,13 @@ async fn main() -> anyhow::Result<()> {
 
     let _guard = setup_logging(&config.common_config);
 
-    let tasks_queue = Queue::new(
+    let tasks_queue: Arc<dyn QueueTrait> = Queue::new(
         &config.common_config.queue_address,
         "ingestor_tasks",
         config.common_config.num_workers,
     )
     .await;
-    let events_queue = Queue::new(
+    let events_queue: Arc<dyn QueueTrait> = Queue::new(
         &config.common_config.queue_address,
         "events",
         config.common_config.num_workers,

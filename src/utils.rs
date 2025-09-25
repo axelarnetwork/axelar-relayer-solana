@@ -1,6 +1,6 @@
 use crate::types::SolanaTransaction;
 use anyhow::anyhow;
-use relayer_core::queue::{Queue, QueueItem};
+use relayer_core::queue::{QueueItem, QueueTrait};
 use serde_json::json;
 use std::str::FromStr;
 use tracing::{debug, error};
@@ -79,7 +79,7 @@ fn get_commitment_str(commitment: CommitmentConfig) -> String {
 
 pub async fn upsert_and_publish<SM: SolanaTransactionModel>(
     transaction_model: &Arc<SM>,
-    queue: &Arc<Queue>,
+    queue: &Arc<dyn QueueTrait>,
     tx: &SolanaTransaction,
     from_service: String,
 ) -> Result<bool, anyhow::Error> {

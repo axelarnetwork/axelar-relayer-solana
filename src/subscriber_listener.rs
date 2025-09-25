@@ -10,7 +10,7 @@ use crate::{
 use crate::types::SolanaTransaction;
 use crate::utils::upsert_and_publish;
 use futures::StreamExt;
-use relayer_core::{error::SubscriberError, queue::Queue};
+use relayer_core::{error::SubscriberError, queue::QueueTrait};
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Signature;
 use tokio::{select, time::timeout};
@@ -32,7 +32,7 @@ pub trait TransactionListener {
 pub struct SolanaListener<STR: SolanaStreamClientTrait, SM: SolanaTransactionModel> {
     client: STR,
     transaction_model: Arc<SM>,
-    queue: Arc<Queue>,
+    queue: Arc<dyn QueueTrait>,
 }
 
 impl<STR: SolanaStreamClientTrait, SM: SolanaTransactionModel> TransactionListener
@@ -57,7 +57,7 @@ impl<STR: SolanaStreamClientTrait, SM: SolanaTransactionModel> SolanaListener<ST
     pub async fn new(
         client: STR,
         transaction_model: Arc<SM>,
-        queue: Arc<Queue>,
+        queue: Arc<dyn QueueTrait>,
     ) -> Result<Self, SubscriberError> {
         Ok(SolanaListener {
             client,
@@ -149,7 +149,7 @@ impl<STR: SolanaStreamClientTrait, SM: SolanaTransactionModel> SolanaListener<ST
     async fn setup_connection_and_work(
         solana_config: SolanaConfig,
         account: Pubkey,
-        queue: &Arc<Queue>,
+        queue: &Arc<dyn QueueTrait>,
         transaction_model: &Arc<SM>,
         stream_name: &str,
         cancellation_token: CancellationToken,
@@ -223,7 +223,7 @@ impl<STR: SolanaStreamClientTrait, SM: SolanaTransactionModel> SolanaListener<ST
     async fn work(
         subscriber_stream: &mut LogsSubscription<'_>,
         stream_name: &str,
-        queue: &Arc<Queue>,
+        queue: &Arc<dyn QueueTrait>,
         transaction_model: &Arc<SM>,
         solana_config: &SolanaConfig,
         cancellation_token: CancellationToken,
