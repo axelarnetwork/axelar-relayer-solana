@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-relayer-core = { git = "https://github.com/commonprefix/axelar-relayer-core", branch = "temp-solana" }
+relayer-core = { git = "https://github.com/commonprefix/axelar-relayer-core", branch = "temp-solana", features = ["mocks"] }
 dotenv = "0.15.0"
 tokio = { version = "1.41.1", features = ["full", "test-util"] }
 anyhow = "1.0.93"
@@ -36,7 +36,6 @@ bs58 = "0.5"
 borsh = { version = "1", features = ["derive"] }
 base64 = "0.22.1"
 httpmock = "0.7.0"
-#axelar-solana-gateway-v2 = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "v2-anchor-gw", package = "axelar-solana-gateway-v2" }
 axelar-solana-gateway = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "gateway-event-cpi", package = "axelar-solana-gateway" }
 event-cpi = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "gateway-event-cpi", package = "event-cpi" }
 anchor-lang = "0.31.1"
