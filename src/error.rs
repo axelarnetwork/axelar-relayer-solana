@@ -14,6 +14,8 @@ pub enum TransactionParsingError {
     InvalidAccountAddress(String),
     #[error("InvalidInstructionData: {0}")]
     InvalidInstructionData(String),
+    #[error("IndexOverflow: {0}")]
+    IndexOverflow(String),
 }
 
 #[derive(Error, Debug)]
