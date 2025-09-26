@@ -1,8 +1,9 @@
 use crate::error::TransactionParsingError;
 use crate::transaction_parser::common::check_discriminators_and_address;
 use crate::transaction_parser::discriminators::CPI_EVENT_DISC;
+use crate::transaction_parser::instruction_index::InstructionIndex;
 use crate::transaction_parser::message_matching_key::MessageMatchingKey;
-use crate::transaction_parser::parser::{InstructionIndex, Parser, ParserConfig};
+use crate::transaction_parser::parser::{Parser, ParserConfig};
 use async_trait::async_trait;
 use borsh::BorshDeserialize;
 use event_cpi::Discriminator;
@@ -133,17 +134,15 @@ impl Parser for ParserSignersRotated {
                     epoch: Some(epoch),
                 }),
             },
-            message_id: format!(
-                "{}-{}.{}",
-                self.signature, self.index.outer_index, self.index.inner_index
-            ),
+            message_id: format!("{}-{}", self.signature, self.index.serialize()),
         })
     }
 
     async fn message_id(&self) -> Result<Option<String>, TransactionParsingError> {
         Ok(Some(format!(
-            "{}-{}.{}",
-            self.signature, self.index.outer_index, self.index.inner_index
+            "{}-{}",
+            self.signature,
+            self.index.serialize()
         )))
     }
 }
@@ -170,10 +169,7 @@ mod tests {
         let mut parser = ParserSignersRotated::new(
             tx.signature.to_string(),
             compiled_ix,
-            InstructionIndex {
-                outer_index: 1,
-                inner_index: 2,
-            },
+            InstructionIndex::new(1, 2),
             Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
             tx.account_keys,
         )
@@ -231,10 +227,7 @@ mod tests {
         let mut parser = ParserSignersRotated::new(
             tx.signature.to_string(),
             compiled_ix,
-            InstructionIndex {
-                outer_index: 1,
-                inner_index: 2,
-            },
+            InstructionIndex::new(1, 2),
             Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
             tx.account_keys,
         )

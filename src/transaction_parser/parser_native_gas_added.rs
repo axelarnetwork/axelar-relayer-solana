@@ -1,6 +1,7 @@
 use crate::error::TransactionParsingError;
 use crate::transaction_parser::common::check_discriminators_and_address;
 use crate::transaction_parser::discriminators::{CPI_EVENT_DISC, NATIVE_GAS_ADDED_EVENT_DISC};
+use crate::transaction_parser::instruction_index::InstructionIndex;
 use crate::transaction_parser::message_matching_key::MessageMatchingKey;
 use crate::transaction_parser::parser::{Parser, ParserConfig};
 use async_trait::async_trait;
@@ -19,7 +20,7 @@ pub struct NativeGasAddedEvent {
     /// Solana transaction signature
     pub tx_hash: [u8; 64],
     /// index of the log
-    pub log_index: u64,
+    pub log_index: String,
     /// The refund address
     pub refund_address: Pubkey,
     /// amount of SOL
@@ -136,10 +137,12 @@ impl Parser for ParserNativeGasAdded {
 
     async fn message_id(&self) -> Result<Option<String>, TransactionParsingError> {
         if let Some(parsed) = self.parsed.clone() {
+            // Deserialize and then reserialize to ensure that formatting is correct
+            let index = InstructionIndex::deserialize(parsed.log_index)?;
             Ok(Some(format!(
                 "{}-{}",
                 Signature::from(parsed.tx_hash),
-                parsed.log_index
+                index.serialize()
             )))
         } else {
             Ok(None)

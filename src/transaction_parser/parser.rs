@@ -1,4 +1,5 @@
 use super::message_matching_key::MessageMatchingKey;
+use crate::transaction_parser::instruction_index::InstructionIndex;
 use crate::transaction_parser::parser_call_contract::ParserCallContract;
 use crate::transaction_parser::parser_its_interchain_token_deployment_started::ParserInterchainTokenDeploymentStarted;
 use crate::transaction_parser::parser_its_interchain_transfer::ParserInterchainTransfer;
@@ -27,12 +28,6 @@ pub struct ParserConfig {
     pub event_cpi_discriminator: [u8; 8],
     pub event_type_discriminator: [u8; 8],
     pub expected_contract_address: Pubkey,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct InstructionIndex {
-    pub outer_index: u64,
-    pub inner_index: u64,
 }
 
 #[async_trait]
@@ -178,18 +173,19 @@ impl TransactionParser {
         for group in transaction.ixs.iter() {
             for (inner_index, inst) in group.instructions.iter().enumerate() {
                 if let UiInstruction::Compiled(ci) = inst {
-                    let index = InstructionIndex {
-                        outer_index: group.index.checked_add(1).ok_or(
-                            TransactionParsingError::IndexOverflow(
+                    let index = InstructionIndex::new(
+                        group
+                            .index
+                            .checked_add(1)
+                            .ok_or(TransactionParsingError::IndexOverflow(
                                 "Outer index overflow".to_string(),
-                            ),
-                        )? as u64,
-                        inner_index: inner_index.checked_add(1).ok_or(
-                            TransactionParsingError::IndexOverflow(
+                            ))? as u64,
+                        inner_index
+                            .checked_add(1)
+                            .ok_or(TransactionParsingError::IndexOverflow(
                                 "Inner index overflow".to_string(),
-                            ),
-                        )? as u64,
-                    };
+                            ))? as u64,
+                    );
                     let mut parser = ParserNativeGasPaid::new(
                         transaction.signature.to_string(),
                         ci.clone(),
@@ -243,7 +239,7 @@ impl TransactionParser {
                         ci.clone(),
                         transaction.account_keys.clone(),
                         chain_name.clone(),
-                        index.clone(),
+                        index,
                         self.gateway_address,
                     )
                     .await?;
