@@ -2,7 +2,7 @@ use crate::error::TransactionParsingError;
 use crate::transaction_parser::common::check_discriminators_and_address;
 use crate::transaction_parser::discriminators::CPI_EVENT_DISC;
 use crate::transaction_parser::message_matching_key::MessageMatchingKey;
-use crate::transaction_parser::parser::{Parser, ParserConfig};
+use crate::transaction_parser::parser::{InstructionIndex, Parser, ParserConfig};
 use async_trait::async_trait;
 use borsh::BorshDeserialize;
 use event_cpi::Discriminator;
@@ -20,7 +20,7 @@ pub struct ParserSignersRotated {
     parsed: Option<VerifierSetRotatedEvent>,
     instruction: UiCompiledInstruction,
     config: ParserConfig,
-    index: u64,
+    index: InstructionIndex,
     accounts: Vec<String>,
 }
 
@@ -28,7 +28,7 @@ impl ParserSignersRotated {
     pub(crate) async fn new(
         signature: String,
         instruction: UiCompiledInstruction,
-        index: u64,
+        index: InstructionIndex,
         expected_contract_address: Pubkey,
         accounts: Vec<String>,
     ) -> Result<Self, TransactionParsingError> {
@@ -133,12 +133,18 @@ impl Parser for ParserSignersRotated {
                     epoch: Some(epoch),
                 }),
             },
-            message_id: format!("{}-{}", self.signature, self.index),
+            message_id: format!(
+                "{}-{}.{}",
+                self.signature, self.index.outer_index, self.index.inner_index
+            ),
         })
     }
 
     async fn message_id(&self) -> Result<Option<String>, TransactionParsingError> {
-        Ok(Some(format!("{}-{}", self.signature, self.index)))
+        Ok(Some(format!(
+            "{}-{}.{}",
+            self.signature, self.index.outer_index, self.index.inner_index
+        )))
     }
 }
 
@@ -164,7 +170,10 @@ mod tests {
         let mut parser = ParserSignersRotated::new(
             tx.signature.to_string(),
             compiled_ix,
-            1,
+            InstructionIndex {
+                outer_index: 1,
+                inner_index: 2,
+            },
             Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
             tx.account_keys,
         )
@@ -199,7 +208,10 @@ mod tests {
                             )),
                         }),
                     },
-                    message_id: format!("{}-{}", sig, parser.index),
+                    message_id: format!(
+                        "{}-{}.{}",
+                        sig, parser.index.outer_index, parser.index.inner_index
+                    ),
                 };
                 assert_eq!(event, expected_event);
             }
@@ -219,7 +231,10 @@ mod tests {
         let mut parser = ParserSignersRotated::new(
             tx.signature.to_string(),
             compiled_ix,
-            1,
+            InstructionIndex {
+                outer_index: 1,
+                inner_index: 2,
+            },
             Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
             tx.account_keys,
         )

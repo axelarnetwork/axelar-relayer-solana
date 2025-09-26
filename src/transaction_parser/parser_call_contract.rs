@@ -2,7 +2,7 @@ use crate::error::TransactionParsingError;
 use crate::transaction_parser::common::check_discriminators_and_address;
 use crate::transaction_parser::discriminators::CPI_EVENT_DISC;
 use crate::transaction_parser::message_matching_key::MessageMatchingKey;
-use crate::transaction_parser::parser::{Parser, ParserConfig};
+use crate::transaction_parser::parser::{InstructionIndex, Parser, ParserConfig};
 use async_trait::async_trait;
 use axelar_solana_gateway::events::CallContractEvent;
 use base64::prelude::BASE64_STANDARD;
@@ -22,7 +22,7 @@ pub struct ParserCallContract {
     config: ParserConfig,
     accounts: Vec<String>,
     chain_name: String,
-    index: u64,
+    index: InstructionIndex,
 }
 
 impl ParserCallContract {
@@ -31,7 +31,7 @@ impl ParserCallContract {
         instruction: UiCompiledInstruction,
         accounts: Vec<String>,
         chain_name: String,
-        index: u64,
+        index: InstructionIndex,
         expected_contract_address: Pubkey,
     ) -> Result<Self, TransactionParsingError> {
         let event_type_discriminator: [u8; 8] = CallContractEvent::DISCRIMINATOR
@@ -157,7 +157,10 @@ impl Parser for ParserCallContract {
     }
 
     async fn message_id(&self) -> Result<Option<String>, TransactionParsingError> {
-        Ok(Some(format!("{}-{}", self.signature, self.index)))
+        Ok(Some(format!(
+            "{}-{}.{}",
+            self.signature, self.index.outer_index, self.index.inner_index
+        )))
     }
 }
 
@@ -185,7 +188,10 @@ mod tests {
             compiled_ix,
             tx.account_keys,
             "solana".to_string(),
-            1,
+            InstructionIndex {
+                outer_index: 1,
+                inner_index: 2,
+            },
             Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
         )
         .await
@@ -194,7 +200,7 @@ mod tests {
         let sig = tx.signature.clone().to_string();
         assert_eq!(
             parser.message_id().await.unwrap().unwrap(),
-            format!("{}-1", sig)
+            format!("{}-1.2", sig)
         );
         parser.parse().await.unwrap();
         let event = parser.event(None).await.unwrap();
@@ -237,7 +243,7 @@ mod tests {
                         }),
                     },
                     message: GatewayV2Message {
-                        message_id: format!("{}-1", sig),
+                        message_id: format!("{}-1.2", sig),
                         source_chain: "solana".to_string(),
                         source_address: parser.parsed.as_ref().unwrap().sender.to_string(),
                         destination_address: parser
@@ -279,7 +285,10 @@ mod tests {
             compiled_ix,
             tx.account_keys,
             "solana".to_string(),
-            1,
+            InstructionIndex {
+                outer_index: 1,
+                inner_index: 2,
+            },
             Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
         )
         .await

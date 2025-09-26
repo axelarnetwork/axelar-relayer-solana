@@ -29,6 +29,12 @@ pub struct ParserConfig {
     pub expected_contract_address: Pubkey,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct InstructionIndex {
+    pub outer_index: u64,
+    pub inner_index: u64,
+}
+
 #[async_trait]
 pub trait Parser {
     async fn parse(&mut self) -> Result<bool, crate::error::TransactionParsingError>;
@@ -166,14 +172,24 @@ impl TransactionParser {
         gas_credit_map: &mut HashMap<MessageMatchingKey, Box<dyn Parser + Send + Sync>>,
         chain_name: String,
     ) -> Result<(u64, u64), TransactionParsingError> {
-        let mut index = 0;
         let mut message_approved_count = 0u64;
         let mut message_executed_count = 0u64;
 
         for group in transaction.ixs.iter() {
-            for inst in group.instructions.iter() {
+            for (inner_index, inst) in group.instructions.iter().enumerate() {
                 if let UiInstruction::Compiled(ci) = inst {
-                    // Should we check from which account the event was emitted?
+                    let index = InstructionIndex {
+                        outer_index: group.index.checked_add(1).ok_or(
+                            TransactionParsingError::IndexOverflow(
+                                "Outer index overflow".to_string(),
+                            ),
+                        )? as u64,
+                        inner_index: inner_index.checked_add(1).ok_or(
+                            TransactionParsingError::IndexOverflow(
+                                "Inner index overflow".to_string(),
+                            ),
+                        )? as u64,
+                    };
                     let mut parser = ParserNativeGasPaid::new(
                         transaction.signature.to_string(),
                         ci.clone(),
@@ -227,7 +243,7 @@ impl TransactionParser {
                         ci.clone(),
                         transaction.account_keys.clone(),
                         chain_name.clone(),
-                        index,
+                        index.clone(),
                         self.gateway_address,
                     )
                     .await?;
@@ -362,7 +378,6 @@ impl TransactionParser {
                         parser.parse().await?;
                         its_parsers.push(Box::new(parser));
                     }
-                    index += 1; // index is the position of the instruction in the transaction including the inner ones
                 }
             }
         }
@@ -427,7 +442,7 @@ mod tests {
                 ..
             } => {
                 assert_eq!(destination_chain, "ethereum");
-                assert_eq!(message.message_id, format!("{}-1", sig));
+                assert_eq!(message.message_id, format!("{}-2.1", sig));
             }
             _ => panic!("Expected CallContract event"),
         }
@@ -438,7 +453,7 @@ mod tests {
                 payment,
                 ..
             } => {
-                assert_eq!(message_id, format!("{}-1", sig));
+                assert_eq!(message_id, format!("{}-2.1", sig));
                 assert_eq!(payment.amount, "1000");
             }
             _ => panic!("Expected GasCredit event"),
