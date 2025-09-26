@@ -23,7 +23,4 @@ pub struct SolanaConfig {
 pub struct WalletConfig {
     pub public_key: String,
     pub secret_key: String,
-    // pub subwallet_id: u32,
-    // pub timeout: u64,
-    // pub address: String,
 }

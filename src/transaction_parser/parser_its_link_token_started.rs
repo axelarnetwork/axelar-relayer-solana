@@ -1,41 +1,36 @@
 use crate::error::TransactionParsingError;
 use crate::transaction_parser::common::check_discriminators_and_address;
-use crate::transaction_parser::discriminators::{CPI_EVENT_DISC, NATIVE_GAS_ADDED_EVENT_DISC};
-use crate::transaction_parser::instruction_index::InstructionIndex;
+use crate::transaction_parser::discriminators::{
+    CPI_EVENT_DISC, ITS_LINK_TOKEN_STARTED_EVENT_DISC,
+};
 use crate::transaction_parser::message_matching_key::MessageMatchingKey;
 use crate::transaction_parser::parser::{Parser, ParserConfig};
 use async_trait::async_trait;
 use borsh::BorshDeserialize;
-use relayer_core::gmp_api::gmp_types::{Amount, CommonEventFields, Event, EventMetadata};
+use relayer_core::gmp_api::gmp_types::{CommonEventFields, Event, EventMetadata, TokenManagerType};
 use solana_sdk::pubkey::Pubkey;
-use solana_sdk::signature::Signature;
 use solana_transaction_status::UiCompiledInstruction;
 use tracing::debug;
 
-// TODO: Get them from a library?
 #[derive(BorshDeserialize, Clone, Debug)]
-pub struct NativeGasAddedEvent {
-    /// The Gas service config PDA
-    pub _config_pda: Pubkey,
-    /// Solana transaction signature
-    pub tx_hash: [u8; 64],
-    /// index of the log
-    pub log_index: String,
-    /// The refund address
-    pub refund_address: Pubkey,
-    /// amount of SOL
-    pub gas_fee_amount: u64,
+pub struct LinkTokenStarted {
+    pub token_id: [u8; 32],
+    pub destination_chain: String,
+    pub source_token_address: Pubkey,
+    pub destination_token_address: Vec<u8>,
+    pub token_manager_type: u8,
+    pub _params: Vec<u8>,
 }
 
-pub struct ParserNativeGasAdded {
+pub struct ParserLinkTokenStarted {
     signature: String,
-    parsed: Option<NativeGasAddedEvent>,
+    parsed: Option<LinkTokenStarted>,
     instruction: UiCompiledInstruction,
     config: ParserConfig,
     accounts: Vec<String>,
 }
 
-impl ParserNativeGasAdded {
+impl ParserLinkTokenStarted {
     pub(crate) async fn new(
         signature: String,
         instruction: UiCompiledInstruction,
@@ -48,7 +43,7 @@ impl ParserNativeGasAdded {
             instruction,
             config: ParserConfig {
                 event_cpi_discriminator: CPI_EVENT_DISC,
-                event_type_discriminator: NATIVE_GAS_ADDED_EVENT_DISC,
+                event_type_discriminator: ITS_LINK_TOKEN_STARTED_EVENT_DISC,
                 expected_contract_address,
             },
             accounts,
@@ -59,22 +54,22 @@ impl ParserNativeGasAdded {
         instruction: &UiCompiledInstruction,
         config: ParserConfig,
         accounts: &[String],
-    ) -> Result<NativeGasAddedEvent, TransactionParsingError> {
+    ) -> Result<LinkTokenStarted, TransactionParsingError> {
         let payload = check_discriminators_and_address(instruction, config, accounts)?;
-        match NativeGasAddedEvent::try_from_slice(payload.into_iter().as_slice()) {
+        match LinkTokenStarted::try_from_slice(payload.into_iter().as_slice()) {
             Ok(event) => {
-                debug!("Native Gas Added event={:?}", event);
+                debug!("Link Token Started event={:?}", event);
                 Ok(event)
             }
             Err(_) => Err(TransactionParsingError::InvalidInstructionData(
-                "invalid native gas added event".to_string(),
+                "invalid link token started event".to_string(),
             )),
         }
     }
 }
 
 #[async_trait]
-impl Parser for ParserNativeGasAdded {
+impl Parser for ParserLinkTokenStarted {
     async fn parse(&mut self) -> Result<bool, TransactionParsingError> {
         if self.parsed.is_none() {
             self.parsed = Some(Self::try_extract_with_config(
@@ -98,27 +93,22 @@ impl Parser for ParserNativeGasAdded {
 
     async fn key(&self) -> Result<MessageMatchingKey, TransactionParsingError> {
         Err(TransactionParsingError::Message(
-            "MessageMatchingKey is not available for NativeGasAddedEvent".to_string(),
+            "MessageMatchingKey is not available for LinkTokenStarted".to_string(),
         ))
     }
 
-    async fn event(&self, _message_id: Option<String>) -> Result<Event, TransactionParsingError> {
+    async fn event(&self, message_id: Option<String>) -> Result<Event, TransactionParsingError> {
         let parsed = self
             .parsed
             .clone()
             .ok_or_else(|| TransactionParsingError::Message("Missing parsed".to_string()))?;
 
-        let message_id = self
-            .message_id()
-            .await?
-            .ok_or_else(|| TransactionParsingError::Message("Missing message_id".to_string()))?;
-
-        Ok(Event::GasCredit {
+        Ok(Event::ITSLinkTokenStarted {
             common: CommonEventFields {
-                r#type: "GAS_CREDIT".to_owned(),
-                event_id: format!("{}-gas", self.signature),
+                r#type: "ITS/LINK_TOKEN_STARTED".to_owned(),
+                event_id: format!("{}-its-link-token-started", self.signature.clone()),
                 meta: Some(EventMetadata {
-                    tx_id: Some(self.signature.to_string()),
+                    tx_id: Some(self.signature.clone()),
                     from_address: None,
                     finalized: None,
                     source_context: None,
@@ -126,27 +116,33 @@ impl Parser for ParserNativeGasAdded {
                         .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
                 }),
             },
-            message_id,
-            refund_address: parsed.refund_address.to_string(),
-            payment: Amount {
-                token_id: None,
-                amount: parsed.gas_fee_amount.to_string(),
-            },
+            destination_chain: parsed.destination_chain.clone(),
+            message_id: message_id.ok_or_else(|| {
+                TransactionParsingError::Message("Missing message_id".to_string())
+            })?,
+            token_id: hex::encode(parsed.token_id),
+            source_token_address: hex::encode(parsed.source_token_address),
+            destination_token_address: hex::encode(parsed.destination_token_address),
+            token_manager_type: u8_to_token_manager_type(parsed.token_manager_type)?,
+            //params: parsed.params, // TBD if we need this
         })
     }
 
     async fn message_id(&self) -> Result<Option<String>, TransactionParsingError> {
-        if let Some(parsed) = self.parsed.clone() {
-            // Deserialize and then reserialize to ensure that formatting is correct
-            let index = InstructionIndex::deserialize(parsed.log_index)?;
-            Ok(Some(format!(
-                "{}-{}",
-                Signature::from(parsed.tx_hash),
-                index.serialize()
-            )))
-        } else {
-            Ok(None)
-        }
+        Ok(None)
+    }
+}
+
+pub fn u8_to_token_manager_type(value: u8) -> Result<TokenManagerType, TransactionParsingError> {
+    match value {
+        0 => Ok(TokenManagerType::NativeInterchainToken),
+        1 => Ok(TokenManagerType::MintBurnFrom),
+        2 => Ok(TokenManagerType::LockUnlock),
+        3 => Ok(TokenManagerType::LockUnlockFee),
+        4 => Ok(TokenManagerType::MintBurn),
+        _ => Err(TransactionParsingError::Message(
+            "Invalid token manager type".to_string(),
+        )),
     }
 }
 
@@ -154,23 +150,22 @@ impl Parser for ParserNativeGasAdded {
 mod tests {
     use std::str::FromStr;
 
-    use solana_sdk::signature::Signature;
     use solana_transaction_status::UiInstruction;
 
     use super::*;
     use crate::test_utils::fixtures::transaction_fixtures;
-    use crate::transaction_parser::parser_native_gas_added::ParserNativeGasAdded;
+    use crate::transaction_parser::parser_its_link_token_started::ParserLinkTokenStarted;
     #[tokio::test]
     async fn test_parser() {
         let txs = transaction_fixtures();
 
-        let tx = txs[4].clone();
-        let compiled_ix: UiCompiledInstruction = match tx.ixs[0].instructions[0].clone() {
+        let tx = txs[8].clone();
+        let compiled_ix: UiCompiledInstruction = match tx.ixs[1].instructions[0].clone() {
             UiInstruction::Compiled(ix) => ix,
             _ => panic!("expected a compiled instruction"),
         };
 
-        let mut parser = ParserNativeGasAdded::new(
+        let mut parser = ParserLinkTokenStarted::new(
             tx.signature.to_string(),
             compiled_ix,
             Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
@@ -181,13 +176,13 @@ mod tests {
         assert!(parser.is_match().await.unwrap());
         let sig = tx.signature.clone().to_string();
         parser.parse().await.unwrap();
-        let event = parser.event(None).await.unwrap();
+        let event = parser.event(Some(format!("{}-1", sig))).await.unwrap();
         match event {
-            Event::GasCredit { .. } => {
-                let expected_event = Event::GasCredit {
+            Event::ITSLinkTokenStarted { .. } => {
+                let expected_event = Event::ITSLinkTokenStarted {
                     common: CommonEventFields {
-                        r#type: "GAS_CREDIT".to_owned(),
-                        event_id: format!("{}-gas", sig),
+                        r#type: "ITS/LINK_TOKEN_STARTED".to_owned(),
+                        event_id: format!("{}-its-link-token-started", sig),
                         meta: Some(EventMetadata {
                             tx_id: Some(sig.to_string()),
                             from_address: None,
@@ -197,20 +192,28 @@ mod tests {
                                 .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
                         }),
                     },
-                    message_id: format!(
-                        "{}-{}",
-                        Signature::from(parser.parsed.as_ref().unwrap().tx_hash),
-                        parser.parsed.as_ref().unwrap().log_index
+                    message_id: format!("{}-1", sig),
+                    token_id: hex::encode(parser.parsed.as_ref().unwrap().token_id),
+                    source_token_address: hex::encode(
+                        parser.parsed.as_ref().unwrap().source_token_address,
                     ),
-                    refund_address: parser.parsed.as_ref().unwrap().refund_address.to_string(),
-                    payment: Amount {
-                        token_id: None,
-                        amount: parser.parsed.as_ref().unwrap().gas_fee_amount.to_string(),
-                    },
+                    destination_token_address: hex::encode(
+                        parser
+                            .parsed
+                            .as_ref()
+                            .unwrap()
+                            .destination_token_address
+                            .clone(),
+                    ),
+                    token_manager_type: u8_to_token_manager_type(
+                        parser.parsed.as_ref().unwrap().token_manager_type,
+                    )
+                    .unwrap(),
+                    destination_chain: parser.parsed.as_ref().unwrap().destination_chain.clone(),
                 };
                 assert_eq!(event, expected_event);
             }
-            _ => panic!("Expected GasCredit event"),
+            _ => panic!("Expected ITSLinkTokenStarted event"),
         }
     }
 
@@ -223,7 +226,8 @@ mod tests {
             UiInstruction::Compiled(ix) => ix,
             _ => panic!("expected a compiled instruction"),
         };
-        let mut parser = ParserNativeGasAdded::new(
+
+        let mut parser = ParserLinkTokenStarted::new(
             tx.signature.to_string(),
             compiled_ix,
             Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
@@ -231,7 +235,6 @@ mod tests {
         )
         .await
         .unwrap();
-
         assert!(!parser.is_match().await.unwrap());
     }
 }

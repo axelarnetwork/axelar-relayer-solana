@@ -1,4 +1,5 @@
 use crate::error::TransactionParsingError;
+use crate::transaction_parser::common::check_discriminators_and_address;
 use crate::transaction_parser::discriminators::{
     CANNOT_EXECUTE_MESSAGE_EVENT_DISC, CPI_EVENT_DISC,
 };
@@ -7,8 +8,9 @@ use crate::transaction_parser::parser::{Parser, ParserConfig};
 use async_trait::async_trait;
 use borsh::BorshDeserialize;
 use relayer_core::gmp_api::gmp_types::{CannotExecuteMessageReason, CommonEventFields, Event};
+use solana_sdk::pubkey::Pubkey;
 use solana_transaction_status::UiCompiledInstruction;
-use tracing::{debug, warn};
+use tracing::debug;
 
 #[derive(BorshDeserialize, Clone, Debug)]
 pub struct ExecuteInsufficientGasEvent {
@@ -21,12 +23,15 @@ pub struct ParserExecuteInsufficientGas {
     parsed: Option<ExecuteInsufficientGasEvent>,
     instruction: UiCompiledInstruction,
     config: ParserConfig,
+    accounts: Vec<String>,
 }
 
 impl ParserExecuteInsufficientGas {
     pub(crate) async fn new(
         signature: String,
         instruction: UiCompiledInstruction,
+        expected_contract_address: Pubkey,
+        accounts: Vec<String>,
     ) -> Result<Self, TransactionParsingError> {
         Ok(Self {
             signature,
@@ -35,47 +40,26 @@ impl ParserExecuteInsufficientGas {
             config: ParserConfig {
                 event_cpi_discriminator: CPI_EVENT_DISC,
                 event_type_discriminator: CANNOT_EXECUTE_MESSAGE_EVENT_DISC,
+                expected_contract_address,
             },
+            accounts,
         })
     }
 
     fn try_extract_with_config(
         instruction: &UiCompiledInstruction,
         config: ParserConfig,
-    ) -> Option<ExecuteInsufficientGasEvent> {
-        let bytes = match bs58::decode(&instruction.data).into_vec() {
-            Ok(bytes) => bytes,
-            Err(e) => {
-                warn!("failed to decode bytes: {:?}", e);
-                return None;
-            }
-        };
-        if bytes.len() < 16 {
-            return None;
-        }
-
-        if bytes.get(0..8) != Some(&config.event_cpi_discriminator) {
-            debug!(
-                "expected event cpi discriminator, got {:?}",
-                bytes.get(0..8)
-            );
-            return None;
-        }
-        if bytes.get(8..16) != Some(&config.event_type_discriminator) {
-            debug!(
-                "expected event type discriminator, got {:?}",
-                bytes.get(8..16)
-            );
-            return None;
-        }
-
-        let payload = bytes.get(16..)?;
-        match ExecuteInsufficientGasEvent::try_from_slice(payload) {
+        accounts: &[String],
+    ) -> Result<ExecuteInsufficientGasEvent, TransactionParsingError> {
+        let payload = check_discriminators_and_address(instruction, config, accounts)?;
+        match ExecuteInsufficientGasEvent::try_from_slice(payload.into_iter().as_slice()) {
             Ok(event) => {
-                debug!("Message Executed event={:?}", event);
-                Some(event)
+                debug!("Execute Insufficient Gas event={:?}", event);
+                Ok(event)
             }
-            Err(_) => None,
+            Err(_) => Err(TransactionParsingError::InvalidInstructionData(
+                "invalid execute insufficient gas event".to_string(),
+            )),
         }
     }
 }
@@ -84,13 +68,23 @@ impl ParserExecuteInsufficientGas {
 impl Parser for ParserExecuteInsufficientGas {
     async fn parse(&mut self) -> Result<bool, TransactionParsingError> {
         if self.parsed.is_none() {
-            self.parsed = Self::try_extract_with_config(&self.instruction, self.config);
+            self.parsed = Some(Self::try_extract_with_config(
+                &self.instruction,
+                self.config,
+                &self.accounts,
+            )?);
         }
         Ok(self.parsed.is_some())
     }
 
-    async fn is_match(&self) -> Result<bool, TransactionParsingError> {
-        Ok(Self::try_extract_with_config(&self.instruction, self.config).is_some())
+    async fn is_match(&mut self) -> Result<bool, TransactionParsingError> {
+        match Self::try_extract_with_config(&self.instruction, self.config, &self.accounts) {
+            Ok(parsed) => {
+                self.parsed = Some(parsed);
+                Ok(true)
+            }
+            Err(_) => Ok(false),
+        }
     }
 
     async fn key(&self) -> Result<MessageMatchingKey, TransactionParsingError> {

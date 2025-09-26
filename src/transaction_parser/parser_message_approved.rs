@@ -1,88 +1,67 @@
 use crate::error::TransactionParsingError;
-use crate::transaction_parser::discriminators::{CPI_EVENT_DISC, MESSAGE_APPROVED_EVENT_DISC};
+use crate::transaction_parser::common::check_discriminators_and_address;
+use crate::transaction_parser::discriminators::CPI_EVENT_DISC;
 use crate::transaction_parser::message_matching_key::MessageMatchingKey;
 use crate::transaction_parser::parser::{Parser, ParserConfig};
 use async_trait::async_trait;
+use axelar_solana_gateway::events::MessageApprovedEvent;
 use borsh::BorshDeserialize;
 use bs58::encode;
+use event_cpi::Discriminator;
 use relayer_core::gmp_api::gmp_types::{
     Amount, CommonEventFields, Event, EventMetadata, GatewayV2Message, MessageApprovedEventMetadata,
 };
 use solana_sdk::pubkey::Pubkey;
 use solana_transaction_status::UiCompiledInstruction;
-use tracing::{debug, warn};
-
-#[derive(BorshDeserialize, Clone, Debug)]
-pub struct MessageApprovedEvent {
-    pub command_id: [u8; 32],
-    pub destination_address: Pubkey,
-    pub payload_hash: [u8; 32],
-    pub source_chain: String,
-    pub message_id: String,
-    pub source_address: String,
-    pub destination_chain: String,
-}
+use tracing::debug;
 
 pub struct ParserMessageApproved {
     signature: String,
     parsed: Option<MessageApprovedEvent>,
     instruction: UiCompiledInstruction,
     config: ParserConfig,
+    accounts: Vec<String>,
 }
 
 impl ParserMessageApproved {
     pub(crate) async fn new(
         signature: String,
         instruction: UiCompiledInstruction,
+        expected_contract_address: Pubkey,
+        accounts: Vec<String>,
     ) -> Result<Self, TransactionParsingError> {
+        let event_type_discriminator: [u8; 8] = MessageApprovedEvent::DISCRIMINATOR
+            .get(0..8)
+            .ok_or_else(|| TransactionParsingError::Message("Invalid discriminator".to_string()))?
+            .try_into()
+            .expect("8-byte discriminator");
         Ok(Self {
             signature,
             parsed: None,
             instruction,
             config: ParserConfig {
                 event_cpi_discriminator: CPI_EVENT_DISC,
-                event_type_discriminator: MESSAGE_APPROVED_EVENT_DISC,
+                event_type_discriminator,
+                expected_contract_address,
             },
+            accounts,
         })
     }
 
     fn try_extract_with_config(
         instruction: &UiCompiledInstruction,
         config: ParserConfig,
-    ) -> Option<MessageApprovedEvent> {
-        let bytes = match bs58::decode(&instruction.data).into_vec() {
-            Ok(bytes) => bytes,
-            Err(e) => {
-                warn!("failed to decode bytes: {:?}", e);
-                return None;
-            }
-        };
-        if bytes.len() < 16 {
-            return None;
-        }
-
-        if bytes.get(0..8) != Some(&config.event_cpi_discriminator) {
-            debug!(
-                "expected event cpi discriminator, got {:?}",
-                bytes.get(0..8)
-            );
-            return None;
-        }
-        if bytes.get(8..16) != Some(&config.event_type_discriminator) {
-            debug!(
-                "expected event type discriminator, got {:?}",
-                bytes.get(8..16)
-            );
-            return None;
-        }
-
-        let payload = bytes.get(16..)?;
-        match MessageApprovedEvent::try_from_slice(payload) {
+        accounts: &[String],
+    ) -> Result<MessageApprovedEvent, TransactionParsingError> {
+        let payload = check_discriminators_and_address(instruction, config, accounts)?;
+        match MessageApprovedEvent::try_from_slice(payload.into_iter().as_slice()) {
             Ok(event) => {
                 debug!("Message Approved event={:?}", event);
-                Some(event)
+                Ok(event)
             }
-            Err(_) => None,
+            Err(_) => Err(TransactionParsingError::InvalidInstructionData(
+                "invalid message approved event".to_string(),
+            )),
         }
     }
 }
@@ -91,13 +70,23 @@ impl ParserMessageApproved {
 impl Parser for ParserMessageApproved {
     async fn parse(&mut self) -> Result<bool, TransactionParsingError> {
         if self.parsed.is_none() {
-            self.parsed = Self::try_extract_with_config(&self.instruction, self.config);
+            self.parsed = Some(Self::try_extract_with_config(
+                &self.instruction,
+                self.config,
+                &self.accounts,
+            )?);
         }
         Ok(self.parsed.is_some())
     }
 
-    async fn is_match(&self) -> Result<bool, TransactionParsingError> {
-        Ok(Self::try_extract_with_config(&self.instruction, self.config).is_some())
+    async fn is_match(&mut self) -> Result<bool, TransactionParsingError> {
+        match Self::try_extract_with_config(&self.instruction, self.config, &self.accounts) {
+            Ok(parsed) => {
+                self.parsed = Some(parsed);
+                Ok(true)
+            }
+            Err(_) => Ok(false),
+        }
     }
 
     async fn key(&self) -> Result<MessageMatchingKey, TransactionParsingError> {
@@ -137,11 +126,11 @@ impl Parser for ParserMessageApproved {
                 }),
             },
             message: GatewayV2Message {
-                message_id: parsed.message_id.clone(),
+                message_id: parsed.cc_id.clone(),
                 source_chain: parsed.source_chain.clone(),
                 source_address: parsed.source_address.clone(),
                 destination_address: parsed.destination_address.to_string(),
-                // shold this be hex encoded?
+                // should this be hex encoded?
                 payload_hash: hex::encode(parsed.payload_hash),
             },
             cost: Amount {
@@ -158,6 +147,8 @@ impl Parser for ParserMessageApproved {
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+
     use solana_transaction_status::UiInstruction;
 
     use super::*;
@@ -173,9 +164,14 @@ mod tests {
             _ => panic!("expected a compiled instruction"),
         };
 
-        let mut parser = ParserMessageApproved::new(tx.signature.to_string(), compiled_ix)
-            .await
-            .unwrap();
+        let mut parser = ParserMessageApproved::new(
+            tx.signature.to_string(),
+            compiled_ix,
+            Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
+            tx.account_keys,
+        )
+        .await
+        .unwrap();
         assert!(parser.is_match().await.unwrap());
         let sig = tx.signature.clone().to_string();
         parser.parse().await.unwrap();
@@ -206,7 +202,7 @@ mod tests {
                         }),
                     },
                     message: GatewayV2Message {
-                        message_id: parser.parsed.as_ref().unwrap().message_id.clone(),
+                        message_id: parser.parsed.as_ref().unwrap().cc_id.clone(),
                         source_chain: parser.parsed.as_ref().unwrap().source_chain.clone(),
                         source_address: parser.parsed.as_ref().unwrap().source_address.clone(),
                         destination_address: parser
@@ -237,9 +233,14 @@ mod tests {
             UiInstruction::Compiled(ix) => ix,
             _ => panic!("expected a compiled instruction"),
         };
-        let parser = ParserMessageApproved::new(tx.signature.to_string(), compiled_ix)
-            .await
-            .unwrap();
+        let mut parser = ParserMessageApproved::new(
+            tx.signature.to_string(),
+            compiled_ix,
+            Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
+            tx.account_keys,
+        )
+        .await
+        .unwrap();
 
         assert!(!parser.is_match().await.unwrap());
     }

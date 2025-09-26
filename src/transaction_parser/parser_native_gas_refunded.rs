@@ -1,5 +1,7 @@
 use crate::error::TransactionParsingError;
+use crate::transaction_parser::common::check_discriminators_and_address;
 use crate::transaction_parser::discriminators::{CPI_EVENT_DISC, NATIVE_GAS_REFUNDED_EVENT_DISC};
+use crate::transaction_parser::instruction_index::InstructionIndex;
 use crate::transaction_parser::message_matching_key::MessageMatchingKey;
 use crate::transaction_parser::parser::{Parser, ParserConfig};
 use async_trait::async_trait;
@@ -8,7 +10,7 @@ use relayer_core::gmp_api::gmp_types::{Amount, CommonEventFields, Event, EventMe
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Signature;
 use solana_transaction_status::UiCompiledInstruction;
-use tracing::{debug, warn};
+use tracing::debug;
 
 #[derive(BorshDeserialize, Clone, Debug)]
 pub struct NativeGasRefundedEvent {
@@ -17,7 +19,7 @@ pub struct NativeGasRefundedEvent {
     /// The Gas service config PDA
     pub _config_pda: Pubkey,
     /// The log index
-    pub log_index: u64,
+    pub log_index: String,
     /// The receiver of the refund
     pub receiver: Pubkey,
     /// amount of SOL
@@ -30,13 +32,16 @@ pub struct ParserNativeGasRefunded {
     instruction: UiCompiledInstruction,
     config: ParserConfig,
     cost_units: u64,
+    accounts: Vec<String>,
 }
 
 impl ParserNativeGasRefunded {
     pub(crate) async fn new(
         signature: String,
         instruction: UiCompiledInstruction,
+        expected_contract_address: Pubkey,
         cost_units: u64,
+        accounts: Vec<String>,
     ) -> Result<Self, TransactionParsingError> {
         Ok(Self {
             signature,
@@ -45,48 +50,27 @@ impl ParserNativeGasRefunded {
             config: ParserConfig {
                 event_cpi_discriminator: CPI_EVENT_DISC,
                 event_type_discriminator: NATIVE_GAS_REFUNDED_EVENT_DISC,
+                expected_contract_address,
             },
             cost_units,
+            accounts,
         })
     }
 
     fn try_extract_with_config(
         instruction: &UiCompiledInstruction,
         config: ParserConfig,
-    ) -> Option<NativeGasRefundedEvent> {
-        let bytes = match bs58::decode(&instruction.data).into_vec() {
-            Ok(bytes) => bytes,
-            Err(e) => {
-                warn!("failed to decode bytes: {:?}", e);
-                return None;
-            }
-        };
-        if bytes.len() < 16 {
-            return None;
-        }
-
-        if bytes.get(0..8) != Some(&config.event_cpi_discriminator) {
-            debug!(
-                "expected event cpi discriminator, got {:?}",
-                bytes.get(0..8)
-            );
-            return None;
-        }
-        if bytes.get(8..16) != Some(&config.event_type_discriminator) {
-            debug!(
-                "expected event type discriminator, got {:?}",
-                bytes.get(8..16)
-            );
-            return None;
-        }
-
-        let payload = bytes.get(16..)?;
-        match NativeGasRefundedEvent::try_from_slice(payload) {
+        accounts: &[String],
+    ) -> Result<NativeGasRefundedEvent, TransactionParsingError> {
+        let payload = check_discriminators_and_address(instruction, config, accounts)?;
+        match NativeGasRefundedEvent::try_from_slice(payload.into_iter().as_slice()) {
             Ok(event) => {
                 debug!("Native Gas Refunded event={:?}", event);
-                Some(event)
+                Ok(event)
             }
-            Err(_) => None,
+            Err(_) => Err(TransactionParsingError::InvalidInstructionData(
+                "invalid native gas refunded event".to_string(),
+            )),
         }
     }
 }
@@ -95,13 +79,23 @@ impl ParserNativeGasRefunded {
 impl Parser for ParserNativeGasRefunded {
     async fn parse(&mut self) -> Result<bool, TransactionParsingError> {
         if self.parsed.is_none() {
-            self.parsed = Self::try_extract_with_config(&self.instruction, self.config);
+            self.parsed = Some(Self::try_extract_with_config(
+                &self.instruction,
+                self.config,
+                &self.accounts,
+            )?);
         }
         Ok(self.parsed.is_some())
     }
 
-    async fn is_match(&self) -> Result<bool, TransactionParsingError> {
-        Ok(Self::try_extract_with_config(&self.instruction, self.config).is_some())
+    async fn is_match(&mut self) -> Result<bool, TransactionParsingError> {
+        match Self::try_extract_with_config(&self.instruction, self.config, &self.accounts) {
+            Ok(parsed) => {
+                self.parsed = Some(parsed);
+                Ok(true)
+            }
+            Err(_) => Ok(false),
+        }
     }
 
     async fn key(&self) -> Result<MessageMatchingKey, TransactionParsingError> {
@@ -153,10 +147,12 @@ impl Parser for ParserNativeGasRefunded {
 
     async fn message_id(&self) -> Result<Option<String>, TransactionParsingError> {
         if let Some(parsed) = self.parsed.clone() {
+            // Deserialize and then reserialize to ensure that formatting is correct
+            let index = InstructionIndex::deserialize(parsed.log_index)?;
             Ok(Some(format!(
                 "{}-{}",
                 Signature::from(parsed.tx_hash),
-                parsed.log_index
+                index.serialize()
             )))
         } else {
             Ok(None)
@@ -166,6 +162,8 @@ impl Parser for ParserNativeGasRefunded {
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+
     use solana_sdk::signature::Signature;
     use solana_transaction_status::UiInstruction;
 
@@ -182,10 +180,15 @@ mod tests {
             _ => panic!("expected a compiled instruction"),
         };
 
-        let mut parser =
-            ParserNativeGasRefunded::new(tx.signature.to_string(), compiled_ix, tx.cost_units)
-                .await
-                .unwrap();
+        let mut parser = ParserNativeGasRefunded::new(
+            tx.signature.to_string(),
+            compiled_ix,
+            Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
+            tx.cost_units,
+            tx.account_keys,
+        )
+        .await
+        .unwrap();
         assert!(parser.is_match().await.unwrap());
         let sig = tx.signature.clone().to_string();
         parser.parse().await.unwrap();
@@ -208,12 +211,12 @@ mod tests {
                     message_id: format!(
                         "{}-{}",
                         Signature::from(parser.parsed.as_ref().unwrap().tx_hash),
-                        parser.parsed.unwrap().log_index
+                        parser.parsed.as_ref().unwrap().log_index
                     ),
-                    recipient_address: "483jTxdFmFGRnzgx9nBoQM2Zao5mZxKvFgHzTb4Ytn1L".to_string(),
+                    recipient_address: parser.parsed.as_ref().unwrap().receiver.to_string(),
                     refunded_amount: Amount {
                         token_id: None,
-                        amount: "500".to_string(),
+                        amount: parser.parsed.as_ref().unwrap().fees.to_string(),
                     },
                     cost: Amount {
                         amount: tx.cost_units.to_string(),
@@ -235,10 +238,15 @@ mod tests {
             UiInstruction::Compiled(ix) => ix,
             _ => panic!("expected a compiled instruction"),
         };
-        let parser =
-            ParserNativeGasRefunded::new(tx.signature.to_string(), compiled_ix, tx.cost_units)
-                .await
-                .unwrap();
+        let mut parser = ParserNativeGasRefunded::new(
+            tx.signature.to_string(),
+            compiled_ix,
+            Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
+            tx.cost_units,
+            tx.account_keys,
+        )
+        .await
+        .unwrap();
 
         assert!(!parser.is_match().await.unwrap());
     }

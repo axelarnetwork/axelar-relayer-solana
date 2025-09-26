@@ -1,55 +1,55 @@
 use crate::error::TransactionParsingError;
-use crate::transaction_parser::discriminators::{CALL_CONTRACT_EVENT_DISC, CPI_EVENT_DISC};
+use crate::transaction_parser::common::check_discriminators_and_address;
+use crate::transaction_parser::discriminators::CPI_EVENT_DISC;
+use crate::transaction_parser::instruction_index::InstructionIndex;
 use crate::transaction_parser::message_matching_key::MessageMatchingKey;
 use crate::transaction_parser::parser::{Parser, ParserConfig};
 use async_trait::async_trait;
+use axelar_solana_gateway::events::CallContractEvent;
 use base64::prelude::BASE64_STANDARD;
 use base64::Engine;
 use borsh::BorshDeserialize;
+use event_cpi::Discriminator;
 use relayer_core::gmp_api::gmp_types::{CommonEventFields, Event, EventMetadata, GatewayV2Message};
 use solana_sdk::pubkey::Pubkey;
 use solana_transaction_status::UiCompiledInstruction;
 use std::collections::HashMap;
-use tracing::{debug, warn};
-
-#[derive(BorshDeserialize, Clone, Debug)]
-pub struct CallContractEvent {
-    /// Sender's public key.
-    pub sender_key: Pubkey,
-    /// Payload hash, 32 bytes.
-    pub payload_hash: [u8; 32],
-    /// Destination chain as a `String`.
-    pub destination_chain: String,
-    /// Destination contract address as a `String`.
-    pub destination_contract_address: String,
-    /// Payload data as a `Vec<u8>`.
-    pub payload: Vec<u8>,
-}
+use tracing::debug;
 
 pub struct ParserCallContract {
     signature: String,
     parsed: Option<CallContractEvent>,
     instruction: UiCompiledInstruction,
     config: ParserConfig,
+    accounts: Vec<String>,
     chain_name: String,
-    index: u64,
+    index: InstructionIndex,
 }
 
 impl ParserCallContract {
     pub(crate) async fn new(
         signature: String,
         instruction: UiCompiledInstruction,
+        accounts: Vec<String>,
         chain_name: String,
-        index: u64,
+        index: InstructionIndex,
+        expected_contract_address: Pubkey,
     ) -> Result<Self, TransactionParsingError> {
+        let event_type_discriminator: [u8; 8] = CallContractEvent::DISCRIMINATOR
+            .get(0..8)
+            .ok_or_else(|| TransactionParsingError::Message("Invalid discriminator".to_string()))?
+            .try_into()
+            .expect("8-byte discriminator");
         Ok(Self {
             signature,
             parsed: None,
             instruction,
             config: ParserConfig {
                 event_cpi_discriminator: CPI_EVENT_DISC,
-                event_type_discriminator: CALL_CONTRACT_EVENT_DISC,
+                event_type_discriminator,
+                expected_contract_address,
             },
+            accounts,
             chain_name,
             index,
         })
@@ -58,40 +58,17 @@ impl ParserCallContract {
     fn try_extract_with_config(
         instruction: &UiCompiledInstruction,
         config: ParserConfig,
-    ) -> Option<CallContractEvent> {
-        let bytes = match bs58::decode(&instruction.data).into_vec() {
-            Ok(bytes) => bytes,
-            Err(e) => {
-                warn!("failed to decode bytes: {:?}", e);
-                return None;
-            }
-        };
-        if bytes.len() < 16 {
-            return None;
-        }
-
-        if bytes.get(0..8) != Some(&config.event_cpi_discriminator) {
-            debug!(
-                "expected event cpi discriminator, got {:?}",
-                bytes.get(0..8)
-            );
-            return None;
-        }
-        if bytes.get(8..16) != Some(&config.event_type_discriminator) {
-            debug!(
-                "expected event type discriminator, got {:?}",
-                bytes.get(8..16)
-            );
-            return None;
-        }
-
-        let payload = bytes.get(16..)?;
-        match CallContractEvent::try_from_slice(payload) {
+        accounts: &[String],
+    ) -> Result<CallContractEvent, TransactionParsingError> {
+        let payload = check_discriminators_and_address(instruction, config, accounts)?;
+        match CallContractEvent::try_from_slice(&payload) {
             Ok(event) => {
                 debug!("Call Contract event={:?}", event);
-                Some(event)
+                Ok(event)
             }
-            Err(_) => None,
+            Err(_) => Err(TransactionParsingError::InvalidInstructionData(
+                "invalid call contract event".to_string(),
+            )),
         }
     }
 }
@@ -100,13 +77,23 @@ impl ParserCallContract {
 impl Parser for ParserCallContract {
     async fn parse(&mut self) -> Result<bool, TransactionParsingError> {
         if self.parsed.is_none() {
-            self.parsed = Self::try_extract_with_config(&self.instruction, self.config);
+            self.parsed = Some(Self::try_extract_with_config(
+                &self.instruction,
+                self.config,
+                &self.accounts,
+            )?);
         }
         Ok(self.parsed.is_some())
     }
 
-    async fn is_match(&self) -> Result<bool, TransactionParsingError> {
-        Ok(Self::try_extract_with_config(&self.instruction, self.config).is_some())
+    async fn is_match(&mut self) -> Result<bool, TransactionParsingError> {
+        match Self::try_extract_with_config(&self.instruction, self.config, &self.accounts) {
+            Ok(parsed) => {
+                self.parsed = Some(parsed);
+                Ok(true)
+            }
+            Err(_) => Ok(false),
+        }
     }
 
     async fn key(&self) -> Result<MessageMatchingKey, TransactionParsingError> {
@@ -134,7 +121,7 @@ impl Parser for ParserCallContract {
             .ok_or_else(|| TransactionParsingError::Message("Missing message_id".to_string()))?;
 
         let source_context = HashMap::from([
-            ("source_address".to_owned(), parsed.sender_key.to_string()),
+            ("source_address".to_owned(), parsed.sender.to_string()),
             (
                 "destination_address".to_owned(),
                 parsed.destination_contract_address.to_string(),
@@ -161,7 +148,7 @@ impl Parser for ParserCallContract {
             message: GatewayV2Message {
                 message_id,
                 source_chain: self.chain_name.to_string(),
-                source_address: parsed.sender_key.to_string(),
+                source_address: parsed.sender.to_string(),
                 destination_address: parsed.destination_contract_address.to_string(),
                 payload_hash: BASE64_STANDARD.encode(parsed.payload_hash),
             },
@@ -171,12 +158,18 @@ impl Parser for ParserCallContract {
     }
 
     async fn message_id(&self) -> Result<Option<String>, TransactionParsingError> {
-        Ok(Some(format!("{}-{}", self.signature, self.index)))
+        Ok(Some(format!(
+            "{}-{}",
+            self.signature,
+            self.index.serialize()
+        )))
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+
     use solana_transaction_status::UiInstruction;
 
     use super::*;
@@ -195,8 +188,10 @@ mod tests {
         let mut parser = ParserCallContract::new(
             tx.signature.to_string(),
             compiled_ix,
+            tx.account_keys,
             "solana".to_string(),
-            1,
+            InstructionIndex::new(1, 2),
+            Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
         )
         .await
         .unwrap();
@@ -204,7 +199,7 @@ mod tests {
         let sig = tx.signature.clone().to_string();
         assert_eq!(
             parser.message_id().await.unwrap().unwrap(),
-            format!("{}-1", sig)
+            format!("{}-1.2", sig)
         );
         parser.parse().await.unwrap();
         let event = parser.event(None).await.unwrap();
@@ -221,7 +216,7 @@ mod tests {
                             source_context: Some(HashMap::from([
                                 (
                                     "source_address".to_owned(),
-                                    parser.parsed.as_ref().unwrap().sender_key.to_string(),
+                                    parser.parsed.as_ref().unwrap().sender.to_string(),
                                 ),
                                 (
                                     "destination_address".to_owned(),
@@ -247,15 +242,26 @@ mod tests {
                         }),
                     },
                     message: GatewayV2Message {
-                        message_id: format!("{}-1", sig),
+                        message_id: format!("{}-1.2", sig),
                         source_chain: "solana".to_string(),
-                        source_address: "483jTxdFmFGRnzgx9nBoQM2Zao5mZxKvFgHzTb4Ytn1L".to_string(),
-                        destination_address: "0x7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fdd"
+                        source_address: parser.parsed.as_ref().unwrap().sender.to_string(),
+                        destination_address: parser
+                            .parsed
+                            .as_ref()
+                            .unwrap()
+                            .destination_contract_address
                             .to_string(),
-                        payload_hash: "dPgf4WfZm0y0HW0MzagieMrunz4vJdXlo5Nv89zsYNA=".to_string(),
+                        payload_hash: BASE64_STANDARD
+                            .encode(parser.parsed.as_ref().unwrap().payload_hash),
                     },
-                    destination_chain: "ethereum".to_string(),
-                    payload: "AQIDBAU=".to_string(),
+                    destination_chain: parser
+                        .parsed
+                        .as_ref()
+                        .unwrap()
+                        .destination_chain
+                        .to_string(),
+                    payload: BASE64_STANDARD
+                        .encode(parser.parsed.as_ref().unwrap().payload.clone()),
                 };
                 assert_eq!(event, expected_event);
             }
@@ -272,11 +278,17 @@ mod tests {
             UiInstruction::Compiled(ix) => ix,
             _ => panic!("expected a compiled instruction"),
         };
-        let parser = ParserCallContract::new(
+
+        let mut parser = ParserCallContract::new(
             tx.signature.to_string(),
             compiled_ix,
+            tx.account_keys,
             "solana".to_string(),
-            1,
+            InstructionIndex {
+                outer_index: 1,
+                inner_index: 2,
+            },
+            Pubkey::from_str("7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc").unwrap(),
         )
         .await
         .unwrap();
