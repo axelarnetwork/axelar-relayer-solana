@@ -36,7 +36,7 @@ bs58 = "0.5"
 borsh = { version = "1", features = ["derive"] }
 base64 = "0.22.1"
 httpmock = "0.7.0"
-axelar-solana-gateway = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "gateway-event-cpi", package = "axelar-solana-gateway" }
+axelar-solana-gateway = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "gateway-event-cpi", package = "axelar-solana-gateway", features = ["no-entrypoint"] }
 event-cpi = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "gateway-event-cpi", package = "event-cpi" }
 anchor-lang = "0.31.1"
 
