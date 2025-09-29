@@ -8080,44 +8080,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "solana"
-version = "0.1.0"
-source = "git+https://github.com/axelarnetwork/axelar-relayer-solana?branch=feat%2Fits#e23565ef2b6dacf8f88aff7d8e00f0248e5d8dd4"
-dependencies = [
- "anchor-lang",
- "anyhow",
- "async-trait",
- "axelar-solana-gateway",
- "base64 0.22.1",
- "borsh 1.5.7",
- "bs58",
- "chrono",
- "dotenv",
- "event-cpi",
- "futures",
- "futures-util",
- "hex",
- "httpmock",
- "interchain-token-service 1.1.0",
- "redis",
- "relayer-core",
- "serde",
- "serde_json",
- "solana-client",
- "solana-pubsub-client",
- "solana-rpc-client",
- "solana-rpc-client-api",
- "solana-sdk",
- "solana-transaction-status",
- "solana-transaction-status-client-types",
- "sqlx",
- "thiserror 2.0.16",
- "tokio",
- "tokio-util",
- "tracing",
-]
-
-[[package]]
 name = "solana-account"
 version = "2.1.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9242,7 +9204,7 @@ dependencies = [
 [[package]]
 name = "solana-transaction-parser"
 version = "0.1.0"
-source = "git+https://github.com/commonprefix/solana-transaction-parser?branch=main#1499984a1636dcc1b7d3935ac4ac3920e11eb4f7"
+source = "git+https://github.com/commonprefix/solana-transaction-parser?branch=main#1d45f481f1f68ea6d0513a324c5cad05480818ff"
 dependencies = [
  "anchor-lang",
  "anyhow",
@@ -9259,9 +9221,9 @@ dependencies = [
  "relayer-core",
  "serde",
  "serde_json",
- "solana 0.1.0 (git+https://github.com/axelarnetwork/axelar-relayer-solana?branch=feat%2Fits)",
  "solana-sdk",
  "solana-transaction-status",
+ "solana-transaction-status-client-types",
  "thiserror 2.0.16",
  "tokio",
  "tracing",
