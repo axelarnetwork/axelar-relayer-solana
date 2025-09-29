@@ -10,8 +10,8 @@ use relayer_core::subscriber::ChainTransaction;
 use relayer_core::utils::ThreadSafe;
 use tracing::{info, warn};
 
-use crate::parser::TransactionParserTrait;
 use crate::solana_transaction::{EventSummary, UpdateEvents};
+use solana_transaction_parser::parser::TransactionParserTrait;
 
 #[derive(Clone)]
 pub struct SolanaIngestor<TP: TransactionParserTrait + Sync, STM: UpdateEvents + ThreadSafe> {
@@ -51,7 +51,10 @@ where
 
         let events = self
             .solana_parser
-            .parse_transaction(transaction.clone())
+            .parse_transaction(
+                serde_json::to_string(&transaction)
+                    .map_err(|e| IngestorError::GenericError(e.to_string()))?,
+            )
             .await
             .map_err(|e| IngestorError::GenericError(e.to_string()))?;
 

@@ -1,5 +1,4 @@
 #[cfg(any(test, feature = "test-utils"))]
-#[cfg(any(test, feature = "test-utils"))]
 pub mod fixtures {
     use crate::types::{RpcGetTransactionResponse, SolanaTransaction};
     use solana_transaction_status::EncodedConfirmedTransactionWithStatusMeta;

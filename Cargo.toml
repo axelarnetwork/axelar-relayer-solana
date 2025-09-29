@@ -39,6 +39,7 @@ httpmock = "0.7.0"
 axelar-solana-gateway = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "gateway-event-cpi", package = "axelar-solana-gateway", features = ["no-entrypoint"] }
 event-cpi = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "gateway-event-cpi", package = "event-cpi" }
 anchor-lang = "0.31.1"
+solana-transaction-parser = { git = "https://github.com/commonprefix/solana-transaction-parser", branch = "main"}
 
 [dev-dependencies]
 mockall = "0.13.1"
