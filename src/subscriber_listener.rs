@@ -13,7 +13,7 @@ use futures::StreamExt;
 use relayer_core::{error::SubscriberError, queue::QueueTrait};
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Signature;
-use tokio::{select, time::timeout};
+use tokio::{select, sync::Semaphore, time::timeout};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use tracing::{error, info, warn};
 
@@ -229,6 +229,14 @@ impl<STR: SolanaStreamClientTrait, SM: SolanaTransactionModel> SolanaListener<ST
         cancellation_token: CancellationToken,
         tracker: &TaskTracker,
     ) {
+        let semaphore = Arc::new(Semaphore::new(
+            solana_config.common_config.num_workers as usize,
+        ));
+        let pending_limit = (solana_config.common_config.num_workers as usize)
+            .checked_mul(10)
+            .unwrap_or(solana_config.common_config.num_workers as usize); // Allow 10x buffering
+        let pending_semaphore = Arc::new(Semaphore::new(pending_limit));
+
         // Create a single RPC client and reuse it across spawned tasks to leverage
         // the underlying HTTP connection pooling, instead of creating a client per request.
         let solana_rpc_client = match SolanaRpcClient::new(
@@ -264,12 +272,29 @@ impl<STR: SolanaStreamClientTrait, SM: SolanaTransactionModel> SolanaListener<ST
                                 }
                             };
 
+                            let pending_permit = match Arc::clone(&pending_semaphore).try_acquire_owned() {
+                                Ok(permit) => permit,
+                                Err(_) => {
+                                    warn!("Too many pending tasks, dropping signature: {}", signature);
+                                    continue;
+                                }
+                            };
+
                             let transaction_model_clone = Arc::clone(transaction_model);
                             let queue_clone = Arc::clone(queue);
                             let stream_name_clone = stream_name.to_string();
                             let rpc_clone = Arc::clone(&solana_rpc_client);
+                            let semaphore_clone = Arc::clone(&semaphore);
 
                             tracker.spawn(async move {
+                                let _pending_permit = pending_permit;
+                                let _work_permit = match semaphore_clone.acquire_owned().await {
+                                    Ok(permit) => permit,
+                                    Err(_) => {
+                                        error!("Failed to acquire semaphore permit");
+                                        return;
+                                    }
+                                };
                                 let tx = match rpc_clone
                                 .get_transaction_by_signature(signature)
                                 .await
@@ -295,8 +320,6 @@ impl<STR: SolanaStreamClientTrait, SM: SolanaTransactionModel> SolanaListener<ST
                                 }
                             }
                             });
-
-
                         }
                         Ok(None) => {
                             warn!("Stream {} was closed", stream_name);
