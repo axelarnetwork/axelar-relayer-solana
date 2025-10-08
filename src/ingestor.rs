@@ -44,15 +44,15 @@ where
 
     async fn handle_transaction(
         &self,
-        transaction: ChainTransaction,
+        chain_transaction: ChainTransaction,
     ) -> Result<Vec<Event>, IngestorError> {
-        let transaction: SolanaTransaction = serde_json::from_str(&transaction)
+        let transaction: SolanaTransaction = serde_json::from_str(&chain_transaction)
             .map_err(|e| IngestorError::GenericError(e.to_string()))?;
 
         let events = self
             .solana_parser
             .parse_transaction(
-                serde_json::to_string(&transaction)
+                serde_json::to_string(&chain_transaction)
                     .map_err(|e| IngestorError::GenericError(e.to_string()))?,
             )
             .await
