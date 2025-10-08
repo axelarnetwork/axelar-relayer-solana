@@ -52,7 +52,7 @@ where
         let events = self
             .solana_parser
             .parse_transaction(
-                serde_json::to_string(&chain_transaction)
+                serde_json::to_string(&transaction)
                     .map_err(|e| IngestorError::GenericError(e.to_string()))?,
             )
             .await
