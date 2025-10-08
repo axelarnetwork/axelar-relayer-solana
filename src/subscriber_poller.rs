@@ -164,12 +164,23 @@ impl<RPC: SolanaRpcClientTrait, SC: SubscriberCursor, SM: SolanaTransactionModel
         account_id: Pubkey,
         account_type: AccountPollerEnum,
     ) -> Result<Vec<Self::Transaction>, anyhow::Error> {
-        let last_signature_checked = self
+        let last_signature_checked = match self
             .cursor_model
             .get_latest_signature(self.context.clone(), account_type)
             .await?
-            .map(|signature| Signature::from_str(&signature))
-            .transpose()?;
+        {
+            Some(sig_str) => match Signature::from_str(&sig_str) {
+                Ok(sig) => Some(sig),
+                Err(e) => {
+                    warn!(
+                        "Malformed signature '{}' for {:?} — ignoring (error: {:?})",
+                        sig_str, account_type, e
+                    );
+                    None
+                }
+            },
+            None => None,
+        };
 
         let transactions = self
             .client
