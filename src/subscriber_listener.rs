@@ -232,9 +232,11 @@ impl<STR: SolanaStreamClientTrait, SM: SolanaTransactionModel> SolanaListener<ST
         let semaphore = Arc::new(Semaphore::new(
             solana_config.common_config.num_workers as usize,
         ));
-        let pending_limit = (solana_config.common_config.num_workers as usize)
-            .checked_mul(10)
-            .unwrap_or(solana_config.common_config.num_workers as usize); // Allow 10x buffering
+        let num_workers = solana_config.common_config.num_workers as usize;
+
+        // Set pending limit to 10×num_workers, but avoid overflow and enforce a minimum of 1 (Semaphore requires > 0)
+        let pending_limit = num_workers.saturating_mul(10).max(1);
+
         let pending_semaphore = Arc::new(Semaphore::new(pending_limit));
 
         // Create a single RPC client and reuse it across spawned tasks to leverage
