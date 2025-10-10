@@ -7904,6 +7904,7 @@ dependencies = [
  "chrono",
  "dotenv",
  "ed25519-zebra",
+ "error-stack 0.5.0",
  "futures",
  "futures-util",
  "hex",
@@ -9874,7 +9875,7 @@ dependencies = [
 [[package]]
 name = "solana-transaction-parser"
 version = "0.1.0"
-source = "git+https://github.com/commonprefix/solana-transaction-parser?branch=v2-parsing#cd8a6514d11118983e624bc456a109c455c686e3"
+source = "git+https://github.com/commonprefix/solana-transaction-parser?rev=cd8a651#cd8a6514d11118983e624bc456a109c455c686e3"
 dependencies = [
  "anchor-lang",
  "anyhow",

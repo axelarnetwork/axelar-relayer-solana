@@ -17,10 +17,16 @@ pub struct SolanaConfig {
     pub solana_its: String,
     pub solana_commitment: CommitmentConfig,
     pub wallets: Vec<WalletConfig>,
+    pub gas_estimates: GasEstimates,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct WalletConfig {
     pub public_key: String,
     pub secret_key: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct GasEstimates {
+    pub native_gas_refund: u64,
 }
