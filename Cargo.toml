@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-relayer-core = { git = "https://github.com/commonprefix/axelar-relayer-core", branch = "temp-solana" }
+relayer-core = { git = "https://github.com/commonprefix/axelar-relayer-core", branch = "temp-solana", features = ["mocks"] }
 dotenv = "0.15.0"
 tokio = { version = "1.41.1", features = ["full", "test-util"] }
 anyhow = "1.0.93"
@@ -18,13 +18,14 @@ sqlx = { version = "0.8.1", features = [
     "chrono",
 ] }
 chrono = { version = "0.4.40", features = ["serde"] }
-solana-client = "~2.1"
-solana-rpc-client = "~2.1"
-solana-rpc-client-api = "~2.1"
-solana-sdk = "~2.1"
-solana-transaction-status = "~2.1"
-solana-pubsub-client = "~2.1"
-solana-transaction-status-client-types = "~2.1"
+solana-client = "~2.3"
+solana-rpc-client = "~2.3"
+solana-rpc-client-api = "~2.3"
+solana-sdk = "~2.3"
+solana-program = "~2.3"
+solana-transaction-status = "~2.3"
+solana-pubsub-client = "~2.3"
+solana-transaction-status-client-types = "~2.3"
 interchain-token-service = { git = "https://github.com/commonprefix/axelar-amplifier", branch = "xrpl", package = "interchain-token-service" }
 futures = "0.3.31"
 futures-util = "0.3.31"
@@ -33,8 +34,12 @@ thiserror = "2.0.3"
 hex = "0.4.3"
 tokio-util = "0.7.12"
 bs58 = "0.5"
-borsh = "1"
+borsh = { version = "1", features = ["derive"] }
 base64 = "0.22.1"
+httpmock = "0.7.0"
+anchor-lang = "0.31.1"
+solana-transaction-parser = { git = "https://github.com/commonprefix/solana-transaction-parser", branch = "v2-parsing"}
+ed25519-zebra = "=4.0.3"
 
 [dev-dependencies]
 mockall = "0.13.1"

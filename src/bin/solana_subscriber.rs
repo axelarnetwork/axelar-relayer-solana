@@ -28,7 +28,7 @@ async fn main() -> anyhow::Result<()> {
 
     let _guard = setup_logging(&config.common_config);
 
-    let events_queue = Queue::new(
+    let events_queue: Arc<dyn relayer_core::queue::QueueTrait> = Queue::new(
         &config.common_config.queue_address,
         "events",
         config.common_config.num_workers,
