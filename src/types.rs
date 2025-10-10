@@ -43,7 +43,9 @@ impl SolanaTransaction {
             .and_then(|s| Signature::from_str(s).ok())
             .ok_or_else(|| anyhow!("Missing or invalid signature"))?;
 
-        let timestamp = None;
+        let timestamp = result
+            .block_time
+            .map(|bt| DateTime::from_timestamp(bt, 0).unwrap_or_else(Utc::now));
         let ixs = meta.inner_instructions.clone();
         let cost_units = meta.cost_units.unwrap_or(0) + meta.fee; // base fee + gas paid for the tx
 
@@ -98,7 +100,9 @@ impl SolanaTransaction {
         }?;
         Ok(Self {
             signature,
-            timestamp: None,
+            timestamp: tx
+                .block_time
+                .map(|bt| DateTime::from_timestamp(bt, 0).unwrap_or_else(Utc::now)),
             logs: meta
                 .log_messages
                 .clone()

@@ -1383,7 +1383,7 @@ dependencies = [
 [[package]]
 name = "axelar-solana-encoding"
 version = "0.1.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor#2da7e82ef567cfbdb1704fab69080e071dc4c646"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor#b7e9d80d318fecdf543b4c61d1eaf43283801bec"
 dependencies = [
  "arrayref",
  "borsh 1.5.7",
@@ -1399,7 +1399,7 @@ dependencies = [
 [[package]]
 name = "axelar-solana-gas-service-v2"
 version = "0.1.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor#2da7e82ef567cfbdb1704fab69080e071dc4c646"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor#b7e9d80d318fecdf543b4c61d1eaf43283801bec"
 dependencies = [
  "anchor-lang",
  "anchor-spl",
@@ -1411,7 +1411,7 @@ dependencies = [
 [[package]]
 name = "axelar-solana-gateway-v2"
 version = "0.1.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor#2da7e82ef567cfbdb1704fab69080e071dc4c646"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor#b7e9d80d318fecdf543b4c61d1eaf43283801bec"
 dependencies = [
  "anchor-lang",
  "axelar-solana-encoding",
@@ -1425,7 +1425,7 @@ dependencies = [
 [[package]]
 name = "axelar-solana-operators"
 version = "0.1.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor#2da7e82ef567cfbdb1704fab69080e071dc4c646"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor#b7e9d80d318fecdf543b4c61d1eaf43283801bec"
 dependencies = [
  "anchor-lang",
  "program-utils",
@@ -6102,7 +6102,7 @@ dependencies = [
 [[package]]
 name = "program-utils"
 version = "0.1.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor#2da7e82ef567cfbdb1704fab69080e071dc4c646"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor#b7e9d80d318fecdf543b4c61d1eaf43283801bec"
 dependencies = [
  "borsh 1.5.7",
  "bytemuck",
@@ -9874,7 +9874,7 @@ dependencies = [
 [[package]]
 name = "solana-transaction-parser"
 version = "0.1.0"
-source = "git+https://github.com/commonprefix/solana-transaction-parser?branch=v2-parsing#cd8a6514d11118983e624bc456a109c455c686e3"
+source = "git+https://github.com/commonprefix/solana-transaction-parser?branch=v2-parsing#975bae534015bfc62548b356b81ec6328efb888d"
 dependencies = [
  "anchor-lang",
  "anyhow",
@@ -9897,6 +9897,7 @@ dependencies = [
  "thiserror 2.0.17",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
