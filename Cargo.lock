@@ -7898,6 +7898,8 @@ dependencies = [
  "anchor-lang",
  "anyhow",
  "async-trait",
+ "axelar-solana-encoding",
+ "axelar-solana-gateway-v2",
  "base64 0.22.1",
  "borsh 1.5.7",
  "bs58",
@@ -9875,7 +9877,7 @@ dependencies = [
 [[package]]
 name = "solana-transaction-parser"
 version = "0.1.0"
-source = "git+https://github.com/commonprefix/solana-transaction-parser?rev=cd8a651#cd8a6514d11118983e624bc456a109c455c686e3"
+source = "git+https://github.com/commonprefix/solana-transaction-parser?rev=a25c9a1#a25c9a12f8728adb0de739d05559bcfeb213b8f1"
 dependencies = [
  "anchor-lang",
  "anyhow",
@@ -9898,6 +9900,7 @@ dependencies = [
  "thiserror 2.0.17",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

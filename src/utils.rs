@@ -8,6 +8,7 @@ use tracing::{debug, error};
 use solana_rpc_client_api::response::RpcConfirmedTransactionStatusWithSignature;
 use solana_sdk::{
     commitment_config::{CommitmentConfig, CommitmentLevel},
+    pubkey::Pubkey,
     signature::Signature,
 };
 use std::sync::Arc;
@@ -116,4 +117,15 @@ pub async fn upsert_and_publish<SM: SolanaTransactionModel>(
         debug!("Transaction already exists: {:?}", tx.signature);
     }
     Ok(inserted)
+}
+
+pub fn get_signature_verification_pda(payload_merkle_root: &[u8; 32]) -> (Pubkey, u8) {
+    let (pubkey, bump) = Pubkey::find_program_address(
+        &[
+            axelar_solana_gateway_v2::seed_prefixes::SIGNATURE_VERIFICATION_SEED,
+            payload_merkle_root,
+        ],
+        &axelar_solana_gateway_v2::ID,
+    );
+    (pubkey, bump)
 }

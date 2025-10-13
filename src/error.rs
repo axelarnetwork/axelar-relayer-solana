@@ -25,3 +25,9 @@ pub enum GasError {
     #[error("GasCalculationError: {0}")]
     GasCalculationError(String),
 }
+
+#[derive(Error, Debug)]
+pub enum GasEstimationError {
+    #[error("GenericError: {0}")]
+    Generic(String),
+}

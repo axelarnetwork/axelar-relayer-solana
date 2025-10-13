@@ -10,11 +10,21 @@ and broadcaster should potentially be returning a vector of BroadcastResults.
 */
 
 use super::poll_client::{SolanaRpcClient, SolanaRpcClientTrait};
-use crate::gas_estimator::GasEstimator;
+use crate::gas_estimator::GasEstimatorTrait;
+use crate::includer_client::IncluderClientTrait;
+use crate::utils::get_signature_verification_pda;
 use crate::wallet::Wallet;
+use anchor_lang::prelude::AccountMeta;
+use anchor_lang::prelude::Context;
+use anchor_lang::InstructionData;
+use anchor_lang::ToAccountMetas;
 use async_trait::async_trait;
+use axelar_solana_encoding::types::execute_data::ExecuteData;
+use axelar_solana_gateway_v2::accounts::InitializePayloadVerificationSession;
+use axelar_solana_gateway_v2::instruction::InitializePayloadVerificationSession as InitializePayloadVerificationSessionIx;
 use base64::engine::general_purpose;
 use base64::Engine;
+use borsh::BorshDeserialize;
 use relayer_core::error::BroadcasterError::RPCCallFailed;
 use relayer_core::gmp_api::gmp_types::{ExecuteTaskFields, RefundTaskFields};
 use relayer_core::utils::ThreadSafe;
@@ -22,6 +32,7 @@ use relayer_core::{
     error::BroadcasterError,
     includer::{BroadcastResult, Broadcaster},
 };
+use solana_sdk::instruction::Instruction;
 use solana_sdk::pubkey::Pubkey;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -30,7 +41,7 @@ use tracing::{debug, error, info, warn};
 #[derive(Clone)]
 pub struct SolanaBroadcaster<GE> {
     wallet: Arc<Wallet>,
-    client: Arc<dyn SolanaRpcClientTrait>,
+    client: Arc<dyn IncluderClientTrait>,
     gateway_address: Pubkey,
     gas_service_address: Pubkey,
     chain_name: String,
@@ -39,11 +50,11 @@ pub struct SolanaBroadcaster<GE> {
 
 impl<GE> SolanaBroadcaster<GE>
 where
-    GE: GasEstimator + ThreadSafe,
+    GE: GasEstimatorTrait + ThreadSafe,
 {
     pub fn new(
         wallet: Arc<Wallet>,
-        client: Arc<dyn SolanaRpcClientTrait>,
+        client: Arc<dyn IncluderClientTrait>,
         gateway_address: Pubkey,
         gas_service_address: Pubkey,
         chain_name: String,
@@ -61,75 +72,59 @@ where
 }
 
 #[derive(Clone)]
-pub struct TONTransaction;
+pub struct SolanaTransaction;
 
 #[async_trait]
 impl<GE> Broadcaster for SolanaBroadcaster<GE>
 where
-    GE: GasEstimator + ThreadSafe,
+    GE: GasEstimatorTrait + ThreadSafe,
 {
-    type Transaction = TONTransaction;
+    type Transaction = SolanaTransaction;
 
     #[tracing::instrument(skip(self), fields(message_id))]
     async fn broadcast_prover_message(
         &self,
         tx_blob: String,
     ) -> Result<BroadcastResult<Self::Transaction>, BroadcasterError> {
-        let approve_messages = ApproveMessages::from_boc_hex(&tx_blob)
-            .map_err(|e| BroadcasterError::GenericError(e.to_string()))?;
+        let execute_data_bytes = tx_blob.into_bytes().as_slice();
+        let execute_data = ExecuteData::try_from_slice(execute_data_bytes).map_err(|_err| {
+            BroadcasterError::GenericError("cannot decode execute data".to_string())
+        })?;
 
-        let message =
-            approve_messages
-                .approve_messages
-                .first()
-                .ok_or(BroadcasterError::GenericError(
-                    "Missing approved message".to_string(),
-                ))?;
+        let (verification_session_tracker_pda, bump) =
+            get_signature_verification_pda(&execute_data.payload_merkle_root);
 
-        tracing::Span::current().record("message_id", &message.message_id);
-
-        let approve_message_value: BigUint = BigUint::from(
-            self.gas_estimator
-                .approve_send(approve_messages.approve_messages.len())
-                .await,
-        );
-        info!(
-            "Sending approve message: message_id={}, source_chain={}",
-            message.message_id, message.source_chain
-        );
-
-        let actions: Vec<OutAction> = vec![out_action(
-            tx_blob.as_str(),
-            approve_message_value,
-            self.gateway_address.clone(),
-        )
-        .map_err(|e| BroadcasterError::GenericError(e.to_string()))?];
-
-        let wallet =
-            self.wallet.acquire().await.map_err(|e| {
-                BroadcasterError::GenericError(format!("Wallet acquire failed: {e:?}"))
-            })?;
-
-        let result = async {
-            let res = self.send_to_chain(wallet, actions.clone(), None).await;
-            let (tx_hash, status) = match res {
-                Ok(response) => (response.message_hash, Ok(())),
-                Err(err) => (String::new(), Err(err)),
-            };
-
-            Ok(BroadcastResult {
-                transaction: TONTransaction,
-                tx_hash,
-                message_id: Some(message.message_id.clone()),
-                source_chain: Some(message.source_chain.clone()),
-                status,
-            })
+        let ix_data = axelar_solana_gateway_v2::instruction::InitializePayloadVerificationSession {
+            merkle_root: execute_data.payload_merkle_root,
         }
-        .await;
+        .data();
 
-        self.wallet.release(wallet).await;
+        let ix = Instruction {
+            program_id: axelar_solana_gateway_v2::ID,
+            accounts: vec![
+                AccountMeta::new(self.wallet.public_key, true),
+                AccountMeta::new_readonly(self.gateway_address, false),
+                AccountMeta::new(verification_session_tracker_pda, false),
+                AccountMeta::new_readonly(solana_program::system_program::id(), false),
+            ],
+            data: ix_data,
+        };
 
-        result
+        let res = self
+            .send_to_chain(self.wallet.public_key, vec![ix], None)
+            .await;
+        let (tx_hash, status) = match res {
+            Ok(response) => (response.message_hash, Ok(())),
+            Err(err) => (String::new(), Err(err)),
+        };
+
+        Ok(BroadcastResult {
+            transaction: SolanaTransaction,
+            tx_hash,
+            message_id: Some(message.message_id.clone()),
+            source_chain: Some(message.source_chain.clone()),
+            status,
+        })
     }
 
     #[tracing::instrument(skip(self))]
@@ -171,7 +166,7 @@ where
         );
         if available_gas < required_gas {
             return Ok(BroadcastResult {
-                transaction: TONTransaction,
+                transaction: SolanaTransaction,
                 tx_hash: String::new(),
                 message_id: Some(message_id),
                 source_chain: Some(source_chain),
@@ -219,7 +214,7 @@ where
             };
 
             Ok(BroadcastResult {
-                transaction: TONTransaction,
+                transaction: SolanaTransaction,
                 tx_hash,
                 message_id: Some(message_id.clone()),
                 source_chain: Some(source_chain.clone()),
@@ -323,7 +318,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::broadcaster::{SolanaBroadcaster, TONTransaction};
+    use crate::broadcaster::{SolanaBroadcaster, SolanaTransaction};
     use crate::gas_estimator::MockGasEstimator;
     use crate::poll_client::{MockRestClient, V3MessageResponse};
     use crate::wallet::Wallet;
@@ -397,7 +392,7 @@ mod tests {
         assert!(res.is_ok());
 
         let good = BroadcastResult {
-            transaction: TONTransaction,
+            transaction: SolanaTransaction,
             tx_hash: "abc".to_string(),
             message_id: Some(
                 "0x17fd7da3d819cfbc46ff28f3d80980770ec1b80fd7d1b229cec3251939b9b23f-1".to_string(),
@@ -435,7 +430,7 @@ mod tests {
 
         let gas_estimator = MockGasEstimator::new();
 
-        let broadcaster = TONBroadcaster {
+        let broadcaster = SolanaBroadcaster {
             wallet: Arc::new(wallet),
             query_id_wrapper: Arc::new(query_id_wrapper),
             client: Arc::new(client),
@@ -493,7 +488,7 @@ mod tests {
             .expect_highload_wallet_send()
             .returning(|_| 1024u64);
 
-        let broadcaster = TONBroadcaster {
+        let broadcaster = SolanaBroadcaster {
             wallet: Arc::new(wallet),
             query_id_wrapper: Arc::new(query_id_wrapper),
             client: Arc::new(client),
@@ -519,7 +514,7 @@ mod tests {
         assert!(res.is_ok());
 
         let good = BroadcastResult {
-            transaction: TONTransaction,
+            transaction: SolanaTransaction,
             tx_hash: "abc".to_string(),
             message_id: Some(
                 "0xf38d2a646e4b60e37bc16d54bb9163739372594dc96bab954a85b4a170f49e58-1".to_string(),
@@ -563,7 +558,7 @@ mod tests {
             .expect_highload_wallet_send()
             .returning(|_| 1024u64);
 
-        let broadcaster = TONBroadcaster {
+        let broadcaster = SolanaBroadcaster {
             wallet: Arc::new(wallet),
             query_id_wrapper: Arc::new(query_id_wrapper),
             client: Arc::new(client),
