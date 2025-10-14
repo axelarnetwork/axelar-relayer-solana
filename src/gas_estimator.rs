@@ -6,6 +6,7 @@ use crate::includer_client::IncluderClientTrait;
 use crate::{config::GasEstimates, error::GasEstimationError};
 use async_trait::async_trait;
 use solana_sdk::compute_budget::ComputeBudgetInstruction;
+use solana_sdk::hash::Hash;
 use solana_sdk::instruction::Instruction;
 use solana_sdk::signer::keypair::Keypair;
 use solana_sdk::signer::Signer;
@@ -35,7 +36,7 @@ pub trait GasEstimatorTrait {
     async fn compute_budget(
         &self,
         ixs: &[Instruction],
-    ) -> Result<(Instruction, solana_sdk::hash::Hash), GasEstimationError>;
+    ) -> Result<(Instruction, Hash), GasEstimationError>;
     async fn compute_unit_price(
         &self,
         ixs: &[Instruction],
@@ -47,7 +48,7 @@ impl<IC: IncluderClientTrait> GasEstimatorTrait for GasEstimator<IC> {
     async fn compute_budget(
         &self,
         ixs: &[Instruction],
-    ) -> Result<(Instruction, solana_sdk::hash::Hash), GasEstimationError> {
+    ) -> Result<(Instruction, Hash), GasEstimationError> {
         const PERCENT_POINTS_TO_TOP_UP: u64 = 10;
 
         let hash = self

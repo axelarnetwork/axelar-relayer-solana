@@ -1,7 +1,7 @@
 use crate::config::SolanaConfig;
-use crate::gas_estimator::GasEstimator;
+use crate::gas_estimator::GasEstimatorTrait;
+use crate::includer_client::IncluderClientTrait;
 use crate::poll_client::SolanaRpcClientTrait;
-use crate::wallet::Wallet;
 use crate::{
     broadcaster::SolanaBroadcaster, poll_client::SolanaRpcClient,
     refund_manager::SolanaRefundManager,
@@ -16,24 +16,23 @@ use solana_sdk::pubkey::Pubkey;
 use std::str::FromStr;
 use std::sync::Arc;
 
-pub struct TONIncluder {}
+pub struct SolanaIncluder {}
 
-impl TONIncluder {
+impl SolanaIncluder {
     #[allow(clippy::new_ret_no_self)]
-    pub async fn new<DB: Database + ThreadSafe + Clone, G: GmpApiTrait + ThreadSafe + Clone>(
+    pub async fn new<
+        DB: Database + ThreadSafe + Clone,
+        G: GmpApiTrait + ThreadSafe + Clone,
+        IC: IncluderClientTrait + ThreadSafe,
+        GE: GasEstimatorTrait + ThreadSafe,
+    >(
         config: SolanaConfig,
         gmp_api: Arc<G>,
         redis_conn: ConnectionManager,
         payload_cache_for_includer: PayloadCache<DB>,
         construct_proof_queue: Arc<Queue>,
     ) -> error_stack::Result<
-        Includer<
-            SolanaBroadcaster<SolanaGasEstimator>,
-            Arc<dyn SolanaRpcClientTrait>,
-            SolanaRefundManager,
-            DB,
-            G,
-        >,
+        Includer<SolanaBroadcaster<GE, IC>, Arc<IC>, SolanaRefundManager, DB, G>,
         BroadcasterError,
     > {
         let solana_rpc = config.solana_poll_rpc;

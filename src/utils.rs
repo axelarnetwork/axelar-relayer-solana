@@ -5,6 +5,7 @@ use serde_json::json;
 use std::str::FromStr;
 use tracing::{debug, error};
 
+use axelar_solana_gateway_v2::{seed_prefixes, VerifierSetHash, ID};
 use solana_rpc_client_api::response::RpcConfirmedTransactionStatusWithSignature;
 use solana_sdk::{
     commitment_config::{CommitmentConfig, CommitmentLevel},
@@ -122,10 +123,17 @@ pub async fn upsert_and_publish<SM: SolanaTransactionModel>(
 pub fn get_signature_verification_pda(payload_merkle_root: &[u8; 32]) -> (Pubkey, u8) {
     let (pubkey, bump) = Pubkey::find_program_address(
         &[
-            axelar_solana_gateway_v2::seed_prefixes::SIGNATURE_VERIFICATION_SEED,
+            seed_prefixes::SIGNATURE_VERIFICATION_SEED,
             payload_merkle_root,
         ],
-        &axelar_solana_gateway_v2::ID,
+        &ID,
     );
     (pubkey, bump)
+}
+
+pub fn get_verifier_set_tracker_pda(hash: VerifierSetHash) -> (Pubkey, u8) {
+    Pubkey::find_program_address(
+        &[seed_prefixes::VERIFIER_SET_TRACKER_SEED, hash.as_slice()],
+        &ID,
+    )
 }

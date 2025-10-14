@@ -9,24 +9,21 @@ and broadcaster should potentially be returning a vector of BroadcastResults.
 
 */
 
-use super::poll_client::{SolanaRpcClient, SolanaRpcClientTrait};
-use crate::gas_estimator::GasEstimatorTrait;
 use crate::includer_client::IncluderClientTrait;
 use crate::transaction_builder::TransactionBuilderTrait;
 use crate::utils::get_signature_verification_pda;
-use crate::wallet::Wallet;
+use crate::utils::get_verifier_set_tracker_pda;
 use anchor_lang::prelude::AccountMeta;
-use anchor_lang::prelude::Context;
 use anchor_lang::InstructionData;
-use anchor_lang::ToAccountMetas;
 use async_trait::async_trait;
-use axelar_solana_encoding::types::execute_data::ExecuteData;
-use axelar_solana_gateway_v2::accounts::InitializePayloadVerificationSession;
-use axelar_solana_gateway_v2::instruction::InitializePayloadVerificationSession as InitializePayloadVerificationSessionIx;
+//use axelar_solana_encoding::borsh::BorshDeserialize;
+use borsh::BorshDeserialize;
+//use axelar_solana_encoding::types::execute_data::ExecuteData;
+use crate::v2_program_types::ExecuteData;
 use base64::engine::general_purpose;
 use base64::Engine;
-use borsh::BorshDeserialize;
-use relayer_core::error::BroadcasterError::RPCCallFailed;
+use futures::stream::FuturesUnordered;
+use futures::StreamExt as _;
 use relayer_core::gmp_api::gmp_types::{ExecuteTaskFields, RefundTaskFields};
 use relayer_core::utils::ThreadSafe;
 use relayer_core::{
@@ -35,15 +32,20 @@ use relayer_core::{
 };
 use solana_sdk::instruction::Instruction;
 use solana_sdk::pubkey::Pubkey;
-use solana_sdk::transaction::Transaction;
+use solana_sdk::signer::keypair::Keypair;
+use solana_sdk::signer::Signer;
 use std::str::FromStr;
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
 #[derive(Clone)]
-pub struct SolanaBroadcaster<TB: TransactionBuilderTrait + ThreadSafe> {
-    client: Arc<dyn IncluderClientTrait>,
-    wallet: Arc<Wallet>,
+pub struct SolanaBroadcaster<TB, IC>
+where
+    TB: TransactionBuilderTrait + ThreadSafe,
+    IC: IncluderClientTrait + ThreadSafe,
+{
+    client: IC,
+    keypair: Arc<Keypair>,
     gateway_address: Pubkey,
     gas_service_address: Pubkey,
     chain_name: String,
@@ -51,10 +53,12 @@ pub struct SolanaBroadcaster<TB: TransactionBuilderTrait + ThreadSafe> {
     max_retries: usize,
 }
 
-impl<TB: TransactionBuilderTrait + ThreadSafe> SolanaBroadcaster<TB> {
+impl<TB: TransactionBuilderTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
+    SolanaBroadcaster<TB, IC>
+{
     pub fn new(
-        client: Arc<dyn IncluderClientTrait>,
-        wallet: Arc<Wallet>,
+        client: IC,
+        keypair: Arc<Keypair>,
         gateway_address: Pubkey,
         gas_service_address: Pubkey,
         chain_name: String,
@@ -63,7 +67,7 @@ impl<TB: TransactionBuilderTrait + ThreadSafe> SolanaBroadcaster<TB> {
     ) -> anyhow::Result<Self, BroadcasterError> {
         Ok(Self {
             client,
-            wallet,
+            keypair: Arc::clone(&keypair),
             gateway_address,
             gas_service_address,
             chain_name,
@@ -75,7 +79,11 @@ impl<TB: TransactionBuilderTrait + ThreadSafe> SolanaBroadcaster<TB> {
     async fn send_to_chain(&self, ix: Instruction) -> Result<String, BroadcasterError> {
         let mut retries: usize = 0;
         loop {
-            let tx = self.transaction_builder.build(ix);
+            let tx = self
+                .transaction_builder
+                .build(ix.clone())
+                .await
+                .map_err(|e| BroadcasterError::GenericError(e.to_string()))?;
             let res = self.client.send_transaction(tx).await;
             match res {
                 Ok(signature) => {
@@ -102,7 +110,9 @@ impl<TB: TransactionBuilderTrait + ThreadSafe> SolanaBroadcaster<TB> {
 pub struct SolanaTransaction;
 
 #[async_trait]
-impl<TB: TransactionBuilderTrait + ThreadSafe> Broadcaster for SolanaBroadcaster<TB> {
+impl<TB: TransactionBuilderTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe> Broadcaster
+    for SolanaBroadcaster<TB, IC>
+{
     type Transaction = SolanaTransaction;
 
     #[tracing::instrument(skip(self), fields(message_id))]
@@ -115,7 +125,7 @@ impl<TB: TransactionBuilderTrait + ThreadSafe> Broadcaster for SolanaBroadcaster
             BroadcasterError::GenericError("cannot decode execute data".to_string())
         })?;
 
-        let (verification_session_tracker_pda, bump) =
+        let (verification_session_tracker_pda, _bump) =
             get_signature_verification_pda(&execute_data.payload_merkle_root);
 
         let ix_data = axelar_solana_gateway_v2::instruction::InitializePayloadVerificationSession {
@@ -126,7 +136,7 @@ impl<TB: TransactionBuilderTrait + ThreadSafe> Broadcaster for SolanaBroadcaster
         let ix = Instruction {
             program_id: axelar_solana_gateway_v2::ID,
             accounts: vec![
-                AccountMeta::new(self.wallet.public_key, true),
+                AccountMeta::new(self.keypair.pubkey(), true),
                 AccountMeta::new_readonly(self.gateway_address, false),
                 AccountMeta::new(verification_session_tracker_pda, false),
                 AccountMeta::new_readonly(solana_program::system_program::id(), false),
@@ -135,7 +145,7 @@ impl<TB: TransactionBuilderTrait + ThreadSafe> Broadcaster for SolanaBroadcaster
         };
 
         let (message_id, source_chain) = match &execute_data.payload_items {
-            axelar_solana_encoding::types::execute_data::MerkleisedPayload::NewMessages { messages } => {
+            crate::v2_program_types::MerkleisedPayload::NewMessages { messages, .. } => {
                 if let Some(first_message) = messages.first() {
                     let chain = first_message.leaf.message.cc_id.chain.clone();
                     let id = first_message.leaf.message.cc_id.id.clone();
@@ -143,14 +153,13 @@ impl<TB: TransactionBuilderTrait + ThreadSafe> Broadcaster for SolanaBroadcaster
                 } else {
                     (None, None)
                 }
-            },
-            axelar_solana_encoding::types::execute_data::MerkleisedPayload::VerifierSetRotation { .. } => {
+            }
+            crate::v2_program_types::MerkleisedPayload::VerifierSetRotation { .. } => {
                 // For verifier set rotation, we don't have message info
                 (None, None)
             }
         };
 
-        // Send the transaction using the helper method
         let tx_hash = match self.send_to_chain(ix).await {
             Ok(hash) => hash,
             Err(e) => {
@@ -163,6 +172,37 @@ impl<TB: TransactionBuilderTrait + ThreadSafe> Broadcaster for SolanaBroadcaster
                 });
             }
         };
+
+        // not needed?
+        let _verifier_set_tracker_pda =
+            get_verifier_set_tracker_pda(execute_data.signing_verifier_set_merkle_root).0;
+
+        // verify each signature in the signing session
+        let mut verifier_ver_future_set = execute_data
+            .signing_verifier_set_leaves
+            .into_iter()
+            .filter_map(|verifier_info| {
+                let ix_data = axelar_solana_gateway_v2::instruction::VerifySignature {
+                    payload_merkle_root: execute_data.payload_merkle_root,
+                    verifier_info,
+                }
+                .data();
+                let ix = Instruction {
+                    program_id: axelar_solana_gateway_v2::ID,
+                    accounts: vec![
+                        AccountMeta::new(self.keypair.pubkey(), true),
+                        AccountMeta::new_readonly(self.gateway_address, false),
+                        AccountMeta::new(verification_session_tracker_pda, false),
+                        AccountMeta::new_readonly(solana_program::system_program::id(), false),
+                    ],
+                    data: ix_data,
+                };
+                Some(self.send_to_chain(ix))
+            })
+            .collect::<FuturesUnordered<_>>();
+        while let Some(result) = verifier_ver_future_set.next().await {
+            result?;
+        }
 
         Ok(BroadcastResult {
             transaction: SolanaTransaction,
@@ -230,7 +270,7 @@ impl<TB: TransactionBuilderTrait + ThreadSafe> Broadcaster for SolanaBroadcaster
                 self.chain_name.clone(),
                 destination_address,
                 hex_payload,
-                self.wallet.public_key.clone(),
+                self.keypair.pubkey(),
             );
 
             let boc = relayer_execute_msg
@@ -253,7 +293,7 @@ impl<TB: TransactionBuilderTrait + ThreadSafe> Broadcaster for SolanaBroadcaster
             )
             .map_err(|e| BroadcasterError::GenericError(e.to_string()))?];
 
-            let res = self.send_to_chain(wallet, actions.clone(), None).await;
+            let res = self.send_to_chain(keypair, actions.clone(), None).await;
             let (tx_hash, status) = match res {
                 Ok(response) => (response.message_hash, Ok(())),
                 Err(err) => (String::new(), Err(err)),
@@ -269,7 +309,7 @@ impl<TB: TransactionBuilderTrait + ThreadSafe> Broadcaster for SolanaBroadcaster
         }
         .await;
 
-        self.wallet.release(wallet).await;
+        self.keypair.release(keypair).await;
 
         result
     }

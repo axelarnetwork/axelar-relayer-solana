@@ -14,8 +14,7 @@ pub mod includer_client;
 pub mod refund_manager;
 pub mod subscriber_listener;
 pub mod subscriber_poller;
+pub mod test_utils;
 pub mod transaction_builder;
 pub mod types;
-pub mod wallet;
-
-pub mod test_utils;
+pub mod v2_program_types;
