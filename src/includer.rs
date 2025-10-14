@@ -1,5 +1,5 @@
 use crate::config::SolanaConfig;
-use crate::gas_estimator::SolanaGasEstimator;
+use crate::gas_estimator::GasEstimator;
 use crate::poll_client::SolanaRpcClientTrait;
 use crate::wallet::Wallet;
 use crate::{

@@ -9,9 +9,9 @@ use solana_sdk::compute_budget::ComputeBudgetInstruction;
 use solana_sdk::instruction::Instruction;
 use solana_sdk::signer::keypair::Keypair;
 use solana_sdk::signer::Signer;
-use solana_sdk::transaction::{Transaction, TransactionError};
+use solana_sdk::transaction::Transaction;
 
-pub const MAX_COMPUTE_UNIT_LIMIT: u32 = 1_400_000;
+pub const MAX_COMPUTE_UNIT_LIMIT: u32 = 1_399_850;
 
 pub struct GasEstimator<IC: IncluderClientTrait> {
     config: GasEstimates,

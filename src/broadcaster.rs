@@ -12,6 +12,7 @@ and broadcaster should potentially be returning a vector of BroadcastResults.
 use super::poll_client::{SolanaRpcClient, SolanaRpcClientTrait};
 use crate::gas_estimator::GasEstimatorTrait;
 use crate::includer_client::IncluderClientTrait;
+use crate::transaction_builder::TransactionBuilderTrait;
 use crate::utils::get_signature_verification_pda;
 use crate::wallet::Wallet;
 use anchor_lang::prelude::AccountMeta;
@@ -34,40 +35,66 @@ use relayer_core::{
 };
 use solana_sdk::instruction::Instruction;
 use solana_sdk::pubkey::Pubkey;
+use solana_sdk::transaction::Transaction;
 use std::str::FromStr;
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
 #[derive(Clone)]
-pub struct SolanaBroadcaster<GE> {
-    wallet: Arc<Wallet>,
+pub struct SolanaBroadcaster<TB: TransactionBuilderTrait + ThreadSafe> {
     client: Arc<dyn IncluderClientTrait>,
+    wallet: Arc<Wallet>,
     gateway_address: Pubkey,
     gas_service_address: Pubkey,
     chain_name: String,
-    gas_estimator: GE,
+    transaction_builder: TB,
+    max_retries: usize,
 }
 
-impl<GE> SolanaBroadcaster<GE>
-where
-    GE: GasEstimatorTrait + ThreadSafe,
-{
+impl<TB: TransactionBuilderTrait + ThreadSafe> SolanaBroadcaster<TB> {
     pub fn new(
-        wallet: Arc<Wallet>,
         client: Arc<dyn IncluderClientTrait>,
+        wallet: Arc<Wallet>,
         gateway_address: Pubkey,
         gas_service_address: Pubkey,
         chain_name: String,
-        gas_estimator: GE,
+        transaction_builder: TB,
+        max_retries: usize,
     ) -> anyhow::Result<Self, BroadcasterError> {
-        Ok(SolanaBroadcaster {
-            wallet,
+        Ok(Self {
             client,
+            wallet,
             gateway_address,
             gas_service_address,
             chain_name,
-            gas_estimator,
+            transaction_builder,
+            max_retries,
         })
+    }
+
+    async fn send_to_chain(&self, ix: Instruction) -> Result<String, BroadcasterError> {
+        let mut retries: usize = 0;
+        loop {
+            let tx = self.transaction_builder.build(ix);
+            let res = self.client.send_transaction(tx).await;
+            match res {
+                Ok(signature) => {
+                    let tx_hash = signature.to_string();
+                    debug!("Transaction sent successfully: {}", tx_hash);
+                    return Ok(tx_hash);
+                }
+                Err(e) => {
+                    retries += 1;
+                    if retries >= self.max_retries {
+                        return Err(BroadcasterError::GenericError(e.to_string()));
+                    }
+                    warn!(
+                        "Transaction failed, retrying ({}/{}): {}",
+                        retries, self.max_retries, e
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -75,10 +102,7 @@ where
 pub struct SolanaTransaction;
 
 #[async_trait]
-impl<GE> Broadcaster for SolanaBroadcaster<GE>
-where
-    GE: GasEstimatorTrait + ThreadSafe,
-{
+impl<TB: TransactionBuilderTrait + ThreadSafe> Broadcaster for SolanaBroadcaster<TB> {
     type Transaction = SolanaTransaction;
 
     #[tracing::instrument(skip(self), fields(message_id))]
@@ -86,8 +110,8 @@ where
         &self,
         tx_blob: String,
     ) -> Result<BroadcastResult<Self::Transaction>, BroadcasterError> {
-        let execute_data_bytes = tx_blob.into_bytes().as_slice();
-        let execute_data = ExecuteData::try_from_slice(execute_data_bytes).map_err(|_err| {
+        let execute_data_bytes = tx_blob.into_bytes();
+        let execute_data = ExecuteData::try_from_slice(&execute_data_bytes).map_err(|_err| {
             BroadcasterError::GenericError("cannot decode execute data".to_string())
         })?;
 
@@ -110,20 +134,42 @@ where
             data: ix_data,
         };
 
-        let res = self
-            .send_to_chain(self.wallet.public_key, vec![ix], None)
-            .await;
-        let (tx_hash, status) = match res {
-            Ok(response) => (response.message_hash, Ok(())),
-            Err(err) => (String::new(), Err(err)),
+        let (message_id, source_chain) = match &execute_data.payload_items {
+            axelar_solana_encoding::types::execute_data::MerkleisedPayload::NewMessages { messages } => {
+                if let Some(first_message) = messages.first() {
+                    let chain = first_message.leaf.message.cc_id.chain.clone();
+                    let id = first_message.leaf.message.cc_id.id.clone();
+                    (Some(id), Some(chain))
+                } else {
+                    (None, None)
+                }
+            },
+            axelar_solana_encoding::types::execute_data::MerkleisedPayload::VerifierSetRotation { .. } => {
+                // For verifier set rotation, we don't have message info
+                (None, None)
+            }
+        };
+
+        // Send the transaction using the helper method
+        let tx_hash = match self.send_to_chain(ix).await {
+            Ok(hash) => hash,
+            Err(e) => {
+                return Ok(BroadcastResult {
+                    transaction: SolanaTransaction,
+                    tx_hash: String::new(),
+                    message_id,
+                    source_chain,
+                    status: Err(e),
+                });
+            }
         };
 
         Ok(BroadcastResult {
             transaction: SolanaTransaction,
             tx_hash,
-            message_id: Some(message.message_id.clone()),
-            source_chain: Some(message.source_chain.clone()),
-            status,
+            message_id,
+            source_chain,
+            status: Ok(()),
         })
     }
 
