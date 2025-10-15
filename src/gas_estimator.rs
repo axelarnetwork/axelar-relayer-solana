@@ -2,8 +2,8 @@
 // https://solana.com/developers/guides/advanced/exchange
 // Read about prioritization fees in the corresponding section in the guide
 
+use crate::error::GasEstimationError;
 use crate::includer_client::IncluderClientTrait;
-use crate::{config::GasEstimates, error::GasEstimationError};
 use async_trait::async_trait;
 use solana_sdk::compute_budget::ComputeBudgetInstruction;
 use solana_sdk::hash::Hash;
@@ -11,19 +11,19 @@ use solana_sdk::instruction::Instruction;
 use solana_sdk::signer::keypair::Keypair;
 use solana_sdk::signer::Signer;
 use solana_sdk::transaction::Transaction;
+use std::sync::Arc;
 
 pub const MAX_COMPUTE_UNIT_LIMIT: u32 = 1_399_850;
 
+#[derive(Clone)]
 pub struct GasEstimator<IC: IncluderClientTrait> {
-    config: GasEstimates,
     includer_client: IC,
-    solana_keypair: Keypair,
+    solana_keypair: Arc<Keypair>,
 }
 
 impl<IC: IncluderClientTrait> GasEstimator<IC> {
-    pub fn new(config: GasEstimates, includer_client: IC, solana_keypair: Keypair) -> Self {
+    pub fn new(includer_client: IC, solana_keypair: Arc<Keypair>) -> Self {
         Self {
-            config,
             includer_client,
             solana_keypair,
         }

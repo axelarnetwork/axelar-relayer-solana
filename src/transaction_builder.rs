@@ -16,7 +16,7 @@ pub struct TransactionBuilder<
     IC: IncluderClientTrait + ThreadSafe,
 > {
     keypair: Arc<Keypair>,
-    client: Arc<IC>,
+    client: IC,
     gateway_address: Pubkey,
     gas_service_address: Pubkey,
     chain_name: String,
@@ -33,14 +33,14 @@ impl<GE: GasEstimatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
 {
     pub fn new(
         keypair: Arc<Keypair>,
-        client: Arc<IC>,
+        client: IC,
         gateway_address: Pubkey,
         gas_service_address: Pubkey,
         chain_name: String,
         gas_estimator: GE,
     ) -> Self {
         Self {
-            keypair: Arc::clone(&keypair),
+            keypair,
             client,
             gateway_address,
             gas_service_address,

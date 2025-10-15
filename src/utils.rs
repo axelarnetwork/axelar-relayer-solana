@@ -137,3 +137,7 @@ pub fn get_verifier_set_tracker_pda(hash: VerifierSetHash) -> (Pubkey, u8) {
         &ID,
     )
 }
+
+pub fn get_incoming_message_pda(command_id: &[u8]) -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[seed_prefixes::INCOMING_MESSAGE_SEED, command_id], &ID)
+}

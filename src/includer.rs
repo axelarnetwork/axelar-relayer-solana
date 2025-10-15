@@ -1,11 +1,8 @@
 use crate::config::SolanaConfig;
-use crate::gas_estimator::GasEstimatorTrait;
-use crate::includer_client::IncluderClientTrait;
-use crate::poll_client::SolanaRpcClientTrait;
-use crate::{
-    broadcaster::SolanaBroadcaster, poll_client::SolanaRpcClient,
-    refund_manager::SolanaRefundManager,
-};
+use crate::gas_estimator::GasEstimator;
+use crate::includer_client::{IncluderClient, IncluderClientTrait};
+use crate::transaction_builder::{TransactionBuilder, TransactionBuilderTrait};
+use crate::{broadcaster::SolanaBroadcaster, refund_manager::SolanaRefundManager};
 use redis::aio::ConnectionManager;
 use relayer_core::utils::ThreadSafe;
 use relayer_core::{
@@ -23,8 +20,8 @@ impl SolanaIncluder {
     pub async fn new<
         DB: Database + ThreadSafe + Clone,
         G: GmpApiTrait + ThreadSafe + Clone,
-        IC: IncluderClientTrait + ThreadSafe,
-        GE: GasEstimatorTrait + ThreadSafe,
+        IC: IncluderClientTrait + ThreadSafe + Clone,
+        TB: TransactionBuilderTrait + ThreadSafe + Clone,
     >(
         config: SolanaConfig,
         gmp_api: Arc<G>,
@@ -32,31 +29,25 @@ impl SolanaIncluder {
         payload_cache_for_includer: PayloadCache<DB>,
         construct_proof_queue: Arc<Queue>,
     ) -> error_stack::Result<
-        Includer<SolanaBroadcaster<GE, IC>, Arc<IC>, SolanaRefundManager, DB, G>,
+        Includer<
+            SolanaBroadcaster<
+                TransactionBuilder<GasEstimator<IncluderClient>, IncluderClient>,
+                IncluderClient,
+            >,
+            Arc<IncluderClient>,
+            SolanaRefundManager,
+            DB,
+            G,
+        >,
         BroadcasterError,
     > {
-        let solana_rpc = config.solana_poll_rpc;
-        let solana_commitment = config.solana_commitment;
-        let wallets = config.wallets;
-        let solana_gateway = config.solana_gateway;
-        let solana_gas_service = config.solana_gas_service;
+        let solana_rpc = config.solana_poll_rpc.clone();
+        let solana_commitment = config.solana_commitment.clone();
+        let solana_gateway = config.solana_gateway.clone();
+        let solana_gas_service = config.solana_gas_service.clone();
 
-        let wallet = Arc::new(
-            Wallet::new(
-                wallets
-                    .first()
-                    .ok_or(BroadcasterError::GenericError(
-                        "No wallet found".to_string(),
-                    ))
-                    .map_err(|e| BroadcasterError::GenericError(e.to_string()))?
-                    .clone(),
-            )
-            .await
-            .map_err(|e| BroadcasterError::GenericError(e.to_string()))?,
-        );
-
-        let client: Arc<dyn SolanaRpcClientTrait> = Arc::new(
-            SolanaRpcClient::new(&solana_rpc, solana_commitment, 5)
+        let client = Arc::new(
+            IncluderClient::new(&solana_rpc, solana_commitment, 3)
                 .map_err(|e| error_stack::report!(BroadcasterError::GenericError(e.to_string())))?,
         );
 
@@ -65,13 +56,27 @@ impl SolanaIncluder {
         let gas_service_address = Pubkey::from_str(&solana_gas_service)
             .map_err(|e| BroadcasterError::GenericError(e.to_string()))?;
 
+        let keypair = Arc::new(config.signing_keypair());
+
+        let gas_estimator = GasEstimator::new(client.as_ref().clone(), Arc::clone(&keypair));
+
+        let transaction_builder = TransactionBuilder::new(
+            Arc::clone(&keypair),
+            client.as_ref().clone(),
+            gateway_address,
+            gas_service_address,
+            config.common_config.chain_name.clone(),
+            gas_estimator,
+        );
+
         let broadcaster = SolanaBroadcaster::new(
-            Arc::clone(&wallet),
             Arc::clone(&client),
+            Arc::clone(&keypair),
             gateway_address,
             gas_service_address,
             config.common_config.chain_name,
-            SolanaGasEstimator::new(config.gas_estimates.clone()),
+            transaction_builder,
+            3,
         )
         .map_err(|e| BroadcasterError::GenericError(e.to_string()))?;
 

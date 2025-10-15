@@ -1383,7 +1383,7 @@ dependencies = [
 [[package]]
 name = "axelar-solana-encoding"
 version = "0.1.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor#b7e9d80d318fecdf543b4c61d1eaf43283801bec"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor#ff48b1131bc4e3febe9d44b18918054e8eebc7e0"
 dependencies = [
  "arrayref",
  "borsh 1.5.7",
@@ -1399,7 +1399,7 @@ dependencies = [
 [[package]]
 name = "axelar-solana-gas-service-v2"
 version = "0.1.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor#b7e9d80d318fecdf543b4c61d1eaf43283801bec"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor#ff48b1131bc4e3febe9d44b18918054e8eebc7e0"
 dependencies = [
  "anchor-lang",
  "anchor-spl",
@@ -1411,7 +1411,7 @@ dependencies = [
 [[package]]
 name = "axelar-solana-gateway-v2"
 version = "0.1.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor#b7e9d80d318fecdf543b4c61d1eaf43283801bec"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor#ff48b1131bc4e3febe9d44b18918054e8eebc7e0"
 dependencies = [
  "anchor-lang",
  "axelar-solana-encoding",
@@ -1425,7 +1425,7 @@ dependencies = [
 [[package]]
 name = "axelar-solana-operators"
 version = "0.1.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor#b7e9d80d318fecdf543b4c61d1eaf43283801bec"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor#ff48b1131bc4e3febe9d44b18918054e8eebc7e0"
 dependencies = [
  "anchor-lang",
  "program-utils",
@@ -1796,7 +1796,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "115e54d64eb62cdebad391c19efc9dce4981c690c85a33a12199d99bb9546fee"
 dependencies = [
  "borsh-derive 0.10.4",
- "hashbrown 0.13.2",
+ "hashbrown 0.12.3",
 ]
 
 [[package]]
@@ -3764,12 +3764,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hashbrown"
-version = "0.16.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5419bdc4f6a9207fbeba6d11b604d481addf78ecd10c11ad51e76c2f6482748d"
-
-[[package]]
 name = "hashlink"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4334,7 +4328,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4b0f83760fb341a774ed326568e19f5a863af4a952def8c39f9ab92fd95b88e5"
 dependencies = [
  "equivalent",
- "hashbrown 0.16.0",
+ "hashbrown 0.15.5",
  "serde",
  "serde_core",
 ]
@@ -6102,7 +6096,7 @@ dependencies = [
 [[package]]
 name = "program-utils"
 version = "0.1.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor#b7e9d80d318fecdf543b4c61d1eaf43283801bec"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor#ff48b1131bc4e3febe9d44b18918054e8eebc7e0"
 dependencies = [
  "borsh 1.5.7",
  "bytemuck",
