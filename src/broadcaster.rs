@@ -18,6 +18,7 @@ use crate::v2_program_types::ExecuteData;
 use crate::v2_program_types::MerkleisedPayload;
 use anchor_lang::prelude::AccountMeta;
 use anchor_lang::InstructionData;
+use anchor_lang::ToAccountMetas;
 use async_trait::async_trait;
 use base64::engine::general_purpose;
 use base64::Engine;
@@ -133,14 +134,21 @@ impl<TB: TransactionBuilderTrait + ThreadSafe, IC: IncluderClientTrait + ThreadS
         }
         .data();
 
+        // let (gas_event_authority, _) = Pubkey::find_program_address(
+        //     &[b"__event_authority"],
+        //     &axelar_solana_gas_service_v2::ID,
+        // );
+
+        let accounts = axelar_solana_gateway_v2::accounts::InitializePayloadVerificationSession {
+            payer: self.keypair.pubkey(),
+            gateway_root_pda: self.gateway_address,
+            verification_session_account: verification_session_tracker_pda,
+            system_program: solana_program::system_program::id(),
+        };
+
         let ix = Instruction {
             program_id: axelar_solana_gateway_v2::ID,
-            accounts: vec![
-                AccountMeta::new(self.keypair.pubkey(), true),
-                AccountMeta::new_readonly(self.gateway_address, false),
-                AccountMeta::new(verification_session_tracker_pda, false),
-                AccountMeta::new_readonly(solana_program::system_program::id(), false),
-            ],
+            accounts: accounts.to_account_metas(None),
             data: ix_data,
         };
 
@@ -186,13 +194,15 @@ impl<TB: TransactionBuilderTrait + ThreadSafe, IC: IncluderClientTrait + ThreadS
                     verifier_info,
                 }
                 .data();
+
+                let accounts = axelar_solana_gateway_v2::accounts::VerifySignature {
+                    gateway_root_pda: self.gateway_address,
+                    verification_session_account: verification_session_tracker_pda,
+                    verifier_set_tracker_pda,
+                };
                 let ix = Instruction {
                     program_id: axelar_solana_gateway_v2::ID,
-                    accounts: vec![
-                        AccountMeta::new_readonly(self.gateway_address, false),
-                        AccountMeta::new(verification_session_tracker_pda, false),
-                        AccountMeta::new_readonly(verifier_set_tracker_pda, false),
-                    ],
+                    accounts: accounts.to_account_metas(None),
                     data: ix_data,
                 };
                 Some(self.send_to_chain(ix))
@@ -212,16 +222,20 @@ impl<TB: TransactionBuilderTrait + ThreadSafe, IC: IncluderClientTrait + ThreadS
                     new_verifier_set_merkle_root,
                 }
                 .data();
+                let accounts = axelar_solana_gateway_v2::accounts::RotateSigners {
+                    payer: self.keypair.pubkey(),
+                    program: axelar_solana_gateway_v2::ID,
+                    system_program: solana_program::system_program::id(),
+                    gateway_root_pda: self.gateway_address,
+                    verifier_set_tracker_pda,
+                    operator: Some(self.keypair.pubkey()),
+                    new_verifier_set_tracker: new_verifier_set_tracker_pda,
+                    verification_session_account: verification_session_tracker_pda,
+                    event_authority: Pubkey::default(),
+                };
                 let ix = Instruction {
                     program_id: axelar_solana_gateway_v2::ID,
-                    accounts: vec![
-                        AccountMeta::new(self.gateway_address, false),
-                        AccountMeta::new_readonly(verification_session_tracker_pda, false),
-                        AccountMeta::new_readonly(verifier_set_tracker_pda, false),
-                        AccountMeta::new(new_verifier_set_tracker_pda, false),
-                        AccountMeta::new(self.keypair.pubkey(), true),
-                        AccountMeta::new_readonly(solana_program::system_program::id(), false),
-                    ],
+                    accounts: accounts.to_account_metas(None),
                     data: ix_data,
                 };
                 self.send_to_chain(ix).await?;
@@ -237,18 +251,18 @@ impl<TB: TransactionBuilderTrait + ThreadSafe, IC: IncluderClientTrait + ThreadS
                             payload_merkle_root: execute_data.payload_merkle_root,
                         }
                         .data();
+                        let accounts = axelar_solana_gateway_v2::accounts::ApproveMessage {
+                            funder: self.keypair.pubkey(),
+                            incoming_message_pda: pda,
+                            program: axelar_solana_gateway_v2::ID,
+                            system_program: solana_program::system_program::id(),
+                            gateway_root_pda: self.gateway_address,
+                            verification_session_account: verification_session_tracker_pda,
+                            event_authority: Pubkey::default(),
+                        };
                         let ix = Instruction {
                             program_id: axelar_solana_gateway_v2::ID,
-                            accounts: vec![
-                                AccountMeta::new_readonly(self.gateway_address, false),
-                                AccountMeta::new(self.keypair.pubkey(), true),
-                                AccountMeta::new_readonly(verification_session_tracker_pda, false),
-                                AccountMeta::new(pda, false),
-                                AccountMeta::new_readonly(
-                                    solana_program::system_program::id(),
-                                    false,
-                                ),
-                            ],
+                            accounts: accounts.to_account_metas(None),
                             data: ix_data,
                         };
                         Some(self.send_to_chain(ix))
