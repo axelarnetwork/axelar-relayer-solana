@@ -4,21 +4,19 @@ use relayer_core::logging::setup_logging;
 use relayer_core::redis::connection_manager;
 use relayer_core::utils::setup_heartbeat;
 use relayer_core::{database::PostgresDB, gmp_api, payload_cache::PayloadCache, queue::Queue};
+use solana::config::SolanaConfig;
+use solana::includer::SolanaIncluder;
 use sqlx::PgPool;
 use std::sync::Arc;
 use tokio::signal::unix::{signal, SignalKind};
 use tokio_util::sync::CancellationToken;
-use ton::config::TONConfig;
-use ton::high_load_query_id_db_wrapper::HighLoadQueryIdDbWrapper;
-use ton::includer::TONIncluder;
-use ton::ton_wallet_query_id::PgTONWalletQueryIdModel;
 use tracing::log::info;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenv().ok();
     let network = std::env::var("NETWORK").expect("NETWORK must be set");
-    let config: TONConfig = config_from_yaml(&format!("config.{network}.yaml"))?;
+    let config: SolanaConfig = config_from_yaml(&format!("config.{network}.yaml"))?;
 
     let (_sentry_guard, otel_guard) = setup_logging(&config.common_config);
 
@@ -41,20 +39,23 @@ async fn main() -> anyhow::Result<()> {
     let payload_cache_for_includer = PayloadCache::new(postgres_db);
 
     let pg_pool = PgPool::connect(&config.common_config.postgres_url).await?;
-    let model = PgTONWalletQueryIdModel::new(pg_pool.clone());
     let gmp_api = gmp_api::construct_gmp_api(pg_pool.clone(), &config.common_config, true)?;
 
-    let high_load_query_id_wrapper = HighLoadQueryIdDbWrapper::new(model).await;
-    let ton_includer = TONIncluder::new(
+    let solana_includer = SolanaIncluder::<
+        relayer_core::gmp_api::GmpApiDbAuditDecorator<
+            relayer_core::gmp_api::GmpApi,
+            relayer_core::models::gmp_tasks::PgGMPTasks,
+            relayer_core::models::gmp_events::PgGMPEvents,
+        >,
+    >::create_includer(
         config,
         gmp_api,
         redis_conn.clone(),
         payload_cache_for_includer,
         Arc::clone(&construct_proof_queue),
-        Arc::new(high_load_query_id_wrapper),
     )
     .await
-    .expect("Failed to construct TONIncluder");
+    .map_err(|e| anyhow::anyhow!("Failed to create includer: {}", e))?;
     let mut sigint = signal(SignalKind::interrupt())?;
     let mut sigterm = signal(SignalKind::terminate())?;
 
@@ -71,7 +72,7 @@ async fn main() -> anyhow::Result<()> {
     let handle = tokio::spawn({
         let tasks = Arc::clone(&tasks_queue);
         let token_clone = token.clone();
-        async move { ton_includer.run(tasks, token_clone).await }
+        async move { solana_includer.run(tasks, token_clone).await }
     });
 
     tokio::pin!(handle);
@@ -89,7 +90,7 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     tasks_queue.close().await;
-    construct_proof_queue.close().await;
+    Arc::clone(&construct_proof_queue).close().await;
     let _ = handle.await;
 
     otel_guard

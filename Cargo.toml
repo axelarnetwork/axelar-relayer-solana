@@ -44,6 +44,7 @@ ed25519-zebra = "=4.0.3"
 
 solana-transaction-parser = { git = "https://github.com/commonprefix/solana-transaction-parser", rev = "a25c9a1" }
 axelar-solana-gateway-v2 = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "v2-anchor", package = "axelar-solana-gateway-v2" }
+bytemuck = "1.24.0"
 
 
 [dev-dependencies]

@@ -1,7 +1,14 @@
-use crate::types::SolanaTransaction;
+use crate::{
+    types::SolanaTransaction,
+    v2_program_types::{ExecuteData, MerkleisedPayload},
+};
 use anyhow::anyhow;
-use relayer_core::queue::{QueueItem, QueueTrait};
+use relayer_core::{
+    gmp_api::GmpApiTrait,
+    queue::{QueueItem, QueueTrait},
+};
 use serde_json::json;
+use solana_transaction_parser::gmp_types::{CannotExecuteMessageReason, Event};
 use std::str::FromStr;
 use tracing::{debug, error};
 
@@ -140,4 +147,40 @@ pub fn get_verifier_set_tracker_pda(hash: VerifierSetHash) -> (Pubkey, u8) {
 
 pub fn get_incoming_message_pda(command_id: &[u8]) -> (Pubkey, u8) {
     Pubkey::find_program_address(&[seed_prefixes::INCOMING_MESSAGE_SEED, command_id], &ID)
+}
+pub fn get_event_authority_pda() -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[b"__event_authority"], &axelar_solana_gateway_v2::ID)
+}
+
+pub async fn get_cannot_execute_events_from_execute_data<G: GmpApiTrait>(
+    execute_data: &ExecuteData,
+    reason: CannotExecuteMessageReason,
+    details: String,
+    task_id: String,
+    gmp_api: Arc<G>,
+) -> Result<Vec<Event>, anyhow::Error> {
+    let mut cannot_execute_events = vec![];
+    let payload_items = execute_data.payload_items.clone();
+    match payload_items {
+        MerkleisedPayload::VerifierSetRotation { .. } => {
+            // skipping set rotation as it is not a message
+        }
+        MerkleisedPayload::NewMessages { messages } => {
+            for message in messages {
+                cannot_execute_events.push(
+                    gmp_api
+                        .cannot_execute_message(
+                            task_id.clone(),
+                            message.leaf.message.cc_id.id.clone(),
+                            message.leaf.message.cc_id.chain.clone(),
+                            details.clone(),
+                            reason.clone(),
+                        )
+                        .await
+                        .map_err(|e| anyhow!("Failed to create cannot execute event: {}", e))?,
+                );
+            }
+        }
+    }
+    Ok(cannot_execute_events)
 }

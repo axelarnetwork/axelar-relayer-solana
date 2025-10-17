@@ -39,9 +39,9 @@ async fn main() -> anyhow::Result<()> {
     let gmp_api = gmp_api::construct_gmp_api(pg_pool.clone(), &config.common_config, true)?;
 
     let mut our_addresses = vec![];
-    for wallet in config.wallets {
-        our_addresses.push(Pubkey::from_str(&wallet.public_key)?);
-    }
+    // for wallet in config.wallets {
+    //     our_addresses.push(Pubkey::from_str(&wallet.public_key)?);
+    // }
     let gateway = Pubkey::from_str(&config.solana_gateway)?;
     let gas_service = Pubkey::from_str(&config.solana_gas_service)?;
     our_addresses.push(gateway);

@@ -31,3 +31,13 @@ pub enum GasEstimationError {
     #[error("GenericError: {0}")]
     Generic(String),
 }
+
+#[derive(Error, Debug)]
+pub enum GatewayTxError {
+    #[error("InitializePayloadVerificationSessionError: {0}")]
+    InitializePayloadVerificationSessionError(String),
+    #[error("VerifySignatureError: {0}")]
+    VerifySignatureError(String),
+    #[error("ApproveMessageError: {0}")]
+    ApproveMessageError(String),
+}

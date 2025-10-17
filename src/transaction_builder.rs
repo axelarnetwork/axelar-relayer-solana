@@ -1,25 +1,16 @@
 use crate::gas_estimator::GasEstimatorTrait;
-use crate::includer_client::IncluderClientTrait;
 use async_trait::async_trait;
 use relayer_core::error::ClientError;
 use relayer_core::utils::ThreadSafe;
 use solana_sdk::instruction::Instruction;
-use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signer::keypair::Keypair;
 use solana_sdk::signer::Signer;
 use solana_sdk::transaction::Transaction;
 use std::sync::Arc;
 
 #[derive(Clone)]
-pub struct TransactionBuilder<
-    GE: GasEstimatorTrait + ThreadSafe,
-    IC: IncluderClientTrait + ThreadSafe,
-> {
+pub struct TransactionBuilder<GE: GasEstimatorTrait + ThreadSafe> {
     keypair: Arc<Keypair>,
-    client: IC,
-    gateway_address: Pubkey,
-    gas_service_address: Pubkey,
-    chain_name: String,
     gas_estimator: GE,
 }
 
@@ -28,32 +19,17 @@ pub trait TransactionBuilderTrait {
     async fn build(&self, ix: Instruction) -> Result<Transaction, ClientError>;
 }
 
-impl<GE: GasEstimatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
-    TransactionBuilder<GE, IC>
-{
-    pub fn new(
-        keypair: Arc<Keypair>,
-        client: IC,
-        gateway_address: Pubkey,
-        gas_service_address: Pubkey,
-        chain_name: String,
-        gas_estimator: GE,
-    ) -> Self {
+impl<GE: GasEstimatorTrait + ThreadSafe> TransactionBuilder<GE> {
+    pub fn new(keypair: Arc<Keypair>, gas_estimator: GE) -> Self {
         Self {
             keypair,
-            client,
-            gateway_address,
-            gas_service_address,
-            chain_name,
             gas_estimator,
         }
     }
 }
 
 #[async_trait]
-impl<GE: GasEstimatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
-    TransactionBuilderTrait for TransactionBuilder<GE, IC>
-{
+impl<GE: GasEstimatorTrait + ThreadSafe> TransactionBuilderTrait for TransactionBuilder<GE> {
     async fn build(&self, ix: Instruction) -> Result<Transaction, ClientError> {
         let compute_unit_price_ix = self
             .gas_estimator

@@ -545,6 +545,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "anchor-discriminators"
+version = "0.1.0"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor#4650459d3eb2544b42ed9b5838872085b16fa83f"
+dependencies = [
+ "borsh 1.5.7",
+ "bs58",
+ "serde",
+ "sha2 0.10.9",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "anchor-lang"
 version = "0.31.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -589,21 +601,6 @@ checksum = "2bdf143115440fe621bdac3a29a1f7472e09f6cd82b2aa569429a0c13f103838"
 dependencies = [
  "anyhow",
  "serde",
-]
-
-[[package]]
-name = "anchor-spl"
-version = "0.31.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3c08cb5d762c0694f74bd02c9a5b04ea53cefc496e2c27b3234acffca5cd076b"
-dependencies = [
- "anchor-lang",
- "spl-associated-token-account 6.0.0",
- "spl-pod",
- "spl-token 7.0.0",
- "spl-token-2022 6.0.0",
- "spl-token-group-interface 0.5.0",
- "spl-token-metadata-interface 0.6.0",
 ]
 
 [[package]]
@@ -1383,7 +1380,7 @@ dependencies = [
 [[package]]
 name = "axelar-solana-encoding"
 version = "0.1.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor#ff48b1131bc4e3febe9d44b18918054e8eebc7e0"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor#4650459d3eb2544b42ed9b5838872085b16fa83f"
 dependencies = [
  "arrayref",
  "borsh 1.5.7",
@@ -1399,10 +1396,9 @@ dependencies = [
 [[package]]
 name = "axelar-solana-gas-service-v2"
 version = "0.1.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor#ff48b1131bc4e3febe9d44b18918054e8eebc7e0"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor#4650459d3eb2544b42ed9b5838872085b16fa83f"
 dependencies = [
  "anchor-lang",
- "anchor-spl",
  "axelar-solana-operators",
  "bytemuck",
  "program-utils",
@@ -1411,7 +1407,7 @@ dependencies = [
 [[package]]
 name = "axelar-solana-gateway-v2"
 version = "0.1.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor#ff48b1131bc4e3febe9d44b18918054e8eebc7e0"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor#4650459d3eb2544b42ed9b5838872085b16fa83f"
 dependencies = [
  "anchor-lang",
  "axelar-solana-encoding",
@@ -1425,7 +1421,7 @@ dependencies = [
 [[package]]
 name = "axelar-solana-operators"
 version = "0.1.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor#ff48b1131bc4e3febe9d44b18918054e8eebc7e0"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor#4650459d3eb2544b42ed9b5838872085b16fa83f"
 dependencies = [
  "anchor-lang",
  "program-utils",
@@ -6096,8 +6092,9 @@ dependencies = [
 [[package]]
 name = "program-utils"
 version = "0.1.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor#ff48b1131bc4e3febe9d44b18918054e8eebc7e0"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor#4650459d3eb2544b42ed9b5838872085b16fa83f"
 dependencies = [
+ "anchor-discriminators",
  "borsh 1.5.7",
  "bytemuck",
  "mpl-token-metadata",
@@ -6568,7 +6565,7 @@ checksum = "caf4aa5b0f434c91fe5c7f1ecb6a5ece2130b02ad2a590589dda5146df959001"
 [[package]]
 name = "relayer-core"
 version = "0.1.0"
-source = "git+https://github.com/commonprefix/axelar-relayer-core?branch=temp-solana#ed7e06f561e18f09e263bddbac69e37ead8da67e"
+source = "git+https://github.com/commonprefix/axelar-relayer-core?branch=temp-solana#4de07c7c7f0925a650ef30daf227014e46e288ad"
 dependencies = [
  "anyhow",
  "async-std",
@@ -7897,6 +7894,7 @@ dependencies = [
  "base64 0.22.1",
  "borsh 0.10.4",
  "bs58",
+ "bytemuck",
  "chrono",
  "dotenv",
  "ed25519-zebra",

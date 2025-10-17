@@ -230,7 +230,7 @@ mod tests {
 
         let expected_tx = SolanaTransaction {
             signature: Signature::from_str("2E1HEKZLXDthn9qU8rXnj5nmUoDnbSWP6KsmbVWZ1PsA7Q63gEKWmRqy374wuxvwVDLhjX9RJYHeyfFmRQRTuMyF").unwrap(),
-            timestamp: None,
+            timestamp: Some(chrono::DateTime::parse_from_rfc3339("2025-08-28T16:04:27Z").unwrap().with_timezone(&chrono::Utc)),
             logs: vec!["Program DaejccUfXqoAFTiDTxDuMQfQ9oa6crjtR9cT52v1AvGK invoke [1]".to_string(), "Program log: Instruction: EmitReceived".to_string(), "Program data: QF09492rFLE=".to_string(), "Program log: This is a message for received".to_string(), "Program DaejccUfXqoAFTiDTxDuMQfQ9oa6crjtR9cT52v1AvGK consumed 624 of 200000 compute units".to_string(), "Program DaejccUfXqoAFTiDTxDuMQfQ9oa6crjtR9cT52v1AvGK success".to_string()],
             slot: 404139482,
             ixs: vec![],
@@ -256,7 +256,7 @@ mod tests {
         .unwrap();
         let expected_tx = SolanaTransaction {
             signature: Signature::from_str("3Dj8s38U1GNRf1kxH3BB5iJbN2RwNXeADZXP4NHXjbxErjsRoBHbGriG2qJMbidi5sDw5Jorjfows37iNHLctbb2").unwrap(),
-            timestamp: None,
+            timestamp: Some(chrono::DateTime::parse_from_rfc3339("2025-09-11T17:23:37Z").unwrap().with_timezone(&chrono::Utc)),
             logs: vec![ "Program 7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc invoke [1]".to_string(),
             "Program log: Instruction: PayNativeForContractCall".to_string(),
             "Program 7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc invoke [2]".to_string(),
