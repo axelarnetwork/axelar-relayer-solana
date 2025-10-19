@@ -1,4 +1,5 @@
 use crate::config::SolanaConfig;
+use crate::error::IncluderClientError;
 use crate::gas_estimator::GasEstimator;
 use crate::includer_client::{IncluderClient, IncluderClientTrait};
 use crate::refund_manager::SolanaRefundManager;
@@ -162,6 +163,7 @@ impl<G: GmpApiTrait + ThreadSafe + Clone> SolanaIncluder<G> {
                 Ok(signature) => {
                     let tx_hash = signature.to_string();
                     debug!("Transaction sent successfully: {}", tx_hash);
+                    // probably not needed
                     //
                     // match self.client.get_signature_status(&signature).await {
                     //     Ok(()) => {
@@ -190,19 +192,32 @@ impl<G: GmpApiTrait + ThreadSafe + Clone> SolanaIncluder<G> {
                     };
                 }
                 Err(e) => {
-                    retries += 1;
-                    if retries >= self.max_retries {
-                        return SendToChainResult {
-                            tx_hash: None,
-                            status: Err(IncluderError::RPCError(e.to_string())),
-                            message_id,
-                            source_chain,
-                        };
+                    match e {
+                        IncluderClientError::GasExceededError(e) => {
+                            // handle gas exceeded error
+                            return SendToChainResult {
+                                tx_hash: None,
+                                status: Err(IncluderError::RPCError(e.to_string())),
+                                message_id,
+                                source_chain,
+                            };
+                        }
+                        _ => {
+                            retries += 1;
+                            if retries >= self.max_retries {
+                                return SendToChainResult {
+                                    tx_hash: None,
+                                    status: Err(IncluderError::RPCError(e.to_string())),
+                                    message_id,
+                                    source_chain,
+                                };
+                            }
+                            warn!(
+                                "Transaction failed, retrying ({}/{}): {}",
+                                retries, self.max_retries, e
+                            );
+                        }
                     }
-                    warn!(
-                        "Transaction failed, retrying ({}/{}): {}",
-                        retries, self.max_retries, e
-                    );
                 }
             }
         }

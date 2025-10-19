@@ -41,3 +41,13 @@ pub enum GatewayTxError {
     #[error("ApproveMessageError: {0}")]
     ApproveMessageError(String),
 }
+
+#[derive(Error, Debug)]
+pub enum IncluderClientError {
+    #[error("GasExceededError: {0}")]
+    GasExceededError(String),
+    #[error("MaxRetriesExceededError: {0}")]
+    MaxRetriesExceededError(String),
+    #[error("GenericError: {0}")]
+    GenericError(String),
+}
