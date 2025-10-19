@@ -51,7 +51,9 @@ impl IncluderClientTrait for IncluderClient {
     }
 
     async fn send_transaction(&self, transaction: Transaction) -> Result<Signature, ClientError> {
-        let mut retries: usize = 0;
+        let mut retries = 0;
+        let mut delay = Duration::from_millis(500);
+
         loop {
             let res = self
                 .client
@@ -61,9 +63,6 @@ impl IncluderClientTrait for IncluderClient {
             match res {
                 Ok(signature) => return Ok(signature),
                 Err(e) => {
-                    // TODO: Exponential backoff
-                    tokio::time::sleep(Duration::from_millis(1000)).await;
-                    retries += 1;
                     if retries >= self.max_retries {
                         warn!(
                             "Failed to send transaction after {} retries: {}",
@@ -71,6 +70,18 @@ impl IncluderClientTrait for IncluderClient {
                         );
                         return Err(ClientError::BadRequest(e.to_string()));
                     }
+
+                    warn!(
+                        "Transaction send failed (retry {}/{}): {}. Retrying in {:?}...",
+                        retries + 1,
+                        self.max_retries,
+                        e,
+                        delay
+                    );
+
+                    tokio::time::sleep(delay).await;
+                    retries += 1;
+                    delay = delay.mul_f32(2.0);
                 }
             }
         }
