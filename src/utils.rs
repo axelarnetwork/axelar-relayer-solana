@@ -148,8 +148,30 @@ pub fn get_verifier_set_tracker_pda(hash: VerifierSetHash) -> (Pubkey, u8) {
 pub fn get_incoming_message_pda(command_id: &[u8]) -> (Pubkey, u8) {
     Pubkey::find_program_address(&[seed_prefixes::INCOMING_MESSAGE_SEED, command_id], &ID)
 }
-pub fn get_event_authority_pda() -> (Pubkey, u8) {
+pub fn get_gateway_event_authority_pda() -> (Pubkey, u8) {
     Pubkey::find_program_address(&[b"__event_authority"], &axelar_solana_gateway_v2::ID)
+}
+
+pub fn get_governance_config_pda() -> (Pubkey, u8) {
+    Pubkey::find_program_address(
+        &[axelar_solana_governance_v2::GovernanceConfig::SEED_PREFIX],
+        &axelar_solana_governance_v2::ID,
+    )
+}
+
+pub fn get_governance_event_authority_pda() -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[b"__event_authority"], &axelar_solana_governance_v2::ID)
+}
+
+pub fn get_proposal_pda(command_id: &[u8]) -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[b"proposal", command_id], &axelar_solana_governance_v2::ID)
+}
+
+pub fn get_operator_proposal_pda(command_id: &[u8]) -> (Pubkey, u8) {
+    Pubkey::find_program_address(
+        &[b"operator_proposal", command_id],
+        &axelar_solana_governance_v2::ID,
+    )
 }
 
 pub async fn get_cannot_execute_events_from_execute_data<G: GmpApiTrait>(

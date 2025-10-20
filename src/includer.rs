@@ -5,12 +5,13 @@ use crate::includer_client::{IncluderClient, IncluderClientTrait};
 use crate::refund_manager::SolanaRefundManager;
 use crate::transaction_builder::{TransactionBuilder, TransactionBuilderTrait};
 use crate::utils::{
-    get_cannot_execute_events_from_execute_data, get_event_authority_pda, get_incoming_message_pda,
-    get_signature_verification_pda, get_verifier_set_tracker_pda,
+    get_cannot_execute_events_from_execute_data, get_gateway_event_authority_pda,
+    get_incoming_message_pda, get_signature_verification_pda, get_verifier_set_tracker_pda,
 };
 use crate::v2_program_types::{ExecuteData, MerkleisedPayload};
 use anchor_lang::{InstructionData, ToAccountMetas};
 use async_trait::async_trait;
+use axelar_solana_gateway_v2::{CrossChainId, Message};
 use base64::Engine as _;
 use borsh::BorshDeserialize;
 use futures::stream::FuturesUnordered;
@@ -39,7 +40,7 @@ pub struct SolanaIncluder<G: GmpApiTrait + ThreadSafe + Clone> {
     keypair: Arc<Keypair>,
     gateway_address: Pubkey,
     _gas_service_address: Pubkey,
-    _chain_name: String,
+    chain_name: String,
     transaction_builder: TransactionBuilder<GasEstimator<IncluderClient>>,
     max_retries: usize,
     _config: SolanaConfig,
@@ -64,7 +65,7 @@ impl<G: GmpApiTrait + ThreadSafe + Clone> SolanaIncluder<G> {
             keypair,
             gateway_address,
             _gas_service_address: gas_service_address,
-            _chain_name: chain_name,
+            chain_name,
             transaction_builder,
             max_retries,
             _config: config,
@@ -163,27 +164,7 @@ impl<G: GmpApiTrait + ThreadSafe + Clone> SolanaIncluder<G> {
                 Ok(signature) => {
                     let tx_hash = signature.to_string();
                     debug!("Transaction sent successfully: {}", tx_hash);
-                    // probably not needed
-                    //
-                    // match self.client.get_signature_status(&signature).await {
-                    //     Ok(()) => {
-                    //         debug!("Transaction confirmed successfully: {}", tx_hash);
-                    //         return Ok(tx_hash);
-                    //     }
-                    //     Err(e) => {
-                    //         retries += 1;
-                    //         if retries >= self.max_retries {
-                    //             return Err(IncluderError::RPCError(format!(
-                    //                 "Transaction status check failed after {} retries: {}",
-                    //                 self.max_retries, e
-                    //             )));
-                    //         }
-                    //         warn!(
-                    //             "Transaction status check failed, retrying ({}/{}): {}",
-                    //             retries, self.max_retries, e
-                    //         );
-                    //     }
-                    // }
+
                     return SendToChainResult {
                         tx_hash: Some(tx_hash),
                         status: Ok(()),
@@ -335,7 +316,7 @@ impl<G: GmpApiTrait + ThreadSafe + Clone> IncluderTrait for SolanaIncluder<G> {
             }
         }
 
-        let (event_authority, _) = get_event_authority_pda();
+        let (event_authority, _) = get_gateway_event_authority_pda();
 
         match execute_data.payload_items {
             MerkleisedPayload::VerifierSetRotation {
@@ -448,49 +429,47 @@ impl<G: GmpApiTrait + ThreadSafe + Clone> IncluderTrait for SolanaIncluder<G> {
     }
 
     #[tracing::instrument(skip(self), fields(message_id))]
-    async fn handle_execute_task(&self, _task: ExecuteTask) -> Result<(), IncluderError> {
-        // compose the message
-        // let message = Message {
-        //     cc_id: CrossChainId {
-        //         chain: message.message.source_chain,
-        //         id: message.message.message_id,
-        //     },
-        //     source_address: message.message.source_address,
-        //     // is this correct?
-        //     destination_chain: self.config.common_config.chain_name,
-        //     destination_address: message.message.destination_address,
-        //     payload_hash: message
-        //         .message
-        //         .payload_hash
-        //         .into_bytes()
-        //         .as_slice()
-        //         .try_into()
-        //         .map_err(|_| {
-        //             BroadcasterError::GenericError(
-        //                 "Failed to convert payload hash to [u8; 32]".to_string(),
-        //             )
-        //         })?,
-        // };
-        // let command_id = message.command_id();
-        // let (gateway_incoming_message_pda, ..) = get_incoming_message_pda(&command_id);
+    async fn handle_execute_task(&self, task: ExecuteTask) -> Result<(), IncluderError> {
+        let message = Message {
+            cc_id: CrossChainId {
+                chain: task.task.message.source_chain,
+                id: task.task.message.message_id,
+            },
+            source_address: task.task.message.source_address,
+            destination_chain: self.chain_name.clone(),
+            destination_address: task.task.message.destination_address.clone(),
+            payload_hash: task
+                .task
+                .message
+                .payload_hash
+                .into_bytes()
+                .as_slice()
+                .try_into()
+                .map_err(|_| {
+                    IncluderError::GenericError(
+                        "Failed to convert payload hash to [u8; 32]".to_string(),
+                    )
+                })?,
+        };
+        let command_id = message.command_id();
+        let (gateway_incoming_message_pda, ..) = get_incoming_message_pda(&command_id);
 
-        // if self
-        //     .client
-        //     .incoming_message_already_executed(&gateway_incoming_message_pda)
-        //     .await?
-        // {
-        //     tracing::warn!("incoming message already executed");
-        //     return Ok(());
-        // }
+        if self
+            .client
+            .incoming_message_already_executed(&gateway_incoming_message_pda)
+            .await
+            .map_err(|e| IncluderError::GenericError(e.to_string()))?
+        {
+            tracing::warn!("incoming message already executed");
+            return Ok(());
+        }
 
-        // // Parse destination address
-        // let destination_address = message
-        //     .destination_address
-        //     .parse::<Pubkey>()
-        //     .context("Failed to parse destination address")?;
-
-        // // Verify destination and communicate with the destination program
-        // verify_destination(destination_address, config.allow_third_party_contract_calls)?;
+        let destination_address = task
+            .task
+            .message
+            .destination_address
+            .parse::<Pubkey>()
+            .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
         // gas_estimator
         //     .ensure_enough_gas(

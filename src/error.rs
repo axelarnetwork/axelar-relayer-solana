@@ -51,3 +51,11 @@ pub enum IncluderClientError {
     #[error("GenericError: {0}")]
     GenericError(String),
 }
+
+#[derive(Error, Debug)]
+pub enum TransactionBuilderError {
+    #[error("ClientError: {0}")]
+    ClientError(String),
+    #[error("GenericError: {0}")]
+    GenericError(String),
+}
