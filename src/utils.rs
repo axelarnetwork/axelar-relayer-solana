@@ -3,6 +3,7 @@ use crate::{
     v2_program_types::{ExecuteData, MerkleisedPayload},
 };
 use anyhow::anyhow;
+use bincode;
 use relayer_core::{
     gmp_api::GmpApiTrait,
     queue::{QueueItem, QueueTrait},
@@ -16,8 +17,10 @@ use axelar_solana_gateway_v2::{seed_prefixes, VerifierSetHash, ID};
 use solana_rpc_client_api::response::RpcConfirmedTransactionStatusWithSignature;
 use solana_sdk::{
     commitment_config::{CommitmentConfig, CommitmentLevel},
+    compute_budget::ComputeBudgetInstruction,
     pubkey::Pubkey,
     signature::Signature,
+    transaction::Transaction,
 };
 use std::sync::Arc;
 
@@ -174,6 +177,16 @@ pub fn get_operator_proposal_pda(command_id: &[u8]) -> (Pubkey, u8) {
     )
 }
 
+pub fn get_validate_message_signing_pda(command_id: &[u8]) -> (Pubkey, u8) {
+    Pubkey::find_program_address(
+        &[
+            axelar_solana_gateway_v2::seed_prefixes::VALIDATE_MESSAGE_SIGNING_SEED,
+            command_id,
+        ],
+        &axelar_solana_gateway_v2::ID,
+    )
+}
+
 pub async fn get_cannot_execute_events_from_execute_data<G: GmpApiTrait>(
     execute_data: &ExecuteData,
     reason: CannotExecuteMessageReason,
@@ -205,4 +218,41 @@ pub async fn get_cannot_execute_events_from_execute_data<G: GmpApiTrait>(
         }
     }
     Ok(cannot_execute_events)
+}
+
+pub fn calculate_total_cost_lamports(tx: &Transaction, units: u64) -> Result<u64, anyhow::Error> {
+    const LAMPORTS_PER_SIGNATURE: u64 = 5_000;
+    const MICRO_PER_LAMPORT: u128 = 1_000_000;
+
+    let mut micro_price: u64 = 0;
+    for ix in &tx.message.instructions {
+        if ix.program_id(&tx.message.account_keys) == &solana_sdk::compute_budget::id() {
+            if let Ok(ComputeBudgetInstruction::SetComputeUnitPrice(p)) =
+                bincode::deserialize(&ix.data)
+            {
+                micro_price = p;
+            }
+        }
+    }
+
+    // to avoid overflows
+    #[inline]
+    fn ceil_div_u128(n: u128, d: u128) -> u128 {
+        let q = n / d;
+        let r = n % d;
+        if r == 0 {
+            q
+        } else {
+            q.saturating_add(1)
+        }
+    }
+
+    let total_micro = (micro_price as u128).saturating_mul(units as u128);
+    let priority_u128 = ceil_div_u128(total_micro, MICRO_PER_LAMPORT);
+    let priority_lamports: u64 = priority_u128.try_into().unwrap_or(u64::MAX);
+
+    let sigs = tx.message.header.num_required_signatures as u64;
+    let base_fee = LAMPORTS_PER_SIGNATURE.saturating_mul(sigs);
+
+    Ok(base_fee.saturating_add(priority_lamports))
 }

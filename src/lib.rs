@@ -8,7 +8,6 @@ pub mod poll_client;
 pub mod stream_client;
 pub mod utils;
 pub use models::solana_transaction;
-pub mod gas_estimator;
 pub mod includer;
 pub mod includer_client;
 pub mod refund_manager;

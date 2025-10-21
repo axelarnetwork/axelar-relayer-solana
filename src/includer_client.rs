@@ -26,6 +26,10 @@ pub trait IncluderClientTrait: ThreadSafe {
         incoming_message_pda: &Pubkey,
     ) -> Result<bool, IncluderClientError>;
     async fn get_signature_status(&self, signature: &Signature) -> Result<(), IncluderClientError>;
+    async fn get_gas_cost_from_simulation(
+        &self,
+        transaction: &Transaction,
+    ) -> Result<u64, IncluderClientError>;
 }
 
 #[derive(Clone)]
@@ -127,6 +131,20 @@ impl IncluderClientTrait for IncluderClient {
                 "Unknown transaction status".into(),
             )),
         }
+    }
+
+    async fn get_gas_cost_from_simulation(
+        &self,
+        transaction: &Transaction,
+    ) -> Result<u64, IncluderClientError> {
+        let simulation_result = self
+            .inner()
+            .simulate_transaction(transaction)
+            .await
+            .map_err(|e| IncluderClientError::GenericError(e.to_string()))?;
+        Ok(simulation_result.value.units_consumed.ok_or_else(|| {
+            IncluderClientError::GenericError("Units consumed not found".to_string())
+        })?)
     }
 }
 

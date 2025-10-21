@@ -1,12 +1,13 @@
 use crate::config::SolanaConfig;
 use crate::error::IncluderClientError;
-use crate::gas_estimator::GasEstimator;
+use crate::gas_calculator::GasCalculator;
 use crate::includer_client::{IncluderClient, IncluderClientTrait};
 use crate::refund_manager::SolanaRefundManager;
 use crate::transaction_builder::{TransactionBuilder, TransactionBuilderTrait};
 use crate::utils::{
-    get_cannot_execute_events_from_execute_data, get_gateway_event_authority_pda,
-    get_incoming_message_pda, get_signature_verification_pda, get_verifier_set_tracker_pda,
+    calculate_total_cost_lamports, get_cannot_execute_events_from_execute_data,
+    get_gateway_event_authority_pda, get_incoming_message_pda, get_signature_verification_pda,
+    get_verifier_set_tracker_pda,
 };
 use crate::v2_program_types::{ExecuteData, MerkleisedPayload};
 use anchor_lang::{InstructionData, ToAccountMetas};
@@ -32,7 +33,7 @@ use solana_transaction_parser::gmp_types::{
 };
 use std::str::FromStr;
 use std::sync::Arc;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 #[derive(Clone)]
 pub struct SolanaIncluder<G: GmpApiTrait + ThreadSafe + Clone> {
@@ -41,7 +42,7 @@ pub struct SolanaIncluder<G: GmpApiTrait + ThreadSafe + Clone> {
     gateway_address: Pubkey,
     _gas_service_address: Pubkey,
     chain_name: String,
-    transaction_builder: TransactionBuilder<GasEstimator<IncluderClient>>,
+    transaction_builder: TransactionBuilder<GasCalculator<IncluderClient>>,
     max_retries: usize,
     _config: SolanaConfig,
     gmp_api: Arc<G>,
@@ -55,7 +56,7 @@ impl<G: GmpApiTrait + ThreadSafe + Clone> SolanaIncluder<G> {
         gateway_address: Pubkey,
         gas_service_address: Pubkey,
         chain_name: String,
-        transaction_builder: TransactionBuilder<GasEstimator<IncluderClient>>,
+        transaction_builder: TransactionBuilder<GasCalculator<IncluderClient>>,
         max_retries: usize,
         config: SolanaConfig,
         gmp_api: Arc<G>,
@@ -103,9 +104,9 @@ impl<G: GmpApiTrait + ThreadSafe + Clone> SolanaIncluder<G> {
 
         let keypair = Arc::new(config.signing_keypair());
 
-        let gas_estimator = GasEstimator::new(client.as_ref().clone(), Arc::clone(&keypair));
+        let gas_calculator = GasCalculator::new(client.as_ref().clone(), Arc::clone(&keypair));
 
-        let transaction_builder = TransactionBuilder::new(Arc::clone(&keypair), gas_estimator);
+        let transaction_builder = TransactionBuilder::new(Arc::clone(&keypair), gas_calculator);
 
         let solana_includer = SolanaIncluder::new(
             Arc::clone(&client),
@@ -471,131 +472,48 @@ impl<G: GmpApiTrait + ThreadSafe + Clone> IncluderTrait for SolanaIncluder<G> {
             .parse::<Pubkey>()
             .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
-        // gas_estimator
-        //     .ensure_enough_gas(
-        //         solana_rpc_client,
-        //         keypair,
-        //         metadata.gateway_root_pda,
-        //         &message,
-        //         &payload,
-        //         destination_address,
-        //         gateway_incoming_message_pda,
-        //         available_gas_balance,
-        //     )
-        //     .await?;
+        let instruction = self
+            .transaction_builder
+            .build_execute_instruction(
+                &message,
+                &task.task.payload.into_bytes(),
+                destination_address,
+            )
+            .await
+            .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
-        // // Upload the message payload to a Gateway-owned PDA account and get its address back.
-        // let gateway_message_payload_pda = message_payload::upload(
-        //     solana_rpc_client,
-        //     keypair,
-        //     metadata.gateway_root_pda,
-        //     &message,
-        //     &payload,
-        // )
-        // .await?;
+        let transaction = self
+            .transaction_builder
+            .build(instruction)
+            .await
+            .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
-        // let execute_call_status = send_to_destination_program(
-        //     destination_address,
-        //     signer,
-        //     gateway_incoming_message_pda,
-        //     gateway_message_payload_pda,
-        //     metadata.gateway_root_pda,
-        //     &message,
-        //     payload,
-        //     solana_rpc_client,
-        //     keypair,
-        // )
-        // .await;
+        let gas_cost = self
+            .client
+            .get_gas_cost_from_simulation(&transaction)
+            .await
+            .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
-        // let destination_address: Pubkey =
-        //     message.message.destination_address.parse().map_err(|e| {
-        //         BroadcasterError::GenericError(format!("TonAddressParseError: {e:?}"))
-        //     })?;
+        let gas_cost_lamports = calculate_total_cost_lamports(&transaction, gas_cost)
+            .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
-        // let decoded_bytes = general_purpose::STANDARD
-        //     .decode(message.payload.clone())
-        //     .map_err(|e| {
-        //         BroadcasterError::GenericError(format!("Failed decoding payload: {e:?}"))
-        //     })?;
+        if gas_cost_lamports
+            > u64::from_str(&task.task.available_gas_balance.amount)
+                .map_err(|e| IncluderError::GenericError(e.to_string()))?
+        {
+            return Err(IncluderError::GenericError(
+                "Not enough gas to execute message".to_string(),
+            ));
+        }
 
-        // let payload_len = decoded_bytes.len();
+        let signature = self
+            .client
+            .send_transaction(transaction)
+            .await
+            .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
-        // let hex_payload = hex::encode(decoded_bytes.clone());
+        info!("Transaction sent successfully: {}", signature.to_string());
 
-        // let message_id = message.message.message_id;
-        // let source_chain = message.message.source_chain;
-
-        // tracing::Span::current().record("message_id", &message_id);
-
-        // let available_gas = u64::from_str(&message.available_gas_balance.amount).unwrap_or(0);
-        // let required_gas = self.gas_estimator.execute_estimate(payload_len).await;
-
-        // info!(
-        //     "Considering execute message: message_id={}, source_chain={}, available_gas={}, required_gas={}, payload_len={}",
-        //     message_id, source_chain, available_gas, required_gas, payload_len
-        // );
-        // if available_gas < required_gas {
-        //     return Ok(BroadcastResult {
-        //         transaction: SolanaTransaction,
-        //         tx_hash: String::new(),
-        //         message_id: Some(message_id),
-        //         source_chain: Some(source_chain),
-        //         status: Err(BroadcasterError::InsufficientGas(
-        //             "Cannot proceed to execute".to_string(),
-        //         )),
-        //     });
-        // }
-
-        // let result = async {
-        //     let relayer_execute_msg = RelayerExecuteMessage::new(
-        //         message_id.clone(),
-        //         source_chain.clone(),
-        //         message.message.source_address,
-        //         self.chain_name.clone(),
-        //         destination_address,
-        //         hex_payload,
-        //         self.keypair.pubkey(),
-        //     );
-
-        //     let boc = relayer_execute_msg
-        //         .to_cell()
-        //         .map_err(|e| BroadcasterError::GenericError(e.to_string()))?
-        //         .to_boc_hex(true)
-        //         .map_err(|e| {
-        //             BroadcasterError::GenericError(format!(
-        //                 "Failed to serialize relayer execute message: {e:?}"
-        //             ))
-        //         })?;
-
-        //     let execute_message_value: BigUint =
-        //         BigUint::from(self.gas_estimator.execute_send(payload_len).await);
-
-        //     let actions: Vec<OutAction> = vec![out_action(
-        //         &boc,
-        //         execute_message_value.clone(),
-        //         self.gateway_address.clone(),
-        //     )
-        //     .map_err(|e| BroadcasterError::GenericError(e.to_string()))?];
-
-        //     let res = self.send_to_chain(keypair, actions.clone(), None).await;
-        //     let (tx_hash, status) = match res {
-        //         Ok(response) => (response.message_hash, Ok(())),
-        //         Err(err) => (String::new(), Err(err)),
-        //     };
-
-        //     Ok(BroadcastResult {
-        //         transaction: SolanaTransaction,
-        //         tx_hash,
-        //         message_id: Some(message_id.clone()),
-        //         source_chain: Some(source_chain.clone()),
-        //         status,
-        //     })
-        // }
-        // .await;
-
-        // self.keypair.release(keypair).await;
-
-        //result
         Ok(())
     }
 

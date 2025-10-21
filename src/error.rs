@@ -27,7 +27,7 @@ pub enum GasError {
 }
 
 #[derive(Error, Debug)]
-pub enum GasEstimationError {
+pub enum GasCalculatorError {
     #[error("GenericError: {0}")]
     Generic(String),
 }

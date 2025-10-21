@@ -1,14 +1,13 @@
-use crate::gas_estimator::GasEstimatorTrait;
+use crate::gas_calculator::GasCalculatorTrait;
 use crate::utils::{
     get_governance_config_pda, get_governance_event_authority_pda, get_incoming_message_pda,
-    get_operator_proposal_pda, get_proposal_pda,
+    get_operator_proposal_pda, get_proposal_pda, get_validate_message_signing_pda,
 };
 use crate::{error::TransactionBuilderError, utils::get_gateway_event_authority_pda};
 use anchor_lang::InstructionData;
 use anchor_lang::ToAccountMetas;
 use async_trait::async_trait;
-use axelar_solana_gateway_v2::Message;
-use axelar_solana_its_v2;
+use axelar_solana_gateway_v2::{ExecutablePayload, Message};
 use relayer_core::utils::ThreadSafe;
 use solana_sdk::instruction::Instruction;
 use solana_sdk::pubkey::Pubkey;
@@ -18,9 +17,9 @@ use solana_sdk::transaction::Transaction;
 use std::sync::Arc;
 
 #[derive(Clone)]
-pub struct TransactionBuilder<GE: GasEstimatorTrait + ThreadSafe> {
+pub struct TransactionBuilder<GE: GasCalculatorTrait + ThreadSafe> {
     keypair: Arc<Keypair>,
-    gas_estimator: GE,
+    gas_calculator: GE,
 }
 
 #[async_trait]
@@ -35,27 +34,27 @@ pub trait TransactionBuilderTrait {
     ) -> Result<Instruction, TransactionBuilderError>;
 }
 
-impl<GE: GasEstimatorTrait + ThreadSafe> TransactionBuilder<GE> {
-    pub fn new(keypair: Arc<Keypair>, gas_estimator: GE) -> Self {
+impl<GE: GasCalculatorTrait + ThreadSafe> TransactionBuilder<GE> {
+    pub fn new(keypair: Arc<Keypair>, gas_calculator: GE) -> Self {
         Self {
             keypair,
-            gas_estimator,
+            gas_calculator,
         }
     }
 }
 
 #[async_trait]
-impl<GE: GasEstimatorTrait + ThreadSafe> TransactionBuilderTrait for TransactionBuilder<GE> {
+impl<GE: GasCalculatorTrait + ThreadSafe> TransactionBuilderTrait for TransactionBuilder<GE> {
     async fn build(&self, ix: Instruction) -> Result<Transaction, TransactionBuilderError> {
         let compute_unit_price_ix = self
-            .gas_estimator
+            .gas_calculator
             .compute_unit_price(&[ix.clone()])
             .await
             .map_err(|e| TransactionBuilderError::ClientError(e.to_string()))?;
 
         // Since simulation gets the latest blockhash we can directly use it for the tx construction
         let (compute_budget_ix, hash) = self
-            .gas_estimator
+            .gas_calculator
             .compute_budget(&[ix.clone()])
             .await
             .map_err(|e| TransactionBuilderError::ClientError(e.to_string()))?;
@@ -80,14 +79,6 @@ impl<GE: GasEstimatorTrait + ThreadSafe> TransactionBuilderTrait for Transaction
         let (incoming_message_pda, _) = get_incoming_message_pda(&message.command_id());
 
         match destination_address {
-            x if x == axelar_solana_its_v2::ID =>
-            // Waiting for ITS V2 Program to be ready
-            {
-                Err(TransactionBuilderError::GenericError(
-                    "ITS instruction not supported yet".to_string(),
-                ))
-            }
-
             x if x == axelar_solana_governance_v2::ID => {
                 let (signing_pda, _) = Pubkey::find_program_address(
                     &[
@@ -133,18 +124,15 @@ impl<GE: GasEstimatorTrait + ThreadSafe> TransactionBuilderTrait for Transaction
                 })
             }
             _ => {
-                let (signing_pda, _) = Pubkey::find_program_address(
-                    &[
-                        axelar_solana_gateway_v2::seed_prefixes::VALIDATE_MESSAGE_SIGNING_SEED,
-                        &message.command_id(),
-                    ],
-                    &axelar_solana_gateway_v2::ID,
-                );
+                let decoded_payload = ExecutablePayload::decode(&payload)
+                    .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+                let user_provided_accounts = decoded_payload.account_meta();
+
+                let (signing_pda, _) = get_validate_message_signing_pda(&message.command_id());
 
                 let (event_authority, _) = get_gateway_event_authority_pda();
 
-                // Use the same pattern as governance-v2
-                let executable = axelar_solana_gateway_v2::accounts::AxelarExecuteAccounts {
+                let accounts = axelar_solana_gateway_v2::accounts::AxelarExecuteAccounts {
                     incoming_message_pda,
                     signing_pda,
                     axelar_gateway_program: axelar_solana_gateway_v2::ID,
@@ -152,16 +140,15 @@ impl<GE: GasEstimatorTrait + ThreadSafe> TransactionBuilderTrait for Transaction
                     system_program: solana_program::system_program::id(),
                 };
 
-                // The instruction data for any Axelar executable
-                let ix_data = axelar_solana_gateway_v2::instruction::Execute {
-                    message: message.clone(),
-                    payload: payload.to_vec(),
-                }
-                .data();
+                // let ix_data = axelar_solana_gateway_v2::ExecutablePayload {
+                //     payload_without_accounts: decoded_payload.payload_without_accounts(),
+                //     solana_accounts: user_provided_accounts,
+                //     encoding_scheme: 1
+                // }
 
                 Ok(Instruction {
-                    program_id: destination_address,
-                    accounts: executable.to_account_metas(None),
+                    program_id: axelar_solana_gateway_v2::ID,
+                    accounts,
                     data: ix_data,
                 })
             }
