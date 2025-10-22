@@ -1,13 +1,14 @@
 use crate::gas_calculator::GasCalculatorTrait;
 use crate::utils::{
-    get_governance_config_pda, get_governance_event_authority_pda, get_incoming_message_pda,
-    get_operator_proposal_pda, get_proposal_pda, get_validate_message_signing_pda,
+    get_gateway_root_config_internal, get_governance_config_pda,
+    get_governance_event_authority_pda, get_incoming_message_pda, get_operator_proposal_pda,
+    get_proposal_pda, get_validate_message_signing_pda,
 };
 use crate::{error::TransactionBuilderError, utils::get_gateway_event_authority_pda};
 use anchor_lang::InstructionData;
 use anchor_lang::ToAccountMetas;
 use async_trait::async_trait;
-use axelar_solana_gateway_v2::{ExecutablePayload, Message};
+use axelar_solana_gateway_v2::{executable::ExecutablePayload, Message};
 use relayer_core::utils::ThreadSafe;
 use solana_sdk::instruction::Instruction;
 use solana_sdk::pubkey::Pubkey;
@@ -79,6 +80,66 @@ impl<GE: GasCalculatorTrait + ThreadSafe> TransactionBuilderTrait for Transactio
         let (incoming_message_pda, _) = get_incoming_message_pda(&message.command_id());
 
         match destination_address {
+            x if x == axelar_solana_its_v2::ID => {
+                // let (signing_pda, _) = Pubkey::find_program_address(
+                //     &[
+                //         axelar_solana_gateway_v2::seed_prefixes::VALIDATE_MESSAGE_SIGNING_SEED,
+                //         &message.command_id(),
+                //     ],
+                //     &axelar_solana_gateway_v2::ID,
+                // );
+                // let (event_authority, _) = get_gateway_event_authority_pda();
+                // let (gateway_root_pda, _) = get_gateway_root_config_internal();
+                // let executable = axelar_solana_its_v2::accounts::AxelarExecuteAccounts {
+                //     incoming_message_pda,
+                //     signing_pda,
+                //     axelar_gateway_program: axelar_solana_gateway_v2::ID,
+                //     event_authority,
+                //     system_program: solana_program::system_program::id(),
+                // };
+
+                // let (governance_config, _) = get_governance_config_pda();
+                // let (governance_event_authority, _) = get_governance_event_authority_pda();
+                // let (proposal_pda, _) = get_proposal_pda(&message.command_id());
+                // let (operator_proposal_pda, _) = get_operator_proposal_pda(&message.command_id());
+
+                // let accounts = axelar_solana_its_v2::accounts::Execute {
+                //     executable,
+                //     payer: self.keypair.pubkey(),
+                //     system_program: solana_program::system_program::id(),
+                //     its_root_pda,
+                //     token_manager_pda,
+                //     token_mint,
+                //     token_manager_ata,
+                //     token_program,
+                //     associated_token_program,
+                //     rent,
+                //     deployer_ata,
+                //     minter,
+                //     minter_roles_pda,
+                //     mpl_token_metadata_account,
+                //     mpl_token_metadata_program,
+                //     sysvar_instructions,
+                //     event_authority,
+                //     program,
+                // };
+
+                // let ix_data = axelar_solana_its_v2::instruction::Execute {
+                //     message: message.clone(),
+                //     payload: payload.to_vec(),
+                // }
+                // .data();
+
+                // Ok(Instruction {
+                //     program_id: axelar_solana_its_v2::ID,
+                //     accounts: accounts.to_account_metas(None),
+                //     data: ix_data,
+                // })
+
+                Err(TransactionBuilderError::GenericError(
+                    "ITS is not supported".to_string(),
+                ))
+            }
             x if x == axelar_solana_governance_v2::ID => {
                 let (signing_pda, _) = Pubkey::find_program_address(
                     &[
@@ -88,12 +149,13 @@ impl<GE: GasCalculatorTrait + ThreadSafe> TransactionBuilderTrait for Transactio
                     &axelar_solana_gateway_v2::ID,
                 );
                 let (event_authority, _) = get_gateway_event_authority_pda();
+                let (gateway_root_pda, _) = get_gateway_root_config_internal();
                 let executable = axelar_solana_governance_v2::accounts::AxelarExecuteAccounts {
                     incoming_message_pda,
                     signing_pda,
                     axelar_gateway_program: axelar_solana_gateway_v2::ID,
                     event_authority,
-                    system_program: solana_program::system_program::id(),
+                    gateway_root_pda,
                 };
 
                 let (governance_config, _) = get_governance_config_pda();
@@ -109,6 +171,7 @@ impl<GE: GasCalculatorTrait + ThreadSafe> TransactionBuilderTrait for Transactio
                     operator_proposal_pda,
                     governance_event_authority,
                     axelar_governance_program: axelar_solana_governance_v2::ID,
+                    system_program: solana_program::system_program::id(),
                 };
 
                 let ix_data = axelar_solana_governance_v2::instruction::ProcessGmp {
@@ -129,27 +192,35 @@ impl<GE: GasCalculatorTrait + ThreadSafe> TransactionBuilderTrait for Transactio
                 let user_provided_accounts = decoded_payload.account_meta();
 
                 let (signing_pda, _) = get_validate_message_signing_pda(&message.command_id());
-
                 let (event_authority, _) = get_gateway_event_authority_pda();
+                let (gateway_root_pda, _) = get_gateway_root_config_internal();
 
-                let accounts = axelar_solana_gateway_v2::accounts::AxelarExecuteAccounts {
-                    incoming_message_pda,
-                    signing_pda,
-                    axelar_gateway_program: axelar_solana_gateway_v2::ID,
-                    event_authority,
-                    system_program: solana_program::system_program::id(),
-                };
+                let mut accounts =
+                    axelar_solana_gateway_v2::executable::helpers::AxelarExecuteAccounts {
+                        incoming_message_pda,
+                        signing_pda,
+                        axelar_gateway_program: axelar_solana_gateway_v2::ID,
+                        event_authority,
+                        gateway_root_pda,
+                    }
+                    .to_account_metas(None);
 
-                // let ix_data = axelar_solana_gateway_v2::ExecutablePayload {
-                //     payload_without_accounts: decoded_payload.payload_without_accounts(),
-                //     solana_accounts: user_provided_accounts,
-                //     encoding_scheme: 1
-                // }
+                accounts.extend(user_provided_accounts);
+
+                let data =
+                    axelar_solana_gateway_v2::executable::helpers::AxelarExecuteInstruction {
+                        message: message.clone(),
+                        payload_without_accounts: decoded_payload
+                            .payload_without_accounts()
+                            .to_vec(),
+                        encoding_scheme: decoded_payload.encoding_scheme(),
+                    }
+                    .data();
 
                 Ok(Instruction {
                     program_id: axelar_solana_gateway_v2::ID,
                     accounts,
-                    data: ix_data,
+                    data,
                 })
             }
         }

@@ -187,6 +187,10 @@ pub fn get_validate_message_signing_pda(command_id: &[u8]) -> (Pubkey, u8) {
     )
 }
 
+pub(crate) fn get_gateway_root_config_internal() -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[b"gateway"], &axelar_solana_gateway_v2::ID)
+}
+
 pub async fn get_cannot_execute_events_from_execute_data<G: GmpApiTrait>(
     execute_data: &ExecuteData,
     reason: CannotExecuteMessageReason,
