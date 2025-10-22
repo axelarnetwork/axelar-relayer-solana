@@ -179,7 +179,7 @@ impl<G: GmpApiTrait + ThreadSafe + Clone> SolanaIncluder<G> {
                             // handle gas exceeded error
                             return SendToChainResult {
                                 tx_hash: None,
-                                status: Err(IncluderError::RPCError(e.to_string())),
+                                status: Err(IncluderError::RPCError(e)),
                                 message_id,
                                 source_chain,
                             };
