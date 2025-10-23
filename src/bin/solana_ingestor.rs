@@ -58,7 +58,7 @@ async fn main() -> anyhow::Result<()> {
     let redis_conn = connection_manager(redis_client, None, None, None).await?;
 
     let solana_transaction_model = PgSolanaTransactionModel::new(pg_pool.clone());
-    let solana_ingestor = SolanaIngestor::new(parser, solana_transaction_model);
+    let solana_ingestor = SolanaIngestor::new(parser, solana_transaction_model, redis_conn.clone());
 
     let logging_ctx_cache = RedisLoggingCtxCache::new(redis_conn.clone());
 
