@@ -48,6 +48,8 @@ pub enum IncluderClientError {
     GasExceededError(String),
     #[error("MaxRetriesExceededError: {0}")]
     MaxRetriesExceededError(String),
+    #[error("TransactionError: {0}")]
+    TransactionError(String),
     #[error("GenericError: {0}")]
     GenericError(String),
 }

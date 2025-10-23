@@ -25,7 +25,11 @@ pub struct TransactionBuilder<GE: GasCalculatorTrait + ThreadSafe> {
 
 #[async_trait]
 pub trait TransactionBuilderTrait {
-    async fn build(&self, ix: Instruction) -> Result<Transaction, TransactionBuilderError>;
+    async fn build(
+        &self,
+        ix: Instruction,
+        gas_exceeded_count: u64,
+    ) -> Result<Transaction, TransactionBuilderError>;
 
     async fn build_execute_instruction(
         &self,
@@ -46,7 +50,11 @@ impl<GE: GasCalculatorTrait + ThreadSafe> TransactionBuilder<GE> {
 
 #[async_trait]
 impl<GE: GasCalculatorTrait + ThreadSafe> TransactionBuilderTrait for TransactionBuilder<GE> {
-    async fn build(&self, ix: Instruction) -> Result<Transaction, TransactionBuilderError> {
+    async fn build(
+        &self,
+        ix: Instruction,
+        gas_exceeded_count: u64,
+    ) -> Result<Transaction, TransactionBuilderError> {
         let compute_unit_price_ix = self
             .gas_calculator
             .compute_unit_price(&[ix.clone()])
@@ -56,11 +64,10 @@ impl<GE: GasCalculatorTrait + ThreadSafe> TransactionBuilderTrait for Transactio
         // Since simulation gets the latest blockhash we can directly use it for the tx construction
         let (compute_budget_ix, hash) = self
             .gas_calculator
-            .compute_budget(&[ix.clone()])
+            .compute_budget(&[ix.clone()], gas_exceeded_count)
             .await
             .map_err(|e| TransactionBuilderError::ClientError(e.to_string()))?;
 
-        // Add the two budget instructions first, the the instruction we want to execute on Solana
         let instructions = vec![compute_unit_price_ix, compute_budget_ix, ix];
 
         Ok(Transaction::new_signed_with_payer(

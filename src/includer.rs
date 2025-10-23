@@ -19,7 +19,7 @@ use futures::stream::FuturesUnordered;
 use futures::StreamExt as _;
 use redis::aio::ConnectionManager;
 use relayer_core::error::IncluderError;
-use relayer_core::includer_worker::IncluderTrait;
+use relayer_core::includer_worker::{ExecuteTaskEvents, IncluderTrait};
 use relayer_core::utils::ThreadSafe;
 use relayer_core::{
     database::Database, gmp_api::GmpApiTrait, includer::Includer, includer_worker::IncluderWorker,
@@ -29,47 +29,40 @@ use solana_sdk::instruction::Instruction;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signer::{keypair::Keypair, Signer};
 use solana_transaction_parser::gmp_types::{
-    CannotExecuteMessageReason, Event, ExecuteTask, GatewayTxTask, RefundTask,
+    Amount, CannotExecuteMessageReason, Event, ExecuteTask, GatewayTxTask, MessageExecutionStatus,
+    RefundTask,
 };
 use std::str::FromStr;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
+
+const MAX_GAS_EXCEEDED_COUNT: u64 = 3;
 
 #[derive(Clone)]
 pub struct SolanaIncluder<G: GmpApiTrait + ThreadSafe + Clone> {
     client: Arc<IncluderClient>,
     keypair: Arc<Keypair>,
     gateway_address: Pubkey,
-    _gas_service_address: Pubkey,
     chain_name: String,
     transaction_builder: TransactionBuilder<GasCalculator<IncluderClient>>,
-    max_retries: usize,
-    _config: SolanaConfig,
     gmp_api: Arc<G>,
 }
 
 impl<G: GmpApiTrait + ThreadSafe + Clone> SolanaIncluder<G> {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         client: Arc<IncluderClient>,
         keypair: Arc<Keypair>,
         gateway_address: Pubkey,
-        gas_service_address: Pubkey,
         chain_name: String,
         transaction_builder: TransactionBuilder<GasCalculator<IncluderClient>>,
-        max_retries: usize,
-        config: SolanaConfig,
         gmp_api: Arc<G>,
     ) -> Self {
         Self {
             client,
             keypair,
             gateway_address,
-            _gas_service_address: gas_service_address,
             chain_name,
             transaction_builder,
-            max_retries,
-            _config: config,
             gmp_api,
         }
     }
@@ -90,7 +83,6 @@ impl<G: GmpApiTrait + ThreadSafe + Clone> SolanaIncluder<G> {
         let solana_rpc = config.solana_poll_rpc.clone();
         let solana_commitment = config.solana_commitment;
         let solana_gateway = config.solana_gateway.clone();
-        let solana_gas_service = config.solana_gas_service.clone();
 
         let client = Arc::new(
             IncluderClient::new(&solana_rpc, solana_commitment, 3)
@@ -98,8 +90,6 @@ impl<G: GmpApiTrait + ThreadSafe + Clone> SolanaIncluder<G> {
         );
 
         let gateway_address = Pubkey::from_str(&solana_gateway)
-            .map_err(|e| IncluderError::GenericError(e.to_string()))?;
-        let gas_service_address = Pubkey::from_str(&solana_gas_service)
             .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
         let keypair = Arc::new(config.signing_keypair());
@@ -112,11 +102,8 @@ impl<G: GmpApiTrait + ThreadSafe + Clone> SolanaIncluder<G> {
             Arc::clone(&client),
             Arc::clone(&keypair),
             gateway_address,
-            gas_service_address,
-            config.common_config.chain_name.clone(),
+            config.common_config.chain_name,
             transaction_builder,
-            3,
-            config,
             Arc::clone(&gmp_api),
         );
 
@@ -138,70 +125,161 @@ impl<G: GmpApiTrait + ThreadSafe + Clone> SolanaIncluder<G> {
         Ok(includer)
     }
 
-    async fn send_to_chain(
+    async fn send_gateway_tx_to_chain(
         &self,
         ix: Instruction,
         message_id: Option<String>,
         source_chain: Option<String>,
+        gas_exceeded_count: u64,
     ) -> SendToChainResult {
-        let mut retries: usize = 0;
-        loop {
-            let tx_res = self.transaction_builder.build(ix.clone()).await;
+        let tx_res = self
+            .transaction_builder
+            .build(ix.clone(), gas_exceeded_count)
+            .await;
 
-            let tx = match tx_res {
-                Ok(tx) => tx,
-                Err(e) => {
-                    return SendToChainResult {
-                        tx_hash: None,
-                        status: Err(IncluderError::GenericError(e.to_string())),
-                        message_id,
-                        source_chain,
-                    }
-                }
-            };
-
-            let res = self.client.send_transaction(tx).await;
-            match res {
-                Ok(signature) => {
-                    let tx_hash = signature.to_string();
-                    debug!("Transaction sent successfully: {}", tx_hash);
-
-                    return SendToChainResult {
-                        tx_hash: Some(tx_hash),
-                        status: Ok(()),
-                        message_id,
-                        source_chain,
-                    };
-                }
-                Err(e) => {
-                    match e {
-                        IncluderClientError::GasExceededError(e) => {
-                            // handle gas exceeded error
-                            return SendToChainResult {
-                                tx_hash: None,
-                                status: Err(IncluderError::RPCError(e)),
-                                message_id,
-                                source_chain,
-                            };
-                        }
-                        _ => {
-                            retries += 1;
-                            if retries >= self.max_retries {
-                                return SendToChainResult {
-                                    tx_hash: None,
-                                    status: Err(IncluderError::RPCError(e.to_string())),
-                                    message_id,
-                                    source_chain,
-                                };
-                            }
-                            warn!(
-                                "Transaction failed, retrying ({}/{}): {}",
-                                retries, self.max_retries, e
-                            );
-                        }
-                    }
+        let tx = match tx_res {
+            Ok(tx) => tx,
+            Err(e) => {
+                return SendToChainResult {
+                    tx_hash: None,
+                    status: Err(IncluderError::GenericError(e.to_string())),
+                    message_id,
+                    source_chain,
                 }
             }
+        };
+
+        let res = self.client.send_transaction(tx).await;
+        match res {
+            Ok(signature) => {
+                let tx_hash = signature.to_string();
+                debug!("Transaction sent successfully: {}", tx_hash);
+
+                SendToChainResult {
+                    tx_hash: Some(tx_hash),
+                    status: Ok(()),
+                    message_id,
+                    source_chain,
+                }
+            }
+            Err(e) => match e {
+                IncluderClientError::GasExceededError(e) => {
+                    if gas_exceeded_count > MAX_GAS_EXCEEDED_COUNT {
+                        return SendToChainResult {
+                            tx_hash: None,
+                            status: Err(IncluderError::RPCError(e)),
+                            message_id,
+                            source_chain,
+                        };
+                    }
+                    Box::pin(self.send_gateway_tx_to_chain(
+                        ix,
+                        message_id,
+                        source_chain,
+                        gas_exceeded_count + 1,
+                    ))
+                    .await
+                }
+                _ => SendToChainResult {
+                    tx_hash: None,
+                    status: Err(IncluderError::RPCError(e.to_string())),
+                    message_id,
+                    source_chain,
+                },
+            },
+        }
+    }
+
+    async fn build_execute_transaction_and_send(
+        &self,
+        instruction: Instruction,
+        task: ExecuteTask,
+        gas_exceeded_count: u64,
+    ) -> Result<ExecuteTaskEvents, IncluderError> {
+        let transaction = self
+            .transaction_builder
+            .build(instruction.clone(), gas_exceeded_count)
+            .await
+            .map_err(|e| IncluderError::GenericError(e.to_string()))?;
+
+        let gas_cost = self
+            .client
+            .get_gas_cost_from_simulation(&transaction)
+            .await
+            .map_err(|e| IncluderError::GenericError(e.to_string()))?;
+
+        let gas_cost_lamports = calculate_total_cost_lamports(&transaction, gas_cost)
+            .map_err(|e| IncluderError::GenericError(e.to_string()))?;
+
+        if gas_cost_lamports
+            > u64::from_str(&task.task.available_gas_balance.amount)
+                .map_err(|e| IncluderError::GenericError(e.to_string()))?
+        {
+            let error_message = format!(
+                "Not enough gas to execute message. Available gas: {}, required gas: {}",
+                task.task.available_gas_balance.amount, gas_cost_lamports
+            );
+            let event = self
+                .gmp_api
+                .cannot_execute_message(
+                    task.common.id.clone(),
+                    task.task.message.message_id.clone(),
+                    task.task.message.source_chain.clone(),
+                    error_message,
+                    CannotExecuteMessageReason::InsufficientGas,
+                )
+                .await
+                .map_err(|e| IncluderError::GenericError(e.to_string()))?;
+            return Ok(ExecuteTaskEvents {
+                cannot_execute_events: vec![event],
+                reverted_events: vec![],
+            });
+        }
+
+        let signature_res = self.client.send_transaction(transaction).await;
+
+        match signature_res {
+            Ok(signature) => {
+                info!("Transaction sent successfully: {}", signature.to_string());
+                Ok(ExecuteTaskEvents {
+                    cannot_execute_events: vec![],
+                    reverted_events: vec![],
+                })
+            }
+            Err(e) => match e {
+                IncluderClientError::GasExceededError(e) => {
+                    warn!("Gas exceeded: {}", e);
+                    if gas_exceeded_count > MAX_GAS_EXCEEDED_COUNT {
+                        return Err(IncluderError::GenericError(e));
+                    }
+                    // needed because of recursive async functions in rust
+                    Box::pin(self.build_execute_transaction_and_send(
+                        instruction.clone(),
+                        task.clone(),
+                        gas_exceeded_count + 1,
+                    ))
+                    .await
+                    .map_err(|e| IncluderError::GenericError(e.to_string()))
+                }
+                IncluderClientError::TransactionError(e) => {
+                    warn!("Transaction reverted: {}", e);
+                    let event = self.gmp_api.execute_message(
+                        task.task.message.message_id.clone(),
+                        task.task.message.source_chain.clone(),
+                        MessageExecutionStatus::REVERTED,
+                        Amount {
+                            amount: gas_cost_lamports.to_string(),
+                            token_id: None,
+                        },
+                    );
+
+                    Ok(ExecuteTaskEvents {
+                        cannot_execute_events: vec![],
+                        reverted_events: vec![event],
+                    })
+                }
+                _ => Err(IncluderError::GenericError(e.to_string())),
+            },
         }
     }
 }
@@ -257,7 +335,7 @@ impl<G: GmpApiTrait + ThreadSafe + Clone> IncluderTrait for SolanaIncluder<G> {
             data: ix_data,
         };
 
-        let send_to_chain_res = self.send_to_chain(ix, None, None).await;
+        let send_to_chain_res = self.send_gateway_tx_to_chain(ix, None, None, 0).await;
         if let Err(e) = send_to_chain_res.status {
             return get_cannot_execute_events_from_execute_data(
                 &execute_data,
@@ -300,7 +378,7 @@ impl<G: GmpApiTrait + ThreadSafe + Clone> IncluderTrait for SolanaIncluder<G> {
                     data: ix_data,
                 };
 
-                self.send_to_chain(ix, None, None)
+                self.send_gateway_tx_to_chain(ix, None, None, 0)
             })
             .collect::<FuturesUnordered<_>>();
         while let Some(result) = verifier_ver_future_set.next().await {
@@ -345,7 +423,11 @@ impl<G: GmpApiTrait + ThreadSafe + Clone> IncluderTrait for SolanaIncluder<G> {
                     accounts: accounts.to_account_metas(None),
                     data: ix_data,
                 };
-                match self.send_to_chain(ix, None, None).await.status {
+                match self
+                    .send_gateway_tx_to_chain(ix, None, None, 0)
+                    .await
+                    .status
+                {
                     Ok(_) => {
                         debug!("Rotated signers transaction sent successfully");
                         // For verifier set rotation, we don't have messages to process, so return empty
@@ -387,7 +469,7 @@ impl<G: GmpApiTrait + ThreadSafe + Clone> IncluderTrait for SolanaIncluder<G> {
                             accounts: accounts.to_account_metas(None),
                             data: ix_data,
                         };
-                        self.send_to_chain(ix, Some(msg_id), Some(chain))
+                        self.send_gateway_tx_to_chain(ix, Some(msg_id), Some(chain), 0)
                     })
                     .collect::<FuturesUnordered<_>>();
 
@@ -430,19 +512,23 @@ impl<G: GmpApiTrait + ThreadSafe + Clone> IncluderTrait for SolanaIncluder<G> {
     }
 
     #[tracing::instrument(skip(self), fields(message_id))]
-    async fn handle_execute_task(&self, task: ExecuteTask) -> Result<(), IncluderError> {
+    async fn handle_execute_task(
+        &self,
+        task: ExecuteTask,
+    ) -> Result<ExecuteTaskEvents, IncluderError> {
         let message = Message {
             cc_id: CrossChainId {
-                chain: task.task.message.source_chain,
-                id: task.task.message.message_id,
+                chain: task.task.message.source_chain.clone(),
+                id: task.task.message.message_id.clone(),
             },
-            source_address: task.task.message.source_address,
+            source_address: task.task.message.source_address.clone(),
             destination_chain: self.chain_name.clone(),
             destination_address: task.task.message.destination_address.clone(),
             payload_hash: task
                 .task
                 .message
                 .payload_hash
+                .clone()
                 .into_bytes()
                 .as_slice()
                 .try_into()
@@ -462,7 +548,10 @@ impl<G: GmpApiTrait + ThreadSafe + Clone> IncluderTrait for SolanaIncluder<G> {
             .map_err(|e| IncluderError::GenericError(e.to_string()))?
         {
             tracing::warn!("incoming message already executed");
-            return Ok(());
+            return Ok(ExecuteTaskEvents {
+                cannot_execute_events: vec![],
+                reverted_events: vec![],
+            });
         }
 
         let destination_address = task
@@ -476,131 +565,14 @@ impl<G: GmpApiTrait + ThreadSafe + Clone> IncluderTrait for SolanaIncluder<G> {
             .transaction_builder
             .build_execute_instruction(
                 &message,
-                &task.task.payload.into_bytes(),
+                &task.task.payload.clone().into_bytes(),
                 destination_address,
             )
             .await
             .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
-        let transaction = self
-            .transaction_builder
-            .build(instruction)
+        self.build_execute_transaction_and_send(instruction, task, 0)
             .await
-            .map_err(|e| IncluderError::GenericError(e.to_string()))?;
-
-        let gas_cost = self
-            .client
-            .get_gas_cost_from_simulation(&transaction)
-            .await
-            .map_err(|e| IncluderError::GenericError(e.to_string()))?;
-
-        let gas_cost_lamports = calculate_total_cost_lamports(&transaction, gas_cost)
-            .map_err(|e| IncluderError::GenericError(e.to_string()))?;
-
-        if gas_cost_lamports
-            > u64::from_str(&task.task.available_gas_balance.amount)
-                .map_err(|e| IncluderError::GenericError(e.to_string()))?
-        {
-            return Err(IncluderError::GenericError(
-                "Not enough gas to execute message".to_string(),
-            ));
-        }
-
-        let signature = self
-            .client
-            .send_transaction(transaction)
-            .await
-            .map_err(|e| IncluderError::GenericError(e.to_string()))?;
-
-        info!("Transaction sent successfully: {}", signature.to_string());
-
-        Ok(())
+            .map_err(|e| IncluderError::GenericError(e.to_string()))
     }
-
-    // #[tracing::instrument(skip(self), fields(message_id))]
-    // async fn broadcast_refund_message(
-    //     &self,
-    //     refund_task: RefundTaskFields,
-    // ) -> Result<String, BroadcasterError> {
-    //     if refund_task.remaining_gas_balance.token_id.is_some() {
-    //         return Err(BroadcasterError::GenericError(
-    //             "Refund task with token_id is not supported".to_string(),
-    //         ));
-    //     }
-
-    //     let cleaned_hash = refund_task
-    //         .message
-    //         .message_id
-    //         .strip_prefix("0x")
-    //         .unwrap_or(&refund_task.message.message_id);
-
-    //     tracing::Span::current().record("message_id", &refund_task.message.message_id);
-
-    //     let tx_hash = TonHash::from_hex(cleaned_hash)
-    //         .map_err(|e| BroadcasterError::GenericError(e.to_string()))?;
-
-    //     let address = Pubkey::from_str(&refund_task.refund_recipient_address)
-    //         .map_err(|err| BroadcasterError::GenericError(err.to_string()))?;
-
-    //     let original_amount = BigUint::from_str(&refund_task.remaining_gas_balance.amount)
-    //         .map_err(|err| BroadcasterError::GenericError(err.to_string()))?;
-    //     let gas_estimate = self.gas_estimator.native_gas_refund_estimate().await;
-
-    //     info!(
-    //         "Considering refund message: message_id={}, address={}, original_amount={}, gas_estimate={}",
-    //         refund_task.message.message_id, address, refund_task.remaining_gas_balance.amount, gas_estimate
-    //     );
-
-    //     if original_amount < BigUint::from(gas_estimate) {
-    //         info!(
-    //             "Not enough balance to cover gas for refund: message_id={}",
-    //             refund_task.message.message_id
-    //         );
-    //         return Err(BroadcasterError::InsufficientGas(
-    //             "Not enough balance to cover gas for refund".to_string(),
-    //         ));
-    //     }
-
-    //     let amount = original_amount - BigUint::from(gas_estimate);
-
-    //     let native_refund = NativeRefundMessage::new(tx_hash, address, amount);
-
-    //     let boc = native_refund
-    //         .to_cell()
-    //         .map_err(|e| BroadcasterError::GenericError(e.to_string()))?
-    //         .to_boc_hex(true)
-    //         .map_err(|e| {
-    //             BroadcasterError::GenericError(format!(
-    //                 "Failed to serialize relayer execute message: {e:?}"
-    //             ))
-    //         })?;
-
-    //     let wallet = self.wallet.acquire().await.map_err(|e| {
-    //         error!("Error acquiring wallet: {e:?}");
-    //         BroadcasterError::GenericError(format!("Wallet acquire failed: {e:?}"))
-    //     })?;
-
-    //     let result = async {
-    //         let msg_value: BigUint = BigUint::from(REFUND_DUST);
-
-    //         let actions: Vec<OutAction> =
-    //             vec![
-    //                 out_action(&boc, msg_value.clone(), self.gas_service_address.clone())
-    //                     .map_err(|e| BroadcasterError::GenericError(e.to_string()))?,
-    //             ];
-
-    //         let res = self.send_to_chain(wallet, actions.clone(), None).await;
-    //         let (tx_hash, _status) = match res {
-    //             Ok(response) => (response.message_hash, Ok(())),
-    //             Err(err) => (String::new(), Err(err)),
-    //         };
-
-    //         Ok(tx_hash)
-    //     }
-    //     .await;
-
-    //     self.wallet.release(wallet).await;
-
-    //     result
-    // }
 }

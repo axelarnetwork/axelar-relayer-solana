@@ -67,16 +67,15 @@ impl IncluderClientTrait for IncluderClient {
         let mut delay = Duration::from_millis(500);
 
         loop {
-            let res = self
-                .client
-                .send_and_confirm_transaction(&transaction)
-                .await
-                .map_err(|e| IncluderClientError::GenericError(e.to_string()));
+            let res = self.client.send_and_confirm_transaction(&transaction).await;
             match res {
                 Ok(signature) => return Ok(signature),
                 Err(e) => {
                     if e.to_string().contains("Computational budget exceeded") {
                         return Err(IncluderClientError::GasExceededError(e.to_string()));
+                    }
+                    if e.get_transaction_error().is_some() {
+                        return Err(IncluderClientError::TransactionError(e.to_string()));
                     }
                     if retries >= self.max_retries {
                         warn!(
