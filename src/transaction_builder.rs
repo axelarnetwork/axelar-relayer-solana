@@ -1,14 +1,19 @@
 use crate::gas_calculator::GasCalculatorTrait;
 use crate::utils::{
-    get_gateway_root_config_internal, get_governance_config_pda,
-    get_governance_event_authority_pda, get_incoming_message_pda, get_operator_proposal_pda,
-    get_proposal_pda, get_validate_message_signing_pda,
+    get_deployer_ata, get_gateway_root_config_internal, get_governance_config_pda,
+    get_governance_event_authority_pda, get_incoming_message_pda, get_its_root_pda,
+    get_minter_roles_pda, get_mpl_token_metadata_account, get_operator_proposal_pda,
+    get_proposal_pda, get_token_manager_ata, get_token_manager_pda, get_token_mint_pda,
+    get_validate_message_signing_pda,
 };
 use crate::{error::TransactionBuilderError, utils::get_gateway_event_authority_pda};
 use anchor_lang::InstructionData;
 use anchor_lang::ToAccountMetas;
+use anchor_spl::{associated_token::spl_associated_token_account, token_2022::spl_token_2022};
 use async_trait::async_trait;
 use axelar_solana_gateway_v2::{executable::ExecutablePayload, Message};
+use interchain_token_transfer_gmp::GMPPayload;
+use mpl_token_metadata;
 use relayer_core::utils::ThreadSafe;
 use solana_sdk::instruction::Instruction;
 use solana_sdk::pubkey::Pubkey;
@@ -88,64 +93,94 @@ impl<GE: GasCalculatorTrait + ThreadSafe> TransactionBuilderTrait for Transactio
 
         match destination_address {
             x if x == axelar_solana_its_v2::ID => {
-                // let (signing_pda, _) = Pubkey::find_program_address(
-                //     &[
-                //         axelar_solana_gateway_v2::seed_prefixes::VALIDATE_MESSAGE_SIGNING_SEED,
-                //         &message.command_id(),
-                //     ],
-                //     &axelar_solana_gateway_v2::ID,
-                // );
-                // let (event_authority, _) = get_gateway_event_authority_pda();
-                // let (gateway_root_pda, _) = get_gateway_root_config_internal();
-                // let executable = axelar_solana_its_v2::accounts::AxelarExecuteAccounts {
-                //     incoming_message_pda,
-                //     signing_pda,
-                //     axelar_gateway_program: axelar_solana_gateway_v2::ID,
-                //     event_authority,
-                //     system_program: solana_program::system_program::id(),
-                // };
+                let gmp_decoded_payload = GMPPayload::decode(payload)
+                    .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
 
-                // let (governance_config, _) = get_governance_config_pda();
-                // let (governance_event_authority, _) = get_governance_event_authority_pda();
-                // let (proposal_pda, _) = get_proposal_pda(&message.command_id());
-                // let (operator_proposal_pda, _) = get_operator_proposal_pda(&message.command_id());
+                let token_id = gmp_decoded_payload
+                    .token_id()
+                    .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
 
-                // let accounts = axelar_solana_its_v2::accounts::Execute {
-                //     executable,
-                //     payer: self.keypair.pubkey(),
-                //     system_program: solana_program::system_program::id(),
-                //     its_root_pda,
-                //     token_manager_pda,
-                //     token_mint,
-                //     token_manager_ata,
-                //     token_program,
-                //     associated_token_program,
-                //     rent,
-                //     deployer_ata,
-                //     minter,
-                //     minter_roles_pda,
-                //     mpl_token_metadata_account,
-                //     mpl_token_metadata_program,
-                //     sysvar_instructions,
-                //     event_authority,
-                //     program,
-                // };
+                let minter = match gmp_decoded_payload {
+                    GMPPayload::DeployInterchainToken(deploy) if !deploy.minter.is_empty() => {
+                        Some(Pubkey::try_from(deploy.minter.as_ref()).map_err(|e| {
+                            TransactionBuilderError::GenericError(format!(
+                                "Invalid minter pubkey: {}",
+                                e
+                            ))
+                        })?)
+                    }
+                    _ => None,
+                };
 
-                // let ix_data = axelar_solana_its_v2::instruction::Execute {
-                //     message: message.clone(),
-                //     payload: payload.to_vec(),
-                // }
-                // .data();
+                let (signing_pda, _) = Pubkey::find_program_address(
+                    &[
+                        axelar_solana_gateway_v2::seed_prefixes::VALIDATE_MESSAGE_SIGNING_SEED,
+                        &message.command_id(),
+                    ],
+                    &axelar_solana_gateway_v2::ID,
+                );
+                let (event_authority, _) = get_gateway_event_authority_pda();
+                let (gateway_root_pda, _) = get_gateway_root_config_internal();
 
-                // Ok(Instruction {
-                //     program_id: axelar_solana_its_v2::ID,
-                //     accounts: accounts.to_account_metas(None),
-                //     data: ix_data,
-                // })
+                let executable = axelar_solana_its_v2::accounts::AxelarExecuteAccounts {
+                    incoming_message_pda,
+                    signing_pda,
+                    axelar_gateway_program: axelar_solana_gateway_v2::ID,
+                    event_authority,
+                    system_program: solana_program::system_program::id(),
+                };
 
-                Err(TransactionBuilderError::GenericError(
-                    "ITS is not supported".to_string(),
-                ))
+                let (its_root_pda, _) = get_its_root_pda();
+                let (token_manager_pda, _) = get_token_manager_pda(&its_root_pda, &token_id);
+                let (token_mint, _) = get_token_mint_pda(&its_root_pda, &token_id);
+                let (token_manager_ata, _) = get_token_manager_ata(&its_root_pda, &token_mint);
+
+                // TODO: is payer here us?
+                let (deployer_ata, _) = get_deployer_ata(&self.keypair.pubkey(), &token_mint);
+
+                let (mpl_token_metadata_account, _) = get_mpl_token_metadata_account(&token_mint);
+                let signing_pda = get_validate_message_signing_pda(
+                    &message.command_id(),
+                    &axelar_solana_its_v2::ID,
+                );
+
+                let minter_roles_pda = match minter {
+                    Some(minter) => Some(get_minter_roles_pda(&token_manager_pda, &minter).0),
+                    None => None,
+                };
+
+                let accounts = axelar_solana_its_v2::accounts::Execute {
+                    executable,
+                    payer: self.keypair.pubkey(),
+                    system_program: solana_program::system_program::id(),
+                    event_authority,
+                    its_root_pda,
+                    token_manager_pda,
+                    token_mint,
+                    token_manager_ata,
+                    token_program: spl_token_2022::ID,
+                    associated_token_program: spl_associated_token_account::ID,
+                    rent: solana_program::sysvar::rent::id(),
+                    deployer_ata,
+                    minter,
+                    minter_roles_pda,
+                    mpl_token_metadata_account,
+                    mpl_token_metadata_program: mpl_token_metadata::ID,
+                    sysvar_instructions: solana_program::sysvar::instructions::ID,
+                    program: axelar_solana_its_v2::ID,
+                };
+
+                let ix_data = axelar_solana_its_v2::instruction::Execute {
+                    message: message.clone(),
+                    payload: payload.to_vec(),
+                }
+                .data();
+
+                Ok(Instruction {
+                    program_id: axelar_solana_its_v2::ID,
+                    accounts: accounts.to_account_metas(None),
+                    data: ix_data,
+                })
             }
             x if x == axelar_solana_governance_v2::ID => {
                 let (signing_pda, _) = Pubkey::find_program_address(
@@ -198,7 +233,11 @@ impl<GE: GasCalculatorTrait + ThreadSafe> TransactionBuilderTrait for Transactio
                     .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
                 let user_provided_accounts = decoded_payload.account_meta();
 
-                let (signing_pda, _) = get_validate_message_signing_pda(&message.command_id());
+                let (signing_pda, _) = get_validate_message_signing_pda(
+                    &message.command_id(),
+                    // TODO: Is this gateway or dst program?
+                    &axelar_solana_gateway_v2::ID,
+                );
                 let (event_authority, _) = get_gateway_event_authority_pda();
                 let (gateway_root_pda, _) = get_gateway_root_config_internal();
 

@@ -1,4 +1,3 @@
-pub mod broadcaster;
 pub mod config;
 pub mod error;
 pub mod gas_calculator;

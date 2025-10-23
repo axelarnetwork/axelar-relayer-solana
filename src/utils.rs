@@ -2,6 +2,7 @@ use crate::{
     types::SolanaTransaction,
     v2_program_types::{ExecuteData, MerkleisedPayload},
 };
+use anchor_spl::{associated_token::spl_associated_token_account, token_2022::spl_token_2022};
 use anyhow::anyhow;
 use bincode;
 use relayer_core::{
@@ -167,7 +168,13 @@ pub fn get_governance_event_authority_pda() -> (Pubkey, u8) {
 }
 
 pub fn get_proposal_pda(command_id: &[u8]) -> (Pubkey, u8) {
-    Pubkey::find_program_address(&[b"proposal", command_id], &axelar_solana_governance_v2::ID)
+    Pubkey::find_program_address(
+        &[
+            axelar_solana_governance_v2::seed_prefixes::PROPOSAL_PDA,
+            command_id,
+        ],
+        &axelar_solana_governance_v2::ID,
+    )
 }
 
 pub fn get_operator_proposal_pda(command_id: &[u8]) -> (Pubkey, u8) {
@@ -177,18 +184,94 @@ pub fn get_operator_proposal_pda(command_id: &[u8]) -> (Pubkey, u8) {
     )
 }
 
-pub fn get_validate_message_signing_pda(command_id: &[u8]) -> (Pubkey, u8) {
+pub fn get_validate_message_signing_pda(command_id: &[u8], program_id: &Pubkey) -> (Pubkey, u8) {
     Pubkey::find_program_address(
         &[
             axelar_solana_gateway_v2::seed_prefixes::VALIDATE_MESSAGE_SIGNING_SEED,
             command_id,
         ],
+        program_id,
+    )
+}
+
+pub fn get_gateway_root_config_internal() -> (Pubkey, u8) {
+    Pubkey::find_program_address(
+        &[axelar_solana_gateway_v2::seed_prefixes::GATEWAY_SEED],
         &axelar_solana_gateway_v2::ID,
     )
 }
 
-pub(crate) fn get_gateway_root_config_internal() -> (Pubkey, u8) {
-    Pubkey::find_program_address(&[b"gateway"], &axelar_solana_gateway_v2::ID)
+pub fn get_its_root_pda() -> (Pubkey, u8) {
+    Pubkey::find_program_address(
+        &[axelar_solana_its_v2::seed_prefixes::ITS_SEED],
+        &axelar_solana_its_v2::ID,
+    )
+}
+
+pub fn get_token_manager_pda(its_root_pda: &Pubkey, token_id: &[u8]) -> (Pubkey, u8) {
+    Pubkey::find_program_address(
+        &[
+            axelar_solana_its_v2::seed_prefixes::TOKEN_MANAGER_SEED,
+            its_root_pda.as_ref(),
+            token_id,
+        ],
+        &axelar_solana_its_v2::ID,
+    )
+}
+
+pub fn get_token_mint_pda(its_root_pda: &Pubkey, token_id: &[u8]) -> (Pubkey, u8) {
+    Pubkey::find_program_address(
+        &[
+            axelar_solana_its_v2::seed_prefixes::INTERCHAIN_TOKEN_SEED,
+            its_root_pda.as_ref(),
+            token_id,
+        ],
+        &axelar_solana_its_v2::ID,
+    )
+}
+
+pub fn get_token_manager_ata(token_manager_pda: &Pubkey, token_mint_pda: &Pubkey) -> (Pubkey, u8) {
+    Pubkey::find_program_address(
+        &[
+            token_manager_pda.as_ref(),
+            spl_token_2022::id().as_ref(),
+            token_mint_pda.as_ref(),
+        ],
+        &spl_associated_token_account::id(),
+    )
+}
+
+pub fn get_deployer_ata(payer: &Pubkey, token_mint_pda: &Pubkey) -> (Pubkey, u8) {
+    Pubkey::find_program_address(
+        &[
+            payer.as_ref(),
+            spl_token_2022::id().as_ref(),
+            token_mint_pda.as_ref(),
+        ],
+        &spl_associated_token_account::id(),
+    )
+}
+
+pub fn get_mpl_token_metadata_account(token_mint_pda: &Pubkey) -> (Pubkey, u8) {
+    Pubkey::find_program_address(
+        &[
+            b"metadata",
+            mpl_token_metadata::ID.as_ref(),
+            token_mint_pda.as_ref(),
+        ],
+        &mpl_token_metadata::ID,
+    )
+}
+
+pub fn get_minter_roles_pda(token_manager_pda: &Pubkey, minter: &Pubkey) -> (Pubkey, u8) {
+    Pubkey::find_program_address(
+        &[
+            axelar_solana_its_v2::state::UserRoles::SEED_PREFIX,
+            token_manager_pda.as_ref(),
+            minter.as_ref(),
+        ],
+        &axelar_solana_its_v2::ID,
+    )
 }
 
 pub async fn get_cannot_execute_events_from_execute_data<G: GmpApiTrait>(

@@ -25,6 +25,7 @@ use relayer_core::{
     database::Database, gmp_api::GmpApiTrait, includer::Includer, includer_worker::IncluderWorker,
     payload_cache::PayloadCache, queue::Queue,
 };
+
 use solana_sdk::instruction::Instruction;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signer::{keypair::Keypair, Signer};
@@ -46,6 +47,7 @@ pub struct SolanaIncluder<G: GmpApiTrait + ThreadSafe + Clone> {
     chain_name: String,
     transaction_builder: TransactionBuilder<GasCalculator<IncluderClient>>,
     gmp_api: Arc<G>,
+    redis_conn: ConnectionManager,
 }
 
 impl<G: GmpApiTrait + ThreadSafe + Clone> SolanaIncluder<G> {
@@ -56,6 +58,7 @@ impl<G: GmpApiTrait + ThreadSafe + Clone> SolanaIncluder<G> {
         chain_name: String,
         transaction_builder: TransactionBuilder<GasCalculator<IncluderClient>>,
         gmp_api: Arc<G>,
+        redis_conn: ConnectionManager,
     ) -> Self {
         Self {
             client,
@@ -64,6 +67,7 @@ impl<G: GmpApiTrait + ThreadSafe + Clone> SolanaIncluder<G> {
             chain_name,
             transaction_builder,
             gmp_api,
+            redis_conn,
         }
     }
 
@@ -105,6 +109,7 @@ impl<G: GmpApiTrait + ThreadSafe + Clone> SolanaIncluder<G> {
             config.common_config.chain_name,
             transaction_builder,
             Arc::clone(&gmp_api),
+            redis_conn.clone(),
         );
 
         let refund_manager = SolanaRefundManager::new()

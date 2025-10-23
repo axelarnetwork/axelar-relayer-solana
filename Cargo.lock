@@ -559,7 +559,7 @@ dependencies = [
 [[package]]
 name = "anchor-discriminators"
 version = "0.1.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor-its-execute-wip#f710dd9967e5d304bf4a9649fbd9fef9305c5059"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor-its-execute-wip#060b397a5d5967acff4318472f443eed773c45dc"
 dependencies = [
  "borsh 1.5.7",
  "bs58",
@@ -1433,7 +1433,7 @@ dependencies = [
 [[package]]
 name = "axelar-message-primitives"
 version = "0.1.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor-its-execute-wip#f710dd9967e5d304bf4a9649fbd9fef9305c5059"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor-its-execute-wip#060b397a5d5967acff4318472f443eed773c45dc"
 dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
@@ -1477,7 +1477,7 @@ dependencies = [
 [[package]]
 name = "axelar-solana-encoding"
 version = "0.1.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor-its-execute-wip#f710dd9967e5d304bf4a9649fbd9fef9305c5059"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor-its-execute-wip#060b397a5d5967acff4318472f443eed773c45dc"
 dependencies = [
  "arrayref",
  "borsh 1.5.7",
@@ -1520,7 +1520,7 @@ dependencies = [
 [[package]]
 name = "axelar-solana-gas-service-v2"
 version = "0.1.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor-its-execute-wip#f710dd9967e5d304bf4a9649fbd9fef9305c5059"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor-its-execute-wip#060b397a5d5967acff4318472f443eed773c45dc"
 dependencies = [
  "anchor-lang",
  "axelar-solana-operators 0.1.0 (git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor-its-execute-wip)",
@@ -1546,7 +1546,7 @@ dependencies = [
 [[package]]
 name = "axelar-solana-gateway-v2"
 version = "0.1.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor-its-execute-wip#f710dd9967e5d304bf4a9649fbd9fef9305c5059"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor-its-execute-wip#060b397a5d5967acff4318472f443eed773c45dc"
 dependencies = [
  "anchor-lang",
  "axelar-message-primitives 0.1.0 (git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor-its-execute-wip)",
@@ -1592,7 +1592,7 @@ dependencies = [
 [[package]]
 name = "axelar-solana-its-v2"
 version = "0.1.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor-its-execute-wip#f710dd9967e5d304bf4a9649fbd9fef9305c5059"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor-its-execute-wip#060b397a5d5967acff4318472f443eed773c45dc"
 dependencies = [
  "alloy-primitives",
  "anchor-lang",
@@ -1621,7 +1621,7 @@ dependencies = [
 [[package]]
 name = "axelar-solana-operators"
 version = "0.1.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor-its-execute-wip#f710dd9967e5d304bf4a9649fbd9fef9305c5059"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor-its-execute-wip#060b397a5d5967acff4318472f443eed773c45dc"
 dependencies = [
  "anchor-lang",
  "program-utils 0.1.0 (git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor-its-execute-wip)",
@@ -2002,7 +2002,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "115e54d64eb62cdebad391c19efc9dce4981c690c85a33a12199d99bb9546fee"
 dependencies = [
  "borsh-derive 0.10.4",
- "hashbrown 0.13.2",
+ "hashbrown 0.12.3",
 ]
 
 [[package]]
@@ -3341,7 +3341,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4665,7 +4665,7 @@ dependencies = [
 [[package]]
 name = "interchain-token-transfer-gmp"
 version = "0.1.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor-its-execute-wip#f710dd9967e5d304bf4a9649fbd9fef9305c5059"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor-its-execute-wip#060b397a5d5967acff4318472f443eed773c45dc"
 dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
@@ -6336,7 +6336,7 @@ dependencies = [
 [[package]]
 name = "program-utils"
 version = "0.1.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor-its-execute-wip#f710dd9967e5d304bf4a9649fbd9fef9305c5059"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor-its-execute-wip#060b397a5d5967acff4318472f443eed773c45dc"
 dependencies = [
  "anchor-discriminators 0.1.0 (git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor-its-execute-wip)",
  "borsh 1.5.7",
@@ -7305,7 +7305,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.11.0",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -8145,10 +8145,11 @@ name = "solana"
 version = "0.1.0"
 dependencies = [
  "anchor-lang",
+ "anchor-spl",
  "anyhow",
  "async-trait",
  "axelar-message-primitives 0.1.0 (git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor-payload-encoding-executable)",
- "axelar-solana-encoding 0.1.0 (git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor)",
+ "axelar-solana-encoding 0.1.0 (git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor-payload-encoding-executable)",
  "axelar-solana-gateway-v2 0.1.0 (git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor-payload-encoding-executable)",
  "axelar-solana-governance-v2",
  "axelar-solana-its-v2",
@@ -8166,7 +8167,9 @@ dependencies = [
  "hex",
  "httpmock",
  "interchain-token-service 1.1.0",
+ "interchain-token-transfer-gmp",
  "mockall",
+ "mpl-token-metadata",
  "redis",
  "relayer-core",
  "serde",
@@ -11428,7 +11431,7 @@ dependencies = [
  "getrandom 0.3.3",
  "once_cell",
  "rustix 1.1.2",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -12512,7 +12515,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
