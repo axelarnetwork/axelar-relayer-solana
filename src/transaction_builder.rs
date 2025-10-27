@@ -136,10 +136,8 @@ impl<GE: GasCalculatorTrait + ThreadSafe> TransactionBuilderTrait for Transactio
 
                 let (mpl_token_metadata_account, _) = get_mpl_token_metadata_account(&token_mint);
 
-                let minter_roles_pda = match minter {
-                    Some(minter) => Some(get_minter_roles_pda(&token_manager_pda, &minter).0),
-                    None => None,
-                };
+                let minter_roles_pda =
+                    minter.map(|minter| get_minter_roles_pda(&token_manager_pda, &minter).0);
 
                 let accounts = axelar_solana_its_v2::accounts::Execute {
                     executable,
