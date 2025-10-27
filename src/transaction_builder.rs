@@ -11,7 +11,7 @@ use anchor_lang::InstructionData;
 use anchor_lang::ToAccountMetas;
 use anchor_spl::{associated_token::spl_associated_token_account, token_2022::spl_token_2022};
 use async_trait::async_trait;
-use axelar_solana_gateway_v2::{executable::ExecutablePayload, Message};
+use axelar_solana_gateway_v2::{executable::ExecutablePayload, state::incoming_message::Message};
 use interchain_token_transfer_gmp::GMPPayload;
 use mpl_token_metadata;
 use relayer_core::utils::ThreadSafe;
@@ -112,11 +112,8 @@ impl<GE: GasCalculatorTrait + ThreadSafe> TransactionBuilderTrait for Transactio
                     _ => None,
                 };
 
-                let (signing_pda, _) = Pubkey::find_program_address(
-                    &[
-                        axelar_solana_gateway_v2::seed_prefixes::VALIDATE_MESSAGE_SIGNING_SEED,
-                        &message.command_id(),
-                    ],
+                let (signing_pda, _) = get_validate_message_signing_pda(
+                    &message.command_id(),
                     &axelar_solana_gateway_v2::ID,
                 );
                 let (event_authority, _) = get_gateway_event_authority_pda();
@@ -127,7 +124,7 @@ impl<GE: GasCalculatorTrait + ThreadSafe> TransactionBuilderTrait for Transactio
                     signing_pda,
                     axelar_gateway_program: axelar_solana_gateway_v2::ID,
                     event_authority,
-                    system_program: solana_program::system_program::id(),
+                    gateway_root_pda,
                 };
 
                 let (its_root_pda, _) = get_its_root_pda();
@@ -135,14 +132,9 @@ impl<GE: GasCalculatorTrait + ThreadSafe> TransactionBuilderTrait for Transactio
                 let (token_mint, _) = get_token_mint_pda(&its_root_pda, &token_id);
                 let (token_manager_ata, _) = get_token_manager_ata(&its_root_pda, &token_mint);
 
-                // TODO: is payer here us?
                 let (deployer_ata, _) = get_deployer_ata(&self.keypair.pubkey(), &token_mint);
 
                 let (mpl_token_metadata_account, _) = get_mpl_token_metadata_account(&token_mint);
-                let signing_pda = get_validate_message_signing_pda(
-                    &message.command_id(),
-                    &axelar_solana_its_v2::ID,
-                );
 
                 let minter_roles_pda = match minter {
                     Some(minter) => Some(get_minter_roles_pda(&token_manager_pda, &minter).0),
@@ -161,12 +153,17 @@ impl<GE: GasCalculatorTrait + ThreadSafe> TransactionBuilderTrait for Transactio
                     token_program: spl_token_2022::ID,
                     associated_token_program: spl_associated_token_account::ID,
                     rent: solana_program::sysvar::rent::id(),
-                    deployer_ata,
+                    deployer_ata: Some(deployer_ata),
                     minter,
                     minter_roles_pda,
-                    mpl_token_metadata_account,
-                    mpl_token_metadata_program: mpl_token_metadata::ID,
-                    sysvar_instructions: solana_program::sysvar::instructions::ID,
+                    mpl_token_metadata_account: Some(mpl_token_metadata_account),
+                    mpl_token_metadata_program: Some(mpl_token_metadata::ID),
+                    sysvar_instructions: Some(solana_program::sysvar::instructions::ID),
+                    // TODO: Is this right?
+                    deployer: Some(self.keypair.pubkey()),
+                    authority: None,
+                    destination: None,
+                    destination_ata: None,
                     program: axelar_solana_its_v2::ID,
                 };
 
@@ -183,11 +180,8 @@ impl<GE: GasCalculatorTrait + ThreadSafe> TransactionBuilderTrait for Transactio
                 })
             }
             x if x == axelar_solana_governance_v2::ID => {
-                let (signing_pda, _) = Pubkey::find_program_address(
-                    &[
-                        axelar_solana_gateway_v2::seed_prefixes::VALIDATE_MESSAGE_SIGNING_SEED,
-                        &message.command_id(),
-                    ],
+                let (signing_pda, _) = get_validate_message_signing_pda(
+                    &message.command_id(),
                     &axelar_solana_gateway_v2::ID,
                 );
                 let (event_authority, _) = get_gateway_event_authority_pda();

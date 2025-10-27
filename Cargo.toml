@@ -27,7 +27,6 @@ solana-program = "~2.3"
 solana-transaction-status = "~2.3"
 solana-pubsub-client = "~2.3"
 solana-transaction-status-client-types = "~2.3"
-interchain-token-service = { git = "https://github.com/commonprefix/axelar-amplifier", branch = "xrpl", package = "interchain-token-service" }
 futures = "0.3.31"
 futures-util = "0.3.31"
 async-trait = "0.1.88"
@@ -42,15 +41,13 @@ anchor-lang = "0.31.1"
 anchor-spl = "0.31.1"
 mpl-token-metadata = "5.1.1"
 interchain-token-transfer-gmp = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "v2-anchor-its-execute-wip", package = "interchain-token-transfer-gmp" }
-axelar-solana-encoding = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "v2-anchor-payload-encoding-executable", package = "axelar-solana-encoding" }
 ed25519-zebra = "=4.0.3"
 
-solana-transaction-parser = { git = "https://github.com/commonprefix/solana-transaction-parser", rev = "a25c9a1" }
+solana-transaction-parser = { git = "https://github.com/commonprefix/solana-transaction-parser", branch = "v2-parsing"}
 
 axelar-solana-its-v2 = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "v2-anchor-its-execute-wip", package = "axelar-solana-its-v2", features = ["no-entrypoint"] }
-axelar-solana-gateway-v2 = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "v2-anchor-payload-encoding-executable", package = "axelar-solana-gateway-v2", features = ["no-entrypoint"] }
-axelar-solana-governance-v2 = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "v2-anchor-payload-encoding-executable", package = "axelar-solana-governance-v2", features = ["no-entrypoint"] }
-axelar-message-primitives = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "v2-anchor-payload-encoding-executable", package = "axelar-message-primitives" }
+axelar-solana-gateway-v2 = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "v2-anchor-its-execute-wip", package = "axelar-solana-gateway-v2", features = ["no-entrypoint"] }
+axelar-solana-governance-v2 = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "v2-anchor-its-execute-wip", package = "axelar-solana-governance-v2", features = ["no-entrypoint"] }
 bytemuck = "1.24.0"
 bincode = "1"
 

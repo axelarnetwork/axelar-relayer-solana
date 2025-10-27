@@ -20,7 +20,7 @@ pub trait IncluderClientTrait: ThreadSafe {
     async fn send_transaction(
         &self,
         transaction: Transaction,
-    ) -> Result<Signature, IncluderClientError>;
+    ) -> Result<(Signature, Option<u64>), IncluderClientError>;
     async fn incoming_message_already_executed(
         &self,
         incoming_message_pda: &Pubkey,
@@ -30,6 +30,10 @@ pub trait IncluderClientTrait: ThreadSafe {
         &self,
         transaction: &Transaction,
     ) -> Result<u64, IncluderClientError>;
+    async fn get_transaction_cost_from_signature(
+        &self,
+        signature: &Signature,
+    ) -> Result<Option<u64>, IncluderClientError>;
 }
 
 #[derive(Clone)]
@@ -62,14 +66,20 @@ impl IncluderClientTrait for IncluderClient {
     async fn send_transaction(
         &self,
         transaction: Transaction,
-    ) -> Result<Signature, IncluderClientError> {
+    ) -> Result<(Signature, Option<u64>), IncluderClientError> {
         let mut retries = 0;
         let mut delay = Duration::from_millis(500);
 
         loop {
             let res = self.client.send_and_confirm_transaction(&transaction).await;
             match res {
-                Ok(signature) => return Ok(signature),
+                Ok(signature) => {
+                    let cost = match self.get_transaction_cost_from_signature(&signature).await {
+                        Ok(cost) => cost,
+                        Err(e) => return Err(IncluderClientError::GenericError(e.to_string())),
+                    };
+                    return Ok((signature, cost));
+                }
                 Err(e) => {
                     if e.to_string().contains("Computational budget exceeded") {
                         return Err(IncluderClientError::GasExceededError(e.to_string()));
@@ -144,6 +154,33 @@ impl IncluderClientTrait for IncluderClient {
         Ok(simulation_result.value.units_consumed.ok_or_else(|| {
             IncluderClientError::GenericError("Units consumed not found".to_string())
         })?)
+    }
+
+    async fn get_transaction_cost_from_signature(
+        &self,
+        signature: &Signature,
+    ) -> Result<Option<u64>, IncluderClientError> {
+        use solana_rpc_client_api::config::RpcTransactionConfig;
+        use solana_transaction_status::UiTransactionEncoding;
+
+        let transaction_info = self
+            .inner()
+            .get_transaction_with_config(
+                signature,
+                RpcTransactionConfig {
+                    encoding: Some(UiTransactionEncoding::Json),
+                    commitment: Some(self.commitment),
+                    max_supported_transaction_version: Some(0),
+                },
+            )
+            .await
+            .map_err(|e| IncluderClientError::GenericError(e.to_string()))?;
+
+        if let Some(meta) = &transaction_info.transaction.meta {
+            Ok(Some(meta.fee))
+        } else {
+            Ok(None)
+        }
     }
 }
 

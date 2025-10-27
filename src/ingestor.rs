@@ -1,6 +1,5 @@
 use crate::types::SolanaTransaction;
 use async_trait::async_trait;
-use redis::aio::ConnectionManager;
 use relayer_core::error::IngestorError;
 use relayer_core::gmp_api::gmp_types::{
     ConstructProofTask, Event, ReactToWasmEventTask, RetryTask, VerifyTask,
@@ -18,19 +17,13 @@ use solana_transaction_parser::parser::TransactionParserTrait;
 pub struct SolanaIngestor<TP: TransactionParserTrait + Sync, STM: UpdateEvents + ThreadSafe> {
     solana_parser: TP,
     solana_transaction_model: STM,
-    redis_conn: ConnectionManager,
 }
 
 impl<TP: TransactionParserTrait + Sync, STM: UpdateEvents + ThreadSafe> SolanaIngestor<TP, STM> {
-    pub fn new(
-        solana_parser: TP,
-        solana_transaction_model: STM,
-        redis_conn: ConnectionManager,
-    ) -> Self {
+    pub fn new(solana_parser: TP, solana_transaction_model: STM) -> Self {
         Self {
             solana_parser,
             solana_transaction_model,
-            redis_conn,
         }
     }
 }

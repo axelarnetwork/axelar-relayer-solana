@@ -12,12 +12,13 @@ use crate::utils::{
 use crate::v2_program_types::{ExecuteData, MerkleisedPayload};
 use anchor_lang::{InstructionData, ToAccountMetas};
 use async_trait::async_trait;
-use axelar_solana_gateway_v2::{CrossChainId, Message};
+use axelar_solana_gateway_v2::{state::incoming_message::Message, CrossChainId};
 use base64::Engine as _;
 use borsh::BorshDeserialize;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt as _;
 use redis::aio::ConnectionManager;
+use redis::{AsyncTypedCommands, SetExpiry, SetOptions};
 use relayer_core::error::IncluderError;
 use relayer_core::includer_worker::{ExecuteTaskEvents, IncluderTrait};
 use relayer_core::utils::ThreadSafe;
@@ -26,6 +27,7 @@ use relayer_core::{
     payload_cache::PayloadCache, queue::Queue,
 };
 
+use serde::{Deserialize, Serialize};
 use solana_sdk::instruction::Instruction;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signer::{keypair::Keypair, Signer};
@@ -33,11 +35,13 @@ use solana_transaction_parser::gmp_types::{
     Amount, CannotExecuteMessageReason, Event, ExecuteTask, GatewayTxTask, MessageExecutionStatus,
     RefundTask,
 };
+use std::fmt::{Display, Formatter};
 use std::str::FromStr;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
 
 const MAX_GAS_EXCEEDED_COUNT: u64 = 3;
+const GAS_COST_EXPIRATION: u64 = 604800; // one week
 
 #[derive(Clone)]
 pub struct SolanaIncluder<G: GmpApiTrait + ThreadSafe + Clone> {
@@ -146,6 +150,7 @@ impl<G: GmpApiTrait + ThreadSafe + Clone> SolanaIncluder<G> {
             Ok(tx) => tx,
             Err(e) => {
                 return SendToChainResult {
+                    gas_cost: None,
                     tx_hash: None,
                     status: Err(IncluderError::GenericError(e.to_string())),
                     message_id,
@@ -156,7 +161,7 @@ impl<G: GmpApiTrait + ThreadSafe + Clone> SolanaIncluder<G> {
 
         let res = self.client.send_transaction(tx).await;
         match res {
-            Ok(signature) => {
+            Ok((signature, gas_cost)) => {
                 let tx_hash = signature.to_string();
                 debug!("Transaction sent successfully: {}", tx_hash);
 
@@ -165,12 +170,14 @@ impl<G: GmpApiTrait + ThreadSafe + Clone> SolanaIncluder<G> {
                     status: Ok(()),
                     message_id,
                     source_chain,
+                    gas_cost,
                 }
             }
             Err(e) => match e {
                 IncluderClientError::GasExceededError(e) => {
                     if gas_exceeded_count > MAX_GAS_EXCEEDED_COUNT {
                         return SendToChainResult {
+                            gas_cost: None,
                             tx_hash: None,
                             status: Err(IncluderError::RPCError(e)),
                             message_id,
@@ -186,6 +193,7 @@ impl<G: GmpApiTrait + ThreadSafe + Clone> SolanaIncluder<G> {
                     .await
                 }
                 _ => SendToChainResult {
+                    gas_cost: None,
                     tx_hash: None,
                     status: Err(IncluderError::RPCError(e.to_string())),
                     message_id,
@@ -244,8 +252,17 @@ impl<G: GmpApiTrait + ThreadSafe + Clone> SolanaIncluder<G> {
         let signature_res = self.client.send_transaction(transaction).await;
 
         match signature_res {
-            Ok(signature) => {
+            Ok((signature, gas_cost)) => {
                 info!("Transaction sent successfully: {}", signature.to_string());
+
+                // TODO: Spawn a task to write to Redis
+                self.write_to_redis(
+                    task.task.message.message_id.clone(),
+                    gas_cost.unwrap_or(0),
+                    TransactionType::Execute,
+                )
+                .await;
+
                 Ok(ExecuteTaskEvents {
                     cannot_execute_events: vec![],
                     reverted_events: vec![],
@@ -287,6 +304,52 @@ impl<G: GmpApiTrait + ThreadSafe + Clone> SolanaIncluder<G> {
             },
         }
     }
+
+    async fn write_to_redis(
+        &self,
+        message_id: String,
+        gas_cost: u64,
+        transaction_type: TransactionType,
+    ) {
+        debug!("Writing gas cost to Redis");
+        let mut redis_conn = self.redis_conn.clone();
+        let set_opts = SetOptions::default().with_expiration(SetExpiry::EX(GAS_COST_EXPIRATION));
+        let key = format!("gas_cost:{}:{}", transaction_type, message_id);
+        let result = redis_conn
+            .set_options(key.clone(), gas_cost, set_opts)
+            .await;
+
+        match result {
+            Ok(_) => {
+                debug!(
+                    "Gas cost written to Redis successfully, key: {}, value: {}",
+                    key, gas_cost
+                );
+            }
+            Err(e) => {
+                warn!("Failed to write gas cost to Redis: {}", e);
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum TransactionType {
+    #[serde(rename = "execute")]
+    Execute,
+    #[serde(rename = "approve")]
+    Approve,
+}
+
+impl Display for TransactionType {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            TransactionType::Execute => "execute",
+            TransactionType::Approve => "approve",
+        };
+        write!(f, "{}", s)
+    }
 }
 
 struct SendToChainResult {
@@ -294,6 +357,7 @@ struct SendToChainResult {
     status: Result<(), IncluderError>,
     message_id: Option<String>,
     source_chain: Option<String>,
+    gas_cost: Option<u64>,
 }
 
 #[async_trait]
@@ -303,6 +367,8 @@ impl<G: GmpApiTrait + ThreadSafe + Clone> IncluderTrait for SolanaIncluder<G> {
         &self,
         task: GatewayTxTask,
     ) -> Result<Vec<Event>, IncluderError> {
+        let mut total_cost: u64 = 0;
+
         let execute_data_bytes = hex::encode(
             base64::prelude::BASE64_STANDARD
                 .decode(task.task.execute_data)
@@ -310,9 +376,8 @@ impl<G: GmpApiTrait + ThreadSafe + Clone> IncluderTrait for SolanaIncluder<G> {
         )
         .into_bytes();
 
-        let execute_data = ExecuteData::try_from_slice(&execute_data_bytes).map_err(|_err| {
-            IncluderError::GenericError("cannot decode execute data".to_string())
-        })?;
+        let execute_data = ExecuteData::try_from_slice(&execute_data_bytes)
+            .map_err(|_| IncluderError::GenericError("cannot decode execute data".to_string()))?;
 
         let (verification_session_tracker_pda, _) =
             get_signature_verification_pda(&execute_data.payload_merkle_root);
@@ -353,12 +418,12 @@ impl<G: GmpApiTrait + ThreadSafe + Clone> IncluderTrait for SolanaIncluder<G> {
             .map_err(|e| IncluderError::GenericError(e.to_string()));
         }
         debug!(
-            "Transaction for initializing payload verification session successfully: {}",
-            send_to_chain_res.tx_hash.unwrap_or("".to_string())
+            "Transaction for initializing payload verification session successfully: {}. Cost: {}",
+            send_to_chain_res.tx_hash.unwrap_or("".to_string()),
+            send_to_chain_res.gas_cost.unwrap_or(0)
         );
 
-        let verifier_set_tracker_pda =
-            get_verifier_set_tracker_pda(execute_data.signing_verifier_set_merkle_root).0;
+        total_cost += send_to_chain_res.gas_cost.unwrap_or(0);
 
         // verify each signature in the signing session
         let signing_verifier_set_leaves = execute_data.signing_verifier_set_leaves.clone();
@@ -398,6 +463,12 @@ impl<G: GmpApiTrait + ThreadSafe + Clone> IncluderTrait for SolanaIncluder<G> {
                 .await
                 .map_err(|e| IncluderError::GenericError(e.to_string()));
             }
+            total_cost += result.gas_cost.unwrap_or(0);
+            debug!(
+                "Transaction for verifying signature successfully: {}. Cost: {}",
+                result.tx_hash.unwrap_or("".to_string()),
+                result.gas_cost.unwrap_or(0)
+            );
         }
 
         let (event_authority, _) = get_gateway_event_authority_pda();
@@ -434,7 +505,12 @@ impl<G: GmpApiTrait + ThreadSafe + Clone> IncluderTrait for SolanaIncluder<G> {
                     .status
                 {
                     Ok(_) => {
-                        debug!("Rotated signers transaction sent successfully");
+                        debug!(
+                            "Rotated signers transaction sent successfully. Cost: {}",
+                            total_cost
+                        );
+                        total_cost += send_to_chain_res.gas_cost.unwrap_or(0);
+                        debug!("Total cost: {}", total_cost);
                         // For verifier set rotation, we don't have messages to process, so return empty
                         return Ok(vec![]);
                     }
@@ -444,6 +520,7 @@ impl<G: GmpApiTrait + ThreadSafe + Clone> IncluderTrait for SolanaIncluder<G> {
                 }
             }
             MerkleisedPayload::NewMessages { messages } => {
+                let number_of_messages = messages.len();
                 let mut merkelised_message_futures = messages
                     .into_iter()
                     .map(|merkleised_message| {
@@ -482,10 +559,22 @@ impl<G: GmpApiTrait + ThreadSafe + Clone> IncluderTrait for SolanaIncluder<G> {
                 while let Some(result) = merkelised_message_futures.next().await {
                     match result.status {
                         Ok(_) => {
+                            // The overhead cost is the initialize payload verification session and the total cost of verifying all signatures
+                            // divided by the number of messages. The total cost for the message is the overhead plus its own cost.
+                            let overhead_cost =
+                                total_cost.saturating_div(number_of_messages as u64);
+                            let message_cost =
+                                result.gas_cost.unwrap_or(0).saturating_add(overhead_cost);
                             debug!(
                                 "Message approved successfully, signature: {}",
                                 result.tx_hash.unwrap_or("".to_string())
                             );
+                            self.write_to_redis(
+                                result.message_id.unwrap_or("".to_string()),
+                                message_cost,
+                                TransactionType::Approve,
+                            )
+                            .await;
                         }
                         Err(e) => {
                             // Create the cannot execute event for this specific failed message
