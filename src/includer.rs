@@ -349,12 +349,9 @@ impl<G: GmpApiTrait + ThreadSafe + Clone> IncluderTrait for SolanaIncluder<G> {
     ) -> Result<Vec<Event>, IncluderError> {
         let mut total_cost: u64 = 0;
 
-        let execute_data_bytes = hex::encode(
-            base64::prelude::BASE64_STANDARD
-                .decode(task.task.execute_data)
-                .map_err(|e| IncluderError::GenericError(e.to_string()))?,
-        )
-        .into_bytes();
+        let execute_data_bytes = base64::prelude::BASE64_STANDARD
+            .decode(task.task.execute_data)
+            .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
         let execute_data = ExecuteData::try_from_slice(&execute_data_bytes)
             .map_err(|_| IncluderError::GenericError("cannot decode execute data".to_string()))?;

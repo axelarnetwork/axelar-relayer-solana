@@ -130,7 +130,7 @@ impl<GE: GasCalculatorTrait + ThreadSafe> TransactionBuilderTrait for Transactio
                 let (its_root_pda, _) = get_its_root_pda();
                 let (token_manager_pda, _) = get_token_manager_pda(&its_root_pda, &token_id);
                 let (token_mint, _) = get_token_mint_pda(&its_root_pda, &token_id);
-                let (token_manager_ata, _) = get_token_manager_ata(&its_root_pda, &token_mint);
+                let (token_manager_ata, _) = get_token_manager_ata(&token_manager_pda, &token_mint);
 
                 let (deployer_ata, _) = get_deployer_ata(&self.keypair.pubkey(), &token_mint);
 
