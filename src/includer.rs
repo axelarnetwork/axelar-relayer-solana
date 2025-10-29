@@ -479,17 +479,14 @@ impl<G: GmpApiTrait + ThreadSafe + Clone> IncluderTrait for SolanaIncluder<G> {
                     accounts: accounts.to_account_metas(None),
                     data: ix_data,
                 };
-                match self
-                    .send_gateway_tx_to_chain(ix, None, None, 0)
-                    .await
-                    .status
-                {
+                let tx_res = self.send_gateway_tx_to_chain(ix, None, None, 0).await;
+                match tx_res.status {
                     Ok(_) => {
                         debug!(
                             "Rotated signers transaction sent successfully. Cost: {}",
                             total_cost
                         );
-                        total_cost += send_to_chain_res.gas_cost.unwrap_or(0);
+                        total_cost += tx_res.gas_cost.unwrap_or(0);
                         debug!("Total cost: {}", total_cost);
                         // For verifier set rotation, we don't have messages to process, so return empty
                         return Ok(vec![]);
