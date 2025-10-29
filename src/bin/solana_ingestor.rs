@@ -51,7 +51,7 @@ async fn main() -> anyhow::Result<()> {
         gas_service,
         gateway,
         its,
-        cost_cache,
+        Arc::new(cost_cache),
     );
 
     let solana_transaction_model = PgSolanaTransactionModel::new(pg_pool.clone());

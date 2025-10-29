@@ -27,7 +27,6 @@ use relayer_core::{
     payload_cache::PayloadCache, queue::Queue,
 };
 
-use serde::{Deserialize, Serialize};
 use solana_sdk::instruction::Instruction;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signer::{keypair::Keypair, Signer};
@@ -35,7 +34,7 @@ use solana_transaction_parser::gmp_types::{
     Amount, CannotExecuteMessageReason, Event, ExecuteTask, GatewayTxTask, MessageExecutionStatus,
     RefundTask,
 };
-use std::fmt::{Display, Formatter};
+use solana_transaction_parser::redis::TransactionType;
 use std::str::FromStr;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
@@ -314,7 +313,7 @@ impl<G: GmpApiTrait + ThreadSafe + Clone> SolanaIncluder<G> {
         debug!("Writing gas cost to Redis");
         let mut redis_conn = self.redis_conn.clone();
         let set_opts = SetOptions::default().with_expiration(SetExpiry::EX(GAS_COST_EXPIRATION));
-        let key = format!("gas_cost:{}:{}", transaction_type, message_id);
+        let key = format!("cost:{}:{}", transaction_type, message_id);
         let result = redis_conn
             .set_options(key.clone(), gas_cost, set_opts)
             .await;
@@ -330,25 +329,6 @@ impl<G: GmpApiTrait + ThreadSafe + Clone> SolanaIncluder<G> {
                 warn!("Failed to write gas cost to Redis: {}", e);
             }
         }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum TransactionType {
-    #[serde(rename = "execute")]
-    Execute,
-    #[serde(rename = "approve")]
-    Approve,
-}
-
-impl Display for TransactionType {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let s = match self {
-            TransactionType::Execute => "execute",
-            TransactionType::Approve => "approve",
-        };
-        write!(f, "{}", s)
     }
 }
 
