@@ -77,3 +77,7 @@ path = "src/bin/solana_ingestor.rs"
 [[bin]]
 name = "includer"
 path = "src/bin/solana_includer.rs"
+
+[[bin]]
+name = "ALT_manager"
+path = "src/bin/ALT_manager.rs"
