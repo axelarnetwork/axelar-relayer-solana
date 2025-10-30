@@ -35,7 +35,7 @@ use solana_transaction_parser::gmp_types::{
 use solana_transaction_parser::redis::TransactionType;
 use std::str::FromStr;
 use std::sync::Arc;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 pub const MAX_GAS_EXCEEDED_COUNT: u64 = 3;
 
@@ -311,12 +311,16 @@ impl<G: GmpApiTrait + ThreadSafe + Clone, R: RedisConnectionTrait + Clone> Solan
                     );
                     // Write ALT pubkey to Redis upon successful ALT transaction
                     if let Some(alt_pubkey) = alt_info.as_ref().and_then(|a| a.alt_pubkey) {
-                        self.redis_conn
+                        if let Err(e) = self
+                            .redis_conn
                             .write_alt_pubkey_to_redis(
                                 task.task.message.message_id.clone(),
                                 alt_pubkey,
                             )
-                            .await;
+                            .await
+                        {
+                            error!("Failed to write ALT pubkey to Redis: {}", e);
+                        }
                     }
                 }
                 Err(e) => match e {
