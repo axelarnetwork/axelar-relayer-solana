@@ -172,24 +172,17 @@ impl RedisConnectionTrait for RedisConnection {
         for key in keys {
             // Extract message_id from key (format: "ALT:{message_id}")
             if let Some(message_id) = key.strip_prefix("ALT:") {
-                if let Ok(value_str) =
+                if let Ok(Some(value_str)) =
                     redis::AsyncCommands::get::<_, Option<String>>(&mut redis_conn, &key).await
                 {
-                    if let Some(value_str) = value_str {
-                        match serde_json::from_str::<AltEntry>(&value_str) {
-                            Ok(entry) => {
-                                if let Ok(pubkey) = entry.pubkey.parse::<Pubkey>() {
-                                    all_keys.push((
-                                        message_id.to_string(),
-                                        pubkey,
-                                        entry.created_at,
-                                    ));
-                                }
+                    match serde_json::from_str::<AltEntry>(&value_str) {
+                        Ok(entry) => {
+                            if let Ok(pubkey) = entry.pubkey.parse::<Pubkey>() {
+                                all_keys.push((message_id.to_string(), pubkey, entry.created_at));
                             }
-                            Err(e) => {
-                                warn!("Failed to deserialize ALT entry for key {}: {}", key, e);
-                                // Skip invalid entries
-                            }
+                        }
+                        Err(_) => {
+                            // Skip invalid entries
                         }
                     }
                 }
