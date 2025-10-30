@@ -1,4 +1,3 @@
-use chrono;
 use dotenv::dotenv;
 use redis::AsyncCommands;
 use relayer_core::config::config_from_yaml;
