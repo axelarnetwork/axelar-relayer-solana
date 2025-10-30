@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use redis::{AsyncTypedCommands, SetExpiry, SetOptions};
 use relayer_core::error::IncluderError;
 use relayer_core::utils::ThreadSafe;
+use serde::{Deserialize, Serialize};
 use solana_sdk::pubkey::Pubkey;
 use solana_transaction_parser::redis::TransactionType;
 use tracing::{debug, warn};
@@ -9,6 +10,12 @@ use tracing::{debug, warn};
 use redis::aio::ConnectionManager;
 
 const GAS_COST_EXPIRATION: u64 = 604800; // one week
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct AltEntry {
+    pubkey: String,
+    created_at: i64, // Unix timestamp in seconds
+}
 
 #[cfg_attr(any(test), mockall::automock)]
 #[async_trait]
@@ -20,11 +27,16 @@ pub trait RedisConnectionTrait: ThreadSafe {
         gas_cost: u64,
         transaction_type: TransactionType,
     );
-    async fn write_alt_pubkey_to_redis(&self, message_id: String, alt_pubkey: Pubkey);
+    async fn write_alt_pubkey_to_redis(
+        &self,
+        message_id: String,
+        alt_pubkey: Pubkey,
+    ) -> Result<(), IncluderError>;
     async fn get_alt_pubkey_from_redis(
         &self,
         message_id: String,
     ) -> Result<Option<Pubkey>, IncluderError>;
+    async fn get_all_alt_keys(&self) -> Result<Vec<(String, Pubkey, i64)>, IncluderError>;
 }
 
 #[derive(Clone)]
@@ -71,27 +83,40 @@ impl RedisConnectionTrait for RedisConnection {
         }
     }
 
-    async fn write_alt_pubkey_to_redis(&self, message_id: String, alt_pubkey: Pubkey) {
+    async fn write_alt_pubkey_to_redis(
+        &self,
+        message_id: String,
+        alt_pubkey: Pubkey,
+    ) -> Result<(), IncluderError> {
         debug!("Writing ALT pubkey to Redis");
         let mut redis_conn = self.conn.clone();
         let set_opts = SetOptions::default().with_expiration(SetExpiry::EX(GAS_COST_EXPIRATION));
         let key = format!("ALT:{}", message_id);
-        let pubkey_str = alt_pubkey.to_string();
-        let result = redis_conn
-            .set_options(key.clone(), pubkey_str.clone(), set_opts)
-            .await;
 
-        match result {
-            Ok(_) => {
-                debug!(
-                    "ALT pubkey written to Redis successfully, key: {}, value: {}",
-                    key, pubkey_str
-                );
-            }
-            Err(e) => {
-                warn!("Failed to write ALT pubkey to Redis: {}", e);
-            }
-        }
+        // Store pubkey with timestamp
+        let created_at = chrono::Utc::now().timestamp();
+        let entry = AltEntry {
+            pubkey: alt_pubkey.to_string(),
+            created_at,
+        };
+
+        let entry_json = serde_json::to_string(&entry).map_err(|e| {
+            IncluderError::GenericError(format!("Failed to serialize ALT entry: {}", e))
+        })?;
+
+        redis_conn
+            .set_options(key.clone(), entry_json.clone(), set_opts)
+            .await
+            .map_err(|e| {
+                IncluderError::GenericError(format!("Failed to write ALT pubkey to Redis: {}", e))
+            })?;
+
+        debug!(
+            "ALT pubkey written to Redis successfully, key: {}, value: {}",
+            key, entry_json
+        );
+
+        Ok(())
     }
 
     async fn get_alt_pubkey_from_redis(
@@ -103,12 +128,18 @@ impl RedisConnectionTrait for RedisConnection {
         let result: Result<Option<String>, redis::RedisError> = redis_conn.get(key.clone()).await;
 
         match result {
-            Ok(Some(pubkey_str)) => {
+            Ok(Some(value_str)) => {
                 debug!("Found ALT pubkey in Redis for message_id: {}", message_id);
-                match pubkey_str.parse::<Pubkey>() {
+
+                let entry = serde_json::from_str::<AltEntry>(&value_str).map_err(|e| {
+                    warn!("Failed to deserialize ALT entry: {}", e);
+                    IncluderError::GenericError(format!("Failed to deserialize ALT entry: {}", e))
+                })?;
+
+                match entry.pubkey.parse::<Pubkey>() {
                     Ok(pubkey) => Ok(Some(pubkey)),
                     Err(e) => {
-                        warn!("Failed to parse ALT pubkey from Redis: {}", e);
+                        warn!("Failed to parse ALT pubkey from entry: {}", e);
                         Ok(None)
                     }
                 }
@@ -125,6 +156,47 @@ impl RedisConnectionTrait for RedisConnection {
                 Ok(None)
             }
         }
+    }
+
+    async fn get_all_alt_keys(&self) -> Result<Vec<(String, Pubkey, i64)>, IncluderError> {
+        let mut redis_conn = self.conn.clone();
+        let mut all_keys = Vec::new();
+
+        // Use KEYS command to get all ALT keys (for ALT management, we won't have thousands)
+        let keys: Vec<String> = redis::AsyncCommands::keys(&mut redis_conn, "ALT:*")
+            .await
+            .map_err(|e| {
+                IncluderError::GenericError(format!("Failed to get ALT keys from Redis: {}", e))
+            })?;
+
+        for key in keys {
+            // Extract message_id from key (format: "ALT:{message_id}")
+            if let Some(message_id) = key.strip_prefix("ALT:") {
+                if let Ok(value_str) =
+                    redis::AsyncCommands::get::<_, Option<String>>(&mut redis_conn, &key).await
+                {
+                    if let Some(value_str) = value_str {
+                        match serde_json::from_str::<AltEntry>(&value_str) {
+                            Ok(entry) => {
+                                if let Ok(pubkey) = entry.pubkey.parse::<Pubkey>() {
+                                    all_keys.push((
+                                        message_id.to_string(),
+                                        pubkey,
+                                        entry.created_at,
+                                    ));
+                                }
+                            }
+                            Err(e) => {
+                                warn!("Failed to deserialize ALT entry for key {}: {}", key, e);
+                                // Skip invalid entries
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(all_keys)
     }
 }
 
@@ -213,10 +285,14 @@ mod tests {
 
         let message_id = "test-message-789".to_string();
         let alt_pubkey = Pubkey::new_unique();
+        let before_timestamp = chrono::Utc::now().timestamp();
 
         redis_conn
             .write_alt_pubkey_to_redis(message_id.clone(), alt_pubkey)
-            .await;
+            .await
+            .unwrap();
+
+        let after_timestamp = chrono::Utc::now().timestamp();
 
         // Read it back
         let result = redis_conn
@@ -226,12 +302,16 @@ mod tests {
 
         assert_eq!(result, Some(alt_pubkey));
 
-        // Verify it was written correctly by reading directly from Redis
+        // Verify it was written in JSON format with timestamp
         let mut conn = redis_conn.inner().clone();
         let key = format!("ALT:{}", message_id);
         let stored_value: Option<String> = redis::AsyncCommands::get(&mut conn, key).await.unwrap();
 
-        assert_eq!(stored_value, Some(alt_pubkey.to_string()));
+        assert!(stored_value.is_some());
+        let entry: AltEntry = serde_json::from_str(&stored_value.unwrap()).unwrap();
+        assert_eq!(entry.pubkey, alt_pubkey.to_string());
+        assert!(entry.created_at >= before_timestamp);
+        assert!(entry.created_at <= after_timestamp);
     }
 
     #[tokio::test]
@@ -249,26 +329,71 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_alt_pubkey_invalid_format() {
+    async fn test_get_alt_pubkey_invalid_json_format() {
         let (_container, redis_conn) = create_redis_connection().await;
 
         let message_id = "test-message-invalid".to_string();
-        let invalid_pubkey_str = "not-a-valid-pubkey";
+        let invalid_json = "not-a-valid-json";
 
-        // Write invalid pubkey string directly to Redis
+        // Write invalid JSON directly to Redis
         let mut conn = redis_conn.inner().clone();
         let key = format!("ALT:{}", message_id);
-        let _: () = redis::AsyncCommands::set(&mut conn, key, invalid_pubkey_str)
+        let _: () = redis::AsyncCommands::set(&mut conn, key, invalid_json)
             .await
             .unwrap();
 
-        // Try to read it back - should return None due to parse error
-        let result = redis_conn
-            .get_alt_pubkey_from_redis(message_id)
+        // Try to read it back - should return error due to deserialize error
+        let result = redis_conn.get_alt_pubkey_from_redis(message_id).await;
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_get_all_alt_keys() {
+        let (_container, redis_conn) = create_redis_connection().await;
+
+        let message_id_1 = "test-message-1".to_string();
+        let message_id_2 = "test-message-2".to_string();
+        let alt_pubkey_1 = Pubkey::new_unique();
+        let alt_pubkey_2 = Pubkey::new_unique();
+
+        let before_timestamp = chrono::Utc::now().timestamp();
+
+        redis_conn
+            .write_alt_pubkey_to_redis(message_id_1.clone(), alt_pubkey_1)
+            .await
+            .unwrap();
+        redis_conn
+            .write_alt_pubkey_to_redis(message_id_2.clone(), alt_pubkey_2)
             .await
             .unwrap();
 
-        assert_eq!(result, None);
+        let after_timestamp = chrono::Utc::now().timestamp();
+
+        // Get all ALT keys
+        let result = redis_conn.get_all_alt_keys().await.unwrap();
+
+        assert_eq!(result.len(), 2);
+
+        // Verify both entries are present with correct format
+        let mut found_1 = false;
+        let mut found_2 = false;
+
+        for (msg_id, pubkey, timestamp) in result {
+            if msg_id == message_id_1 && pubkey == alt_pubkey_1 {
+                assert!(timestamp >= before_timestamp);
+                assert!(timestamp <= after_timestamp);
+                found_1 = true;
+            }
+            if msg_id == message_id_2 && pubkey == alt_pubkey_2 {
+                assert!(timestamp >= before_timestamp);
+                assert!(timestamp <= after_timestamp);
+                found_2 = true;
+            }
+        }
+
+        assert!(found_1);
+        assert!(found_2);
     }
 
     #[tokio::test]
@@ -280,7 +405,8 @@ mod tests {
 
         redis_conn
             .write_alt_pubkey_to_redis(message_id.clone(), alt_pubkey)
-            .await;
+            .await
+            .unwrap();
 
         // Verify it exists
         let result = redis_conn
@@ -369,10 +495,12 @@ mod tests {
 
         redis_conn
             .write_alt_pubkey_to_redis(message_id_1.clone(), alt_pubkey_1)
-            .await;
+            .await
+            .unwrap();
         redis_conn
             .write_alt_pubkey_to_redis(message_id_2.clone(), alt_pubkey_2)
-            .await;
+            .await
+            .unwrap();
 
         // Verify both are stored and retrieved correctly
         let result_1 = redis_conn
@@ -399,12 +527,14 @@ mod tests {
 
         redis_conn
             .write_alt_pubkey_to_redis(message_id.clone(), alt_pubkey_1)
-            .await;
+            .await
+            .unwrap();
 
         // Overwrite with new pubkey
         redis_conn
             .write_alt_pubkey_to_redis(message_id.clone(), alt_pubkey_2)
-            .await;
+            .await
+            .unwrap();
 
         // Verify new pubkey is stored
         let result = redis_conn
@@ -425,15 +555,21 @@ mod tests {
         // Write should succeed
         redis_conn
             .write_alt_pubkey_to_redis(message_id.clone(), alt_pubkey)
-            .await;
+            .await
+            .unwrap();
 
         // Stop Redis container
         container.stop_with_timeout(Some(1)).await.unwrap();
 
-        // Write should fail gracefully (no panic, just logs warning)
-        redis_conn
+        // Write should fail gracefully (returns error, doesn't panic)
+        let write_result = redis_conn
             .write_alt_pubkey_to_redis(message_id.clone(), alt_pubkey)
             .await;
+
+        assert!(
+            write_result.is_err(),
+            "Write should fail when Redis is unavailable"
+        );
 
         // Read should return None gracefully
         let result = redis_conn
