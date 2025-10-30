@@ -2,6 +2,7 @@ use crate::config::SolanaConfig;
 use crate::error::IncluderClientError;
 use crate::gas_calculator::GasCalculator;
 use crate::includer_client::{IncluderClient, IncluderClientTrait};
+use crate::redis::RedisConnectionTrait;
 use crate::refund_manager::SolanaRefundManager;
 use crate::transaction_builder::{TransactionBuilder, TransactionBuilderTrait};
 use crate::utils::{
@@ -17,16 +18,13 @@ use base64::Engine as _;
 use borsh::BorshDeserialize;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt as _;
-use redis::aio::ConnectionManager;
-use redis::{AsyncTypedCommands, SetExpiry, SetOptions};
 use relayer_core::error::IncluderError;
-use relayer_core::includer_worker::{ExecuteTaskEvents, IncluderTrait};
+use relayer_core::includer_worker::IncluderTrait;
 use relayer_core::utils::ThreadSafe;
 use relayer_core::{
     database::Database, gmp_api::GmpApiTrait, includer::Includer, includer_worker::IncluderWorker,
     payload_cache::PayloadCache, queue::Queue,
 };
-
 use solana_sdk::instruction::Instruction;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signer::{keypair::Keypair, Signer};
@@ -39,29 +37,28 @@ use std::str::FromStr;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
 
-const MAX_GAS_EXCEEDED_COUNT: u64 = 3;
-const GAS_COST_EXPIRATION: u64 = 604800; // one week
+pub const MAX_GAS_EXCEEDED_COUNT: u64 = 3;
 
 #[derive(Clone)]
-pub struct SolanaIncluder<G: GmpApiTrait + ThreadSafe + Clone> {
+pub struct SolanaIncluder<G: GmpApiTrait + ThreadSafe + Clone, R: RedisConnectionTrait + Clone> {
     client: Arc<IncluderClient>,
     keypair: Arc<Keypair>,
     gateway_address: Pubkey,
     chain_name: String,
-    transaction_builder: TransactionBuilder<GasCalculator<IncluderClient>>,
+    transaction_builder: TransactionBuilder<GasCalculator<IncluderClient>, IncluderClient>,
     gmp_api: Arc<G>,
-    redis_conn: ConnectionManager,
+    redis_conn: R,
 }
 
-impl<G: GmpApiTrait + ThreadSafe + Clone> SolanaIncluder<G> {
+impl<G: GmpApiTrait + ThreadSafe + Clone, R: RedisConnectionTrait + Clone> SolanaIncluder<G, R> {
     pub fn new(
         client: Arc<IncluderClient>,
         keypair: Arc<Keypair>,
         gateway_address: Pubkey,
         chain_name: String,
-        transaction_builder: TransactionBuilder<GasCalculator<IncluderClient>>,
+        transaction_builder: TransactionBuilder<GasCalculator<IncluderClient>, IncluderClient>,
         gmp_api: Arc<G>,
-        redis_conn: ConnectionManager,
+        redis_conn: R,
     ) -> Self {
         Self {
             client,
@@ -80,11 +77,11 @@ impl<G: GmpApiTrait + ThreadSafe + Clone> SolanaIncluder<G> {
     >(
         config: SolanaConfig,
         gmp_api: Arc<GMP>,
-        redis_conn: ConnectionManager,
+        redis_conn: R,
         payload_cache_for_includer: PayloadCache<DB>,
         construct_proof_queue: Arc<Queue>,
     ) -> error_stack::Result<
-        Includer<Arc<IncluderClient>, SolanaRefundManager, DB, GMP, SolanaIncluder<GMP>>,
+        Includer<Arc<IncluderClient>, SolanaRefundManager, DB, GMP, SolanaIncluder<GMP, R>>,
         IncluderError,
     > {
         let solana_rpc = config.solana_poll_rpc.clone();
@@ -103,7 +100,8 @@ impl<G: GmpApiTrait + ThreadSafe + Clone> SolanaIncluder<G> {
 
         let gas_calculator = GasCalculator::new(client.as_ref().clone(), Arc::clone(&keypair));
 
-        let transaction_builder = TransactionBuilder::new(Arc::clone(&keypair), gas_calculator);
+        let transaction_builder =
+            TransactionBuilder::new(Arc::clone(&keypair), gas_calculator, Arc::clone(&client));
 
         let solana_includer = SolanaIncluder::new(
             Arc::clone(&client),
@@ -124,7 +122,7 @@ impl<G: GmpApiTrait + ThreadSafe + Clone> SolanaIncluder<G> {
             gmp_api,
             payload_cache_for_includer,
             construct_proof_queue,
-            redis_conn,
+            redis_conn.inner().clone(),
             solana_includer,
         );
 
@@ -140,12 +138,11 @@ impl<G: GmpApiTrait + ThreadSafe + Clone> SolanaIncluder<G> {
         source_chain: Option<String>,
         gas_exceeded_count: u64,
     ) -> SendToChainResult {
-        let tx_res = self
+        let tx = match self
             .transaction_builder
-            .build(ix.clone(), gas_exceeded_count)
-            .await;
-
-        let tx = match tx_res {
+            .build(&[ix.clone()], gas_exceeded_count, None)
+            .await
+        {
             Ok(tx) => tx,
             Err(e) => {
                 return SendToChainResult {
@@ -207,29 +204,85 @@ impl<G: GmpApiTrait + ThreadSafe + Clone> SolanaIncluder<G> {
         instruction: Instruction,
         task: ExecuteTask,
         gas_exceeded_count: u64,
-    ) -> Result<ExecuteTaskEvents, IncluderError> {
+        alt_info: Option<ALTInfo>,
+    ) -> Result<Vec<Event>, IncluderError> {
+        let alt_pubkey = alt_info.as_ref().and_then(|a| a.alt_pubkey);
         let transaction = self
             .transaction_builder
-            .build(instruction.clone(), gas_exceeded_count)
+            .build(&[instruction.clone()], gas_exceeded_count, alt_pubkey)
             .await
             .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
         let gas_cost = self
             .client
-            .get_gas_cost_from_simulation(&transaction)
+            .get_gas_cost_from_simulation(transaction.clone())
             .await
             .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
         let gas_cost_lamports = calculate_total_cost_lamports(&transaction, gas_cost)
             .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
-        if gas_cost_lamports
+        let mut alt_gas_cost_lamports = 0;
+        let mut alt_tx = None;
+        // create the ALT table first if it is a versioned transaction
+        if let Some(ALTInfo {
+            alt_ix_create: Some(ref alt_ix_create),
+            alt_ix_extend: Some(ref alt_ix_extend),
+            alt_pubkey: Some(_),
+        }) = alt_info
+        {
+            // Check if ALT already exists in Redis before creating it
+            let existing_alt = self
+                .redis_conn
+                .get_alt_pubkey_from_redis(task.task.message.message_id.clone())
+                .await?;
+
+            if existing_alt.is_some() {
+                // ALT already exists in Redis (from previous attempt), skip creating it
+                debug!(
+                    "ALT already exists in Redis for message_id: {}, skipping ALT creation",
+                    task.task.message.message_id
+                );
+            } else {
+                // ALT doesn't exist, create it
+                let alt_tx_build = self
+                    .transaction_builder
+                    .build(
+                        &[alt_ix_create.clone(), alt_ix_extend.clone()],
+                        gas_exceeded_count,
+                        None,
+                    )
+                    .await
+                    .map_err(|e| IncluderError::GenericError(e.to_string()))?;
+
+                alt_tx = Some(alt_tx_build.clone());
+
+                let alt_simulation_res = self
+                    .client
+                    .get_gas_cost_from_simulation(alt_tx_build.clone())
+                    .await
+                    .map_err(|e| IncluderError::GenericError(e.to_string()))?;
+
+                alt_gas_cost_lamports =
+                    calculate_total_cost_lamports(&alt_tx_build, alt_simulation_res)
+                        .map_err(|e| IncluderError::GenericError(e.to_string()))?;
+            }
+        }
+
+        debug!(
+            "Available balance: {}, needed gas cost: {}, alt gas cost: {}",
+            task.task.available_gas_balance.amount, gas_cost_lamports, alt_gas_cost_lamports
+        );
+
+        let total_cost = gas_cost_lamports.saturating_add(alt_gas_cost_lamports);
+
+        if total_cost
             > u64::from_str(&task.task.available_gas_balance.amount)
                 .map_err(|e| IncluderError::GenericError(e.to_string()))?
         {
             let error_message = format!(
                 "Not enough gas to execute message. Available gas: {}, required gas: {}",
-                task.task.available_gas_balance.amount, gas_cost_lamports
+                task.task.available_gas_balance.amount, total_cost
             );
             let event = self
                 .gmp_api
@@ -242,10 +295,49 @@ impl<G: GmpApiTrait + ThreadSafe + Clone> SolanaIncluder<G> {
                 )
                 .await
                 .map_err(|e| IncluderError::GenericError(e.to_string()))?;
-            return Ok(ExecuteTaskEvents {
-                cannot_execute_events: vec![event],
-                reverted_events: vec![],
-            });
+            return Ok(vec![event]);
+        }
+
+        let mut alt_actual_gas_cost = 0;
+
+        if let Some(alt_tx) = alt_tx {
+            let alt_signature_res = self.client.send_transaction(alt_tx).await;
+            match alt_signature_res {
+                Ok((signature, alt_cost)) => {
+                    alt_actual_gas_cost = alt_cost.unwrap_or(0);
+                    debug!(
+                        "ALT transaction sent successfully: {}",
+                        signature.to_string()
+                    );
+                    // Write ALT pubkey to Redis upon successful ALT transaction
+                    if let Some(alt_pubkey) = alt_info.as_ref().and_then(|a| a.alt_pubkey) {
+                        self.redis_conn
+                            .write_alt_pubkey_to_redis(
+                                task.task.message.message_id.clone(),
+                                alt_pubkey,
+                            )
+                            .await;
+                    }
+                }
+                Err(e) => match e {
+                    IncluderClientError::GasExceededError(e) => {
+                        warn!("Gas exceeded in ALT transaction: {}", e);
+                        if gas_exceeded_count > MAX_GAS_EXCEEDED_COUNT {
+                            return Err(IncluderError::GenericError(e));
+                        }
+                        // needed because of recursive async functions in rust
+                        return Box::pin(self.build_execute_transaction_and_send(
+                            instruction.clone(),
+                            task.clone(),
+                            gas_exceeded_count + 1,
+                            alt_info,
+                        ))
+                        .await
+                        .map_err(|e| IncluderError::GenericError(e.to_string()));
+                    }
+                    _ => return Err(IncluderError::GenericError(e.to_string())),
+                },
+            }
         }
 
         let signature_res = self.client.send_transaction(transaction).await;
@@ -255,21 +347,19 @@ impl<G: GmpApiTrait + ThreadSafe + Clone> SolanaIncluder<G> {
                 info!("Transaction sent successfully: {}", signature.to_string());
 
                 // TODO: Spawn a task to write to Redis
-                self.write_to_redis(
-                    task.task.message.message_id.clone(),
-                    gas_cost.unwrap_or(0),
-                    TransactionType::Execute,
-                )
-                .await;
+                self.redis_conn
+                    .write_gas_cost_to_redis(
+                        task.task.message.message_id.clone(),
+                        gas_cost.unwrap_or(0).saturating_add(alt_actual_gas_cost),
+                        TransactionType::Execute,
+                    )
+                    .await;
 
-                Ok(ExecuteTaskEvents {
-                    cannot_execute_events: vec![],
-                    reverted_events: vec![],
-                })
+                Ok(vec![])
             }
             Err(e) => match e {
                 IncluderClientError::GasExceededError(e) => {
-                    warn!("Gas exceeded: {}", e);
+                    warn!("Gas exceeded in execute transaction: {}", e);
                     if gas_exceeded_count > MAX_GAS_EXCEEDED_COUNT {
                         return Err(IncluderError::GenericError(e));
                     }
@@ -278,6 +368,7 @@ impl<G: GmpApiTrait + ThreadSafe + Clone> SolanaIncluder<G> {
                         instruction.clone(),
                         task.clone(),
                         gas_exceeded_count + 1,
+                        alt_info,
                     ))
                     .await
                     .map_err(|e| IncluderError::GenericError(e.to_string()))
@@ -294,40 +385,10 @@ impl<G: GmpApiTrait + ThreadSafe + Clone> SolanaIncluder<G> {
                         },
                     );
 
-                    Ok(ExecuteTaskEvents {
-                        cannot_execute_events: vec![],
-                        reverted_events: vec![event],
-                    })
+                    Ok(vec![event])
                 }
                 _ => Err(IncluderError::GenericError(e.to_string())),
             },
-        }
-    }
-
-    async fn write_to_redis(
-        &self,
-        message_id: String,
-        gas_cost: u64,
-        transaction_type: TransactionType,
-    ) {
-        debug!("Writing gas cost to Redis");
-        let mut redis_conn = self.redis_conn.clone();
-        let set_opts = SetOptions::default().with_expiration(SetExpiry::EX(GAS_COST_EXPIRATION));
-        let key = format!("cost:{}:{}", transaction_type, message_id);
-        let result = redis_conn
-            .set_options(key.clone(), gas_cost, set_opts)
-            .await;
-
-        match result {
-            Ok(_) => {
-                debug!(
-                    "Gas cost written to Redis successfully, key: {}, value: {}",
-                    key, gas_cost
-                );
-            }
-            Err(e) => {
-                warn!("Failed to write gas cost to Redis: {}", e);
-            }
         }
     }
 }
@@ -341,7 +402,9 @@ struct SendToChainResult {
 }
 
 #[async_trait]
-impl<G: GmpApiTrait + ThreadSafe + Clone> IncluderTrait for SolanaIncluder<G> {
+impl<G: GmpApiTrait + ThreadSafe + Clone, R: RedisConnectionTrait + Clone> IncluderTrait
+    for SolanaIncluder<G, R>
+{
     #[tracing::instrument(skip(self), fields(message_id))]
     async fn handle_gateway_tx_task(
         &self,
@@ -543,12 +606,13 @@ impl<G: GmpApiTrait + ThreadSafe + Clone> IncluderTrait for SolanaIncluder<G> {
                                 "Message approved successfully, signature: {}",
                                 result.tx_hash.unwrap_or("".to_string())
                             );
-                            self.write_to_redis(
-                                result.message_id.unwrap_or("".to_string()),
-                                message_cost,
-                                TransactionType::Approve,
-                            )
-                            .await;
+                            self.redis_conn
+                                .write_gas_cost_to_redis(
+                                    result.message_id.unwrap_or("".to_string()),
+                                    message_cost,
+                                    TransactionType::Approve,
+                                )
+                                .await;
                         }
                         Err(e) => {
                             // Create the cannot execute event for this specific failed message
@@ -580,10 +644,7 @@ impl<G: GmpApiTrait + ThreadSafe + Clone> IncluderTrait for SolanaIncluder<G> {
     }
 
     #[tracing::instrument(skip(self), fields(message_id))]
-    async fn handle_execute_task(
-        &self,
-        task: ExecuteTask,
-    ) -> Result<ExecuteTaskEvents, IncluderError> {
+    async fn handle_execute_task(&self, task: ExecuteTask) -> Result<Vec<Event>, IncluderError> {
         let message = Message {
             cc_id: CrossChainId {
                 chain: task.task.message.source_chain.clone(),
@@ -616,10 +677,7 @@ impl<G: GmpApiTrait + ThreadSafe + Clone> IncluderTrait for SolanaIncluder<G> {
             .map_err(|e| IncluderError::GenericError(e.to_string()))?
         {
             tracing::warn!("incoming message already executed");
-            return Ok(ExecuteTaskEvents {
-                cannot_execute_events: vec![],
-                reverted_events: vec![],
-            });
+            return Ok(vec![]);
         }
 
         let destination_address = task
@@ -629,18 +687,46 @@ impl<G: GmpApiTrait + ThreadSafe + Clone> IncluderTrait for SolanaIncluder<G> {
             .parse::<Pubkey>()
             .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
-        let instruction = self
+        // Check if ALT already exists in Redis for this message_id
+        let existing_alt_pubkey = self
+            .redis_conn
+            .get_alt_pubkey_from_redis(task.task.message.message_id.clone())
+            .await?;
+
+        let (instruction, alt_info) = self
             .transaction_builder
             .build_execute_instruction(
                 &message,
                 &task.task.payload.clone().into_bytes(),
                 destination_address,
+                existing_alt_pubkey,
             )
             .await
             .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
-        self.build_execute_transaction_and_send(instruction, task, 0)
+        self.build_execute_transaction_and_send(instruction, task, 0, alt_info)
             .await
             .map_err(|e| IncluderError::GenericError(e.to_string()))
+    }
+}
+
+#[derive(Clone)]
+pub struct ALTInfo {
+    alt_ix_create: Option<Instruction>,
+    alt_ix_extend: Option<Instruction>,
+    alt_pubkey: Option<Pubkey>,
+}
+
+impl ALTInfo {
+    pub fn new(
+        alt_ix_create: Option<Instruction>,
+        alt_ix_extend: Option<Instruction>,
+        alt_pubkey: Option<Pubkey>,
+    ) -> Self {
+        Self {
+            alt_ix_create,
+            alt_ix_extend,
+            alt_pubkey,
+        }
     }
 }

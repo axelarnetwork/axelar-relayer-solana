@@ -4,14 +4,11 @@ use axelar_solana_gateway_v2::IncomingMessage;
 use bytemuck;
 use relayer_core::{error::ClientError, utils::ThreadSafe};
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
-use solana_sdk::{
-    commitment_config::CommitmentConfig, pubkey::Pubkey, signature::Signature,
-    transaction::Transaction,
-};
+use solana_sdk::{commitment_config::CommitmentConfig, pubkey::Pubkey, signature::Signature};
 use std::{sync::Arc, time::Duration};
 use tracing::warn;
 
-use crate::error::IncluderClientError;
+use crate::{error::IncluderClientError, versioned_transaction::SolanaTransactionType};
 
 #[async_trait]
 #[cfg_attr(any(test), mockall::automock)]
@@ -19,7 +16,7 @@ pub trait IncluderClientTrait: ThreadSafe {
     fn inner(&self) -> &RpcClient;
     async fn send_transaction(
         &self,
-        transaction: Transaction,
+        transaction: SolanaTransactionType,
     ) -> Result<(Signature, Option<u64>), IncluderClientError>;
     async fn incoming_message_already_executed(
         &self,
@@ -28,7 +25,7 @@ pub trait IncluderClientTrait: ThreadSafe {
     async fn get_signature_status(&self, signature: &Signature) -> Result<(), IncluderClientError>;
     async fn get_gas_cost_from_simulation(
         &self,
-        transaction: &Transaction,
+        transaction: SolanaTransactionType,
     ) -> Result<u64, IncluderClientError>;
     async fn get_transaction_cost_from_signature(
         &self,
@@ -65,13 +62,20 @@ impl IncluderClientTrait for IncluderClient {
 
     async fn send_transaction(
         &self,
-        transaction: Transaction,
+        transaction: SolanaTransactionType,
     ) -> Result<(Signature, Option<u64>), IncluderClientError> {
         let mut retries = 0;
         let mut delay = Duration::from_millis(500);
 
         loop {
-            let res = self.client.send_and_confirm_transaction(&transaction).await;
+            let res = match transaction {
+                SolanaTransactionType::Legacy(ref tx) => {
+                    self.client.send_and_confirm_transaction(tx).await
+                }
+                SolanaTransactionType::Versioned(ref tx) => {
+                    self.client.send_and_confirm_transaction(tx).await
+                }
+            };
             match res {
                 Ok(signature) => {
                     let cost = match self.get_transaction_cost_from_signature(&signature).await {
@@ -144,13 +148,21 @@ impl IncluderClientTrait for IncluderClient {
 
     async fn get_gas_cost_from_simulation(
         &self,
-        transaction: &Transaction,
+        transaction: SolanaTransactionType,
     ) -> Result<u64, IncluderClientError> {
-        let simulation_result = self
-            .inner()
-            .simulate_transaction(transaction)
-            .await
-            .map_err(|e| IncluderClientError::GenericError(e.to_string()))?;
+        // Is there a better way with an impl Trait maybe?
+        let simulation_result = match transaction {
+            SolanaTransactionType::Legacy(tx) => self
+                .inner()
+                .simulate_transaction(&tx)
+                .await
+                .map_err(|e| IncluderClientError::GenericError(e.to_string()))?,
+            SolanaTransactionType::Versioned(tx) => self
+                .inner()
+                .simulate_transaction(&tx)
+                .await
+                .map_err(|e| IncluderClientError::GenericError(e.to_string()))?,
+        };
         Ok(simulation_result.value.units_consumed.ok_or_else(|| {
             IncluderClientError::GenericError("Units consumed not found".to_string())
         })?)

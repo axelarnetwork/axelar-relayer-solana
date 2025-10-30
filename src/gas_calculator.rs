@@ -4,6 +4,7 @@
 
 use crate::error::GasCalculatorError;
 use crate::includer_client::IncluderClientTrait;
+use crate::versioned_transaction::SolanaTransactionType;
 use async_trait::async_trait;
 use solana_sdk::compute_budget::ComputeBudgetInstruction;
 use solana_sdk::hash::Hash;
@@ -67,7 +68,7 @@ impl<IC: IncluderClientTrait> GasCalculatorTrait for GasCalculator<IC> {
         );
         let computed_units = self
             .includer_client
-            .get_gas_cost_from_simulation(&tx_to_simulate)
+            .get_gas_cost_from_simulation(SolanaTransactionType::Legacy(tx_to_simulate))
             .await
             .map_err(|e| GasCalculatorError::Generic(e.to_string()))?;
 
