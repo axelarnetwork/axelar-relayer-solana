@@ -56,6 +56,8 @@ pub enum IncluderClientError {
 
 #[derive(Error, Debug)]
 pub enum TransactionBuilderError {
+    #[error("SimulationError: {0}")]
+    SimulationError(String),
     #[error("ClientError: {0}")]
     ClientError(String),
     #[error("GenericError: {0}")]
