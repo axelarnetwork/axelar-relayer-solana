@@ -6132,7 +6132,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a56d757972c98b346a9b766e3f02746cde6dd1cd1d1d563472929fdd74bec4d"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.12.1",
  "proc-macro2",
  "quote",
  "syn 2.0.106",
@@ -6557,7 +6557,7 @@ checksum = "caf4aa5b0f434c91fe5c7f1ecb6a5ece2130b02ad2a590589dda5146df959001"
 [[package]]
 name = "relayer-core"
 version = "0.1.0"
-source = "git+https://github.com/commonprefix/axelar-relayer-core?branch=temp-solana#0ca3e8d8d45c4f6013e4e16c574c9d10a4bc3eaa"
+source = "git+https://github.com/commonprefix/axelar-relayer-core?branch=temp-solana#c8d4104acee4a30481d8077b52991af576e70f56"
 dependencies = [
  "anyhow",
  "async-std",
