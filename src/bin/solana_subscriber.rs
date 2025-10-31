@@ -83,7 +83,7 @@ async fn main() -> anyhow::Result<()> {
     let gateway_account = Pubkey::from_str(&config.solana_gateway)?;
     let its_account = Pubkey::from_str(&config.solana_its)?;
 
-    let handle_poller = tokio::spawn(async move {
+    let mut handle_poller = tokio::spawn(async move {
         solana_poller
             .run(
                 gas_service_account,
@@ -94,9 +94,7 @@ async fn main() -> anyhow::Result<()> {
             .await;
     });
 
-    tokio::pin!(handle_poller);
-
-    let handle_listener = tokio::spawn(async move {
+    let mut handle_listener = tokio::spawn(async move {
         solana_listener
             .run(
                 gas_service_account,
@@ -107,8 +105,6 @@ async fn main() -> anyhow::Result<()> {
             )
             .await;
     });
-
-    tokio::pin!(handle_listener);
 
     tokio::select! {
         _ = sigint.recv()  => {
