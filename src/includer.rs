@@ -37,7 +37,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
-pub const MAX_GAS_EXCEEDED_COUNT: u64 = 3;
+pub const MAX_GAS_EXCEEDED_RETRIES: u64 = 3;
 
 #[derive(Clone)]
 pub struct SolanaIncluder<G: GmpApiTrait + ThreadSafe + Clone, R: RedisConnectionTrait + Clone> {
@@ -171,7 +171,7 @@ impl<G: GmpApiTrait + ThreadSafe + Clone, R: RedisConnectionTrait + Clone> Solan
             }
             Err(e) => match e {
                 IncluderClientError::GasExceededError(e) => {
-                    if gas_exceeded_count > MAX_GAS_EXCEEDED_COUNT {
+                    if gas_exceeded_count > MAX_GAS_EXCEEDED_RETRIES {
                         return SendToChainResult {
                             gas_cost: None,
                             tx_hash: None,
@@ -326,7 +326,7 @@ impl<G: GmpApiTrait + ThreadSafe + Clone, R: RedisConnectionTrait + Clone> Solan
                 Err(e) => match e {
                     IncluderClientError::GasExceededError(e) => {
                         warn!("Gas exceeded in ALT transaction: {}", e);
-                        if gas_exceeded_count > MAX_GAS_EXCEEDED_COUNT {
+                        if gas_exceeded_count > MAX_GAS_EXCEEDED_RETRIES {
                             return Err(IncluderError::GenericError(e));
                         }
                         // needed because of recursive async functions in rust
@@ -364,7 +364,7 @@ impl<G: GmpApiTrait + ThreadSafe + Clone, R: RedisConnectionTrait + Clone> Solan
             Err(e) => match e {
                 IncluderClientError::GasExceededError(e) => {
                     warn!("Gas exceeded in execute transaction: {}", e);
-                    if gas_exceeded_count > MAX_GAS_EXCEEDED_COUNT {
+                    if gas_exceeded_count > MAX_GAS_EXCEEDED_RETRIES {
                         return Err(IncluderError::GenericError(e));
                     }
                     // needed because of recursive async functions in rust
