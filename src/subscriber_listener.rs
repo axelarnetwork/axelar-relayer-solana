@@ -21,7 +21,7 @@ pub trait TransactionListener {
     type Transaction;
     type Account;
 
-    fn subscriber(
+    fn subscribe(
         &self,
         account: Self::Account,
     ) -> impl Future<Output = Result<LogsSubscription<'_>, anyhow::Error>>;
@@ -41,7 +41,7 @@ impl<STR: SolanaStreamClientTrait, SM: SolanaTransactionModel> TransactionListen
     type Transaction = SolanaTransaction;
     type Account = Pubkey;
 
-    async fn subscriber(
+    async fn subscribe(
         &self,
         account: Self::Account,
     ) -> Result<LogsSubscription<'_>, anyhow::Error> {
@@ -277,7 +277,7 @@ impl<STR: SolanaStreamClientTrait, SM: SolanaTransactionModel> SolanaListener<ST
                             let pending_permit = match Arc::clone(&pending_semaphore).try_acquire_owned() {
                                 Ok(permit) => permit,
                                 Err(_) => {
-                                    warn!("Too many pending tasks, dropping signature: {}", signature);
+                                    error!("Too many pending tasks, dropping signature: {}", signature);
                                     continue;
                                 }
                             };
