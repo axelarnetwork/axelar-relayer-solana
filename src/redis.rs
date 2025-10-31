@@ -312,7 +312,6 @@ impl RedisConnectionTrait for RedisConnection {
         let key = format!("ALT:{}", message_id);
         let set_opts = SetOptions::default().with_expiration(SetExpiry::EX(GAS_COST_EXPIRATION));
 
-        // Get the existing entry
         let existing_value: Option<String> = redis::AsyncCommands::get(&mut redis_conn, &key)
             .await
             .map_err(|e| {
@@ -324,8 +323,9 @@ impl RedisConnectionTrait for RedisConnection {
                 IncluderError::GenericError(format!("Failed to deserialize ALT entry: {}", e))
             })?;
 
-            // Set active to false
+            // Set active to false and update timestamp to now
             entry.active = false;
+            entry.created_at = chrono::Utc::now().timestamp();
 
             let entry_json = serde_json::to_string(&entry).map_err(|e| {
                 IncluderError::GenericError(format!("Failed to serialize ALT entry: {}", e))
@@ -359,7 +359,6 @@ impl RedisConnectionTrait for RedisConnection {
         let mut redis_conn = self.conn.clone();
         let key = format!("FAILED:ALT:{}", message_id);
 
-        // Store just the pubkey as a string for manual inspection
         let pubkey_str = alt_pubkey.to_string();
 
         redis::AsyncCommands::set::<_, _, ()>(&mut redis_conn, key.clone(), pubkey_str.clone())
@@ -925,13 +924,17 @@ mod tests {
             .await
             .unwrap();
 
-        // Verify it's active
+        // Verify it's active and capture original timestamp
         let all_keys = redis_conn.get_all_alt_keys().await.unwrap();
         let entry = all_keys
             .iter()
             .find(|(msg_id, _, _, _, _)| msg_id == &message_id)
             .unwrap();
         assert!(entry.4, "ALT should be active by default");
+        let original_timestamp = entry.2;
+
+        // Wait a bit to ensure timestamp will change
+        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
         // Set it to inactive
         redis_conn
@@ -946,6 +949,12 @@ mod tests {
             .find(|(msg_id, _, _, _, _)| msg_id == &message_id)
             .unwrap();
         assert!(!entry.4, "ALT should be inactive after set_alt_inactive");
+
+        // Verify the timestamp was updated
+        assert!(
+            entry.2 > original_timestamp,
+            "Timestamp should be updated when setting to inactive"
+        );
 
         // Verify we can still get the pubkey
         let result = redis_conn

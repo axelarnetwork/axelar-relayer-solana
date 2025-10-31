@@ -12,11 +12,11 @@ use solana_sdk::signer::Signer as _;
 use solana_sdk::transaction::Transaction;
 use std::time::Duration;
 use tokio::time;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 const MAX_RETRY_ATTEMPTS: u32 = 3;
 const ALT_MANAGEMENT_INTERVAL_SECS: u64 = 30;
-const ALT_LIFETIME_SECONDS: i64 = 600; // 10 minutes
+const ALT_LIFETIME_SECONDS: i64 = 600; // 10 minutes TODO: Configure this close to 512 slots
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -67,7 +67,7 @@ async fn manage_alts(
         .await
         .map_err(|e| anyhow::anyhow!("Failed to get ALT keys from Redis: {}", e))?;
 
-    info!("Found {} ALT(s) in Redis", alt_keys.len());
+    debug!("Found {} ALT(s) in Redis", alt_keys.len());
 
     let current_timestamp = chrono::Utc::now().timestamp();
 
@@ -96,7 +96,7 @@ async fn manage_alts(
                             alt_pubkey, e
                         );
                     } else {
-                        info!("Removed ALT {} from Redis after closure", alt_pubkey);
+                        debug!("Removed ALT {} from Redis after closure", alt_pubkey);
                     }
                 }
             }
@@ -166,7 +166,7 @@ async fn process_alt(
     if active {
         // ALT is active, check if it's time to deactivate (after 10 minutes)
         if seconds_since_creation >= ALT_LIFETIME_SECONDS {
-            info!(
+            debug!(
                 "ALT {} is old enough to deactivate (created {} seconds ago)",
                 alt_pubkey, seconds_since_creation
             );
@@ -175,13 +175,13 @@ async fn process_alt(
             // Set active to false in Redis
             redis_conn.set_alt_inactive(message_id.to_string()).await?;
 
-            info!(
+            debug!(
                 "ALT {} has been deactivated and marked as inactive in Redis",
                 alt_pubkey
             );
             Ok(false) // Don't remove from Redis yet
         } else {
-            info!(
+            debug!(
                 "ALT {} is not old enough to deactivate yet (created {} seconds ago, {} seconds remaining)",
                 alt_pubkey,
                 seconds_since_creation,
@@ -190,10 +190,11 @@ async fn process_alt(
             Ok(false) // Leave in Redis
         }
     } else {
-        // ALT is inactive (deactivated), check if it's time to close (after 2*10 = 20 minutes total)
-        if seconds_since_creation >= 2 * ALT_LIFETIME_SECONDS {
-            info!(
-                "ALT {} is old enough to close (created {} seconds ago)",
+        // ALT is inactive (deactivated), check if it's time to close (after ALT_LIFETIME_SECONDS since deactivation)
+        // Note: created_at timestamp is updated to "now" when we set active to false
+        if seconds_since_creation >= ALT_LIFETIME_SECONDS {
+            debug!(
+                "ALT {} is old enough to close (inactive for {} seconds)",
                 alt_pubkey, seconds_since_creation
             );
             close_alt(
@@ -207,11 +208,11 @@ async fn process_alt(
             )
             .await
         } else {
-            info!(
-                "ALT {} is deactivated but not old enough to close yet (created {} seconds ago, {} seconds remaining)",
+            debug!(
+                "ALT {} is deactivated but not old enough to close yet (inactive for {} seconds, {} seconds remaining)",
                 alt_pubkey,
                 seconds_since_creation,
-                2 * ALT_LIFETIME_SECONDS - seconds_since_creation
+                ALT_LIFETIME_SECONDS - seconds_since_creation
             );
             Ok(false) // Leave in Redis
         }
@@ -224,7 +225,7 @@ async fn deactivate_alt(
     keypair: &solana_sdk::signer::keypair::Keypair,
     authority_pubkey: Pubkey,
 ) -> anyhow::Result<()> {
-    info!("Deactivating ALT: {}", alt_pubkey);
+    debug!("Deactivating ALT: {}", alt_pubkey);
 
     let deactivate_ix = deactivate_lookup_table(alt_pubkey, authority_pubkey);
 
@@ -266,7 +267,7 @@ async fn close_alt(
     redis_conn: &RedisConnection,
     close_attempts: u32,
 ) -> anyhow::Result<bool> {
-    info!("Closing ALT: {}", alt_pubkey);
+    debug!("Closing ALT: {}", alt_pubkey);
 
     let recipient_pubkey = authority_pubkey; // Close to the authority wallet
     let close_ix = close_lookup_table(alt_pubkey, authority_pubkey, recipient_pubkey);
