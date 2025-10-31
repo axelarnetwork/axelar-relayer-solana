@@ -1,6 +1,6 @@
 use relayer_core::config::Config;
 use serde::Deserialize;
-use solana_sdk::commitment_config::CommitmentConfig;
+use solana_sdk::{commitment_config::CommitmentConfig, signature::Keypair};
 
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct SolanaConfig {
@@ -16,14 +16,11 @@ pub struct SolanaConfig {
     pub solana_gateway: String,
     pub solana_its: String,
     pub solana_commitment: CommitmentConfig,
-    pub wallets: Vec<WalletConfig>,
+    pub solana_keypair: String,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
-pub struct WalletConfig {
-    pub public_key: String,
-    pub secret_key: String,
-    // pub subwallet_id: u32,
-    // pub timeout: u64,
-    // pub address: String,
+impl SolanaConfig {
+    pub fn signing_keypair(&self) -> Keypair {
+        Keypair::from_base58_string(&self.solana_keypair)
+    }
 }

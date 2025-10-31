@@ -1,75 +1,130 @@
-use solana_sdk::pubkey::Pubkey;
+// Estimates the gas required to make a transaction on Solana
+// https://solana.com/developers/guides/advanced/exchange
+// Read about prioritization fees in the corresponding section in the guide
+
+use crate::error::GasCalculatorError;
+use crate::includer_client::IncluderClientTrait;
+use async_trait::async_trait;
+use solana_sdk::compute_budget::ComputeBudgetInstruction;
+use solana_sdk::hash::Hash;
+use solana_sdk::instruction::Instruction;
+use solana_sdk::signer::keypair::Keypair;
+use solana_sdk::signer::Signer;
+use solana_sdk::transaction::Transaction;
+use std::sync::Arc;
+
+pub const MAX_COMPUTE_UNIT_LIMIT: u32 = 1_399_850;
 
 #[derive(Clone)]
-pub struct GasCalculator {
-    _our_addresses: Vec<Pubkey>,
+pub struct GasCalculator<IC: IncluderClientTrait> {
+    includer_client: IC,
+    solana_keypair: Arc<Keypair>,
 }
 
-impl GasCalculator {
-    pub fn new(our_addresses: Vec<Pubkey>) -> Self {
+impl<IC: IncluderClientTrait> GasCalculator<IC> {
+    pub fn new(includer_client: IC, solana_keypair: Arc<Keypair>) -> Self {
         Self {
-            _our_addresses: our_addresses,
+            includer_client,
+            solana_keypair,
         }
     }
+}
 
-    // pub fn calc_message_gas(&self, tx: SolanaTransaction) -> Result<u64, GasError> {
-    //     let total = self.cost(tx)?;
-    //     Ok(if total > 0 { total as u64 } else { 0 })
-    // }
+#[cfg_attr(test, mockall::automock)]
+#[async_trait]
+pub trait GasCalculatorTrait {
+    async fn compute_budget(
+        &self,
+        ixs: &[Instruction],
+        gas_exceeded_count: u64,
+    ) -> Result<(Instruction, Hash), GasCalculatorError>;
+    async fn compute_unit_price(
+        &self,
+        ixs: &[Instruction],
+    ) -> Result<Instruction, GasCalculatorError>;
+}
 
-    // fn cost(&self, tx: SolanaTransaction) -> Result<i128, GasError> {
-    //     let mut balances: HashMap<Pubkey, i128> = self
-    //         .our_addresses
-    //         .iter()
-    //         .cloned()
-    //         .map(|addr| (addr, 0))
-    //         .collect();
+#[async_trait]
+impl<IC: IncluderClientTrait> GasCalculatorTrait for GasCalculator<IC> {
+    async fn compute_budget(
+        &self,
+        ixs: &[Instruction],
+        gas_exceeded_count: u64,
+    ) -> Result<(Instruction, Hash), GasCalculatorError> {
+        const PERCENT_POINTS_TO_TOP_UP: u64 = 10;
 
-    //     if is_our_transaction(&mut balances, &tx) {
-    //         add_cost(&mut balances, tx.account.clone(), tx.total_fees as i128);
-    //     }
-    //     for msg in tx.out_msgs.clone() {
-    //         if is_our_transaction(&mut balances, &tx) {
-    //             add_cost(&mut balances, tx.account.clone(), extract_fwd_fee(&msg));
-    //         }
-    //         if let Some(dest) = msg.destination.clone() {
-    //             let value = extract_msg_value(msg);
-    //             // Us sending to someone
-    //             if us_sending(&mut balances, &tx, &dest) {
-    //                 add_cost(&mut balances, tx.account.clone(), value);
-    //             }
-    //             if us_receiving(&mut balances, &tx, &dest) {
-    //                 add_cost(&mut balances, dest.clone(), 0 - value);
-    //             }
-    //         }
-    //     }
+        let hash = self
+            .includer_client
+            .inner()
+            .get_latest_blockhash()
+            .await
+            .map_err(|e| GasCalculatorError::Generic(e.to_string()))?;
+        let tx_to_simulate = Transaction::new_signed_with_payer(
+            ixs,
+            Some(&self.solana_keypair.pubkey()),
+            &[&self.solana_keypair],
+            hash,
+        );
+        let computed_units = self
+            .includer_client
+            .get_gas_cost_from_simulation(&tx_to_simulate)
+            .await
+            .map_err(|e| GasCalculatorError::Generic(e.to_string()))?;
 
-    //     let total: i128 = balances.values().cloned().sum();
-    //     Ok(total)
-    // }
+        let base_top_up = computed_units
+            .checked_div(PERCENT_POINTS_TO_TOP_UP)
+            .unwrap_or(0);
+        let base_compute_budget = computed_units.saturating_add(base_top_up);
 
-    // pub fn calc_message_gas_native_gas_refunded(
-    //     &self,
-    //     tx: &SolanaTransaction,
-    // ) -> Result<u64, GasError> {
-    //     let tx2 = match tx.ixs.get(2) {
-    //         Some(tx) => tx,
-    //         None => return Ok(0),
-    //     };
+        // Add additional 10% for each retry attempt (gas_exceeded_count)
+        // This means: 1st retry = +10%, 2nd retry = +20%, 3rd retry = +30%
+        let retry_multiplier = gas_exceeded_count.saturating_mul(10); // 0, 10, 20, 30
+        let retry_adjustment = base_compute_budget
+            .saturating_mul(retry_multiplier)
+            .saturating_div(100);
 
-    //     let out_msg = match tx2.out_msgs.first() {
-    //         Some(msg) => msg,
-    //         None => return Ok(0),
-    //     };
+        let compute_budget = base_compute_budget.saturating_add(retry_adjustment);
+        let compute_budget = compute_budget.min(u64::from(MAX_COMPUTE_UNIT_LIMIT));
+        let ix =
+            ComputeBudgetInstruction::set_compute_unit_limit(compute_budget.try_into().map_err(
+                |e: std::num::TryFromIntError| GasCalculatorError::Generic(e.to_string()),
+            )?);
+        Ok((ix, hash))
+    }
 
-    //     let refund = match &out_msg.value {
-    //         Some(val_str) => i128::from_str(val_str).unwrap_or(0),
-    //         None => 0,
-    //     };
+    async fn compute_unit_price(
+        &self,
+        ixs: &[Instruction],
+    ) -> Result<Instruction, GasCalculatorError> {
+        const MAX_ACCOUNTS: usize = 128;
+        const N_SLOTS_TO_CHECK: usize = 10;
 
-    //     let balance_diff = self.cost(tx)?;
-    //     let total = balance_diff - refund;
-
-    //     Ok(if total > 0 { total as u64 } else { 0 })
-    // }
+        let all_touched_accounts = ixs
+            .iter()
+            .flat_map(|x| x.accounts.as_slice())
+            .take(MAX_ACCOUNTS)
+            .map(|x| x.pubkey)
+            .collect::<Vec<_>>();
+        let fees = self
+            .includer_client
+            .inner()
+            .get_recent_prioritization_fees(&all_touched_accounts)
+            .await
+            .map_err(|e| GasCalculatorError::Generic(e.to_string()))?;
+        let (sum, count) = fees
+            .into_iter()
+            .rev()
+            .take(N_SLOTS_TO_CHECK)
+            .map(|x| x.prioritization_fee)
+            // Simple rolling average of the last `N_SLOTS_TO_CHECK` items.
+            .fold((0_u64, 0_u64), |(sum, count), fee| {
+                (sum.saturating_add(fee), count.saturating_add(1))
+            });
+        let average = if count > 0 {
+            sum.checked_div(count).unwrap_or(0)
+        } else {
+            0
+        };
+        Ok(ComputeBudgetInstruction::set_compute_unit_price(average))
+    }
 }

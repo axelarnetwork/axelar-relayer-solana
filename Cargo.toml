@@ -4,11 +4,12 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-relayer-core = { git = "https://github.com/commonprefix/axelar-relayer-core", branch = "temp-solana" }
+relayer-core = { git = "https://github.com/commonprefix/axelar-relayer-core", branch = "temp-solana", features = ["mocks"] }
 dotenv = "0.15.0"
 tokio = { version = "1.41.1", features = ["full", "test-util"] }
 anyhow = "1.0.93"
 serde = "1.0.215"
+error-stack = "0.5.0"
 serde_json = "1.0.133"
 redis = { version = "0.32.4", features = ["tokio-rustls-comp"] }
 tracing = "0.1.40"
@@ -18,23 +19,38 @@ sqlx = { version = "0.8.1", features = [
     "chrono",
 ] }
 chrono = { version = "0.4.40", features = ["serde"] }
-solana-client = "~2.1"
-solana-rpc-client = "~2.1"
-solana-rpc-client-api = "~2.1"
-solana-sdk = "~2.1"
-solana-transaction-status = "~2.1"
-solana-pubsub-client = "~2.1"
-solana-transaction-status-client-types = "~2.1"
-interchain-token-service = { git = "https://github.com/commonprefix/axelar-amplifier", branch = "xrpl", package = "interchain-token-service" }
+solana-client = "~2.3"
+solana-rpc-client = "~2.3"
+solana-rpc-client-api = "~2.3"
+solana-sdk = "~2.3"
+solana-program = "~2.3"
+solana-transaction-status = "~2.3"
+solana-pubsub-client = "~2.3"
+solana-transaction-status-client-types = "~2.3"
 futures = "0.3.31"
 futures-util = "0.3.31"
 async-trait = "0.1.88"
 thiserror = "2.0.3"
 hex = "0.4.3"
 tokio-util = "0.7.12"
+borsh = { version = "0.10.4" }
 bs58 = "0.5"
-borsh = "1"
 base64 = "0.22.1"
+httpmock = "0.7.0"
+anchor-lang = "0.31.1"
+anchor-spl = "0.31.1"
+mpl-token-metadata = "5.1.1"
+interchain-token-transfer-gmp = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "v2-anchor-its-execute-wip", package = "interchain-token-transfer-gmp" }
+ed25519-zebra = "=4.0.3"
+
+solana-transaction-parser = { git = "https://github.com/commonprefix/solana-transaction-parser", branch = "v2-parsing"}
+
+axelar-solana-its-v2 = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "v2-anchor-its-execute-wip", package = "axelar-solana-its-v2", features = ["no-entrypoint"] }
+axelar-solana-gateway-v2 = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "v2-anchor-its-execute-wip", package = "axelar-solana-gateway-v2", features = ["no-entrypoint"] }
+axelar-solana-governance-v2 = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "v2-anchor-its-execute-wip", package = "axelar-solana-governance-v2", features = ["no-entrypoint"] }
+bytemuck = "1.24.0"
+bincode = "1"
+
 
 [dev-dependencies]
 mockall = "0.13.1"
@@ -57,3 +73,7 @@ path = "src/bin/solana_subscriber.rs"
 [[bin]]
 name = "ingestor"
 path = "src/bin/solana_ingestor.rs"
+
+[[bin]]
+name = "includer"
+path = "src/bin/solana_includer.rs"

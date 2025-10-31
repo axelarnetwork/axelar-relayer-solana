@@ -4,9 +4,6 @@ instance_id: "0"
 queue_address: ""
 gmp_api_url: ""
 payload_cache: ""
-xrpl_rpc: ""
-xrpl_multisig: ""
-xrpl_faucet_url: ""
 solana_stream_rpc: ""
 solana_poll_rpc: ""
 solana_faucet_url: ""
@@ -49,5 +46,7 @@ heartbeats:
   ticket_monitor: ""
 refunds_enabled:
 demo_tokens_rate:
-num_workers: 32
+num_workers:
 jaeger_grpc_url:
+gas_estimates:
+  native_gas_refund:

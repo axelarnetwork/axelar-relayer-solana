@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS solana_transactions (
     ixs                     TEXT[],
     events                  TEXT[],
     cost_units              BIGINT       DEFAULT 0,
+    account_keys            TEXT[],
     retries                 INTEGER      DEFAULT 10,
     created_at              TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );

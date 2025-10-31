@@ -6,6 +6,7 @@ use relayer_core::utils::ThreadSafe;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 
+#[cfg_attr(any(test), mockall::automock)]
 #[async_trait]
 pub trait SolanaTransactionModel: ThreadSafe {
     async fn find(&self, id: String) -> Result<Option<SolanaTransactionData>>;
@@ -21,6 +22,7 @@ pub struct SolanaTransactionData {
     pub ixs: Vec<String>,
     pub events: Vec<String>,
     pub cost_units: i64,
+    pub account_keys: Vec<String>,
     pub retries: i32,
     pub created_at: Option<chrono::DateTime<chrono::Utc>>,
 }
@@ -67,8 +69,8 @@ impl SolanaTransactionModel for PgSolanaTransactionModel {
     async fn upsert(&self, tx: SolanaTransactionData) -> Result<bool> {
         let query = format!(
             "INSERT INTO {} \
-             (signature, slot, logs, ixs, events, cost_units, retries, created_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, NOW()) \
+             (signature, slot, logs, ixs, events, cost_units, account_keys, retries, created_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW()) \
              ON CONFLICT (signature) DO NOTHING \
             ",
             PG_TABLE_NAME
@@ -81,6 +83,7 @@ impl SolanaTransactionModel for PgSolanaTransactionModel {
             .bind(tx.ixs)
             .bind(tx.events)
             .bind(tx.cost_units)
+            .bind(tx.account_keys)
             .bind(tx.retries)
             .execute(&self.pool)
             .await?;
@@ -170,6 +173,7 @@ mod tests {
                 .collect::<Vec<String>>(),
             events: Vec::new(),
             cost_units: solana_tx.cost_units as i64,
+            account_keys: solana_tx.account_keys.clone(),
             retries: 3,
             created_at: None,
         };
@@ -193,6 +197,7 @@ mod tests {
                 .map(|ix| serde_json::from_str(ix).unwrap())
                 .collect::<Vec<UiInnerInstructions>>(),
             cost_units: saved.cost_units as u64,
+            account_keys: saved.account_keys,
         };
 
         assert_eq!(tx_from_data, *solana_tx);

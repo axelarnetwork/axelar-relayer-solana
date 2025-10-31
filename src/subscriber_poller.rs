@@ -1,4 +1,4 @@
-use std::{future::Future, str::FromStr, sync::Arc, time::Duration};
+use std::{str::FromStr, sync::Arc, time::Duration};
 
 use crate::types::SolanaTransaction;
 use crate::{
@@ -10,27 +10,26 @@ use crate::{
     utils::upsert_and_publish,
 };
 use anyhow::anyhow;
-use relayer_core::{error::SubscriberError, queue::Queue};
+use async_trait::async_trait;
+use relayer_core::{error::SubscriberError, queue::QueueTrait};
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Signature;
 use tokio::select;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
+#[async_trait]
 pub trait TransactionPoller {
     type Transaction;
     type Account;
 
-    fn poll_account(
+    async fn poll_account(
         &self,
         account: Self::Account,
         account_type: AccountPollerEnum,
-    ) -> impl Future<Output = Result<Vec<Self::Transaction>, anyhow::Error>>;
+    ) -> Result<Vec<Self::Transaction>, anyhow::Error>;
 
-    fn poll_tx(
-        &self,
-        tx_hash: String,
-    ) -> impl Future<Output = Result<Self::Transaction, anyhow::Error>>;
+    async fn poll_tx(&self, tx_hash: String) -> Result<Self::Transaction, anyhow::Error>;
 }
 
 pub struct SolanaPoller<RPC: SolanaRpcClientTrait, SC: SubscriberCursor, SM: SolanaTransactionModel>
@@ -39,7 +38,7 @@ pub struct SolanaPoller<RPC: SolanaRpcClientTrait, SC: SubscriberCursor, SM: Sol
     cursor_model: Arc<SC>,
     context: String,
     transaction_model: Arc<SM>,
-    queue: Arc<Queue>,
+    queue: Arc<dyn QueueTrait>,
 }
 
 impl<RPC: SolanaRpcClientTrait, SC: SubscriberCursor, SM: SolanaTransactionModel>
@@ -50,7 +49,7 @@ impl<RPC: SolanaRpcClientTrait, SC: SubscriberCursor, SM: SolanaTransactionModel
         context: String,
         transaction_model: Arc<SM>,
         cursor_model: Arc<SC>,
-        queue: Arc<Queue>,
+        queue: Arc<dyn QueueTrait>,
     ) -> Result<Self, SubscriberError> {
         Ok(SolanaPoller {
             client,
@@ -151,32 +150,9 @@ impl<RPC: SolanaRpcClientTrait, SC: SubscriberCursor, SM: SolanaTransactionModel
             .await
             .map_err(|e| anyhow!("Error storing latest signature: {:?}", e))
     }
-
-    pub async fn get_last_signature_checked(
-        &self,
-        account_type: AccountPollerEnum,
-    ) -> Result<Option<Signature>, anyhow::Error> {
-        match self
-            .cursor_model
-            .get_latest_signature(self.context.clone(), account_type)
-            .await
-            .map_err(|e| anyhow!("Error getting latest signature: {:?}", e))?
-        {
-            Some(signature) => {
-                let maybe_sig = match Signature::from_str(&signature) {
-                    Ok(sig) => Some(sig),
-                    Err(e) => {
-                        error!("Error parsing signature: {:?}", e);
-                        None
-                    }
-                };
-                Ok(maybe_sig)
-            }
-            None => Ok(None),
-        }
-    }
 }
 
+#[async_trait]
 impl<RPC: SolanaRpcClientTrait, SC: SubscriberCursor, SM: SolanaTransactionModel> TransactionPoller
     for SolanaPoller<RPC, SC, SM>
 {
@@ -188,9 +164,26 @@ impl<RPC: SolanaRpcClientTrait, SC: SubscriberCursor, SM: SolanaTransactionModel
         account_id: Pubkey,
         account_type: AccountPollerEnum,
     ) -> Result<Vec<Self::Transaction>, anyhow::Error> {
-        let last_signature_checked = self
-            .get_last_signature_checked(account_type.clone())
-            .await?;
+        let last_signature_checked = match self
+            .cursor_model
+            .get_latest_signature(self.context.clone(), account_type.clone())
+            .await?
+        {
+            Some(sig_str) => match Signature::from_str(&sig_str) {
+                Ok(sig) => Some(sig),
+                Err(e) => {
+                    warn!(
+                        "Malformed signature '{}' for {:?} — ignoring (error: {:?})",
+                        sig_str,
+                        account_type.clone(),
+                        e
+                    );
+                    None
+                }
+            },
+            None => None,
+        };
+
         let transactions = self
             .client
             .get_transactions_for_account(&account_id, None, last_signature_checked)
@@ -209,80 +202,162 @@ impl<RPC: SolanaRpcClientTrait, SC: SubscriberCursor, SM: SolanaTransactionModel
     }
 }
 
-// comment out tests to not spam RPC on every push
+#[cfg(test)]
+mod tests {
 
-// #[cfg(test)]
-// mod tests {
+    use std::str::FromStr;
 
-//     use std::str::FromStr;
+    use crate::models::solana_subscriber_cursor::MockSubscriberCursor;
+    use crate::models::solana_transaction::MockSolanaTransactionModel;
+    use crate::poll_client::MockSolanaRpcClientTrait;
 
-//     use dotenv::dotenv;
-//     use relayer_core::config::config_from_yaml;
-//     use solana_sdk::commitment_config::CommitmentConfig;
-//     use testcontainers::{runners::AsyncRunner, ContainerAsync};
-//     use testcontainers_modules::postgres;
+    #[cfg(test)]
+    use relayer_core::queue::MockQueueTrait;
 
-//     use crate::{
-//         client::SolanaRpcClient, config::SolanaConfig,
-//         models::solana_subscriber_cursor::PostgresDB, solana_transaction::PgSolanaTransactionModel,
-//     };
+    use super::*;
 
-//     use super::*;
+    #[tokio::test]
+    async fn test_poll_account() {
+        let mut mock_cursor_model = MockSubscriberCursor::new();
+        let mock_transaction_model = MockSolanaTransactionModel::new();
+        let queue: Arc<dyn QueueTrait> = Arc::new(MockQueueTrait::new());
+        let mut mock_client = MockSolanaRpcClientTrait::new();
 
-//     async fn setup_test_container() -> (
-//         PostgresDB,
-//         PgSolanaTransactionModel,
-//         Arc<Queue>,
-//         ContainerAsync<postgres::Postgres>,
-//     ) {
-//         dotenv().ok();
-//         let init_sql = format!(
-//             "{}\n{}",
-//             include_str!("../../migrations/0015_solana_subscriber_cursors.sql"),
-//             include_str!("../../migrations/0014_solana_transactions.sql")
-//         );
-//         let container = postgres::Postgres::default()
-//             .with_init_sql(init_sql.into_bytes())
-//             .start()
-//             .await
-//             .unwrap();
-//         let connection_string = format!(
-//             "postgres://postgres:postgres@{}:{}/postgres",
-//             container.get_host().await.unwrap(),
-//             container.get_host_port_ipv4(5432).await.unwrap()
-//         );
-//         let pool = sqlx::PgPool::connect(&connection_string).await.unwrap();
-//         let cursor_model = PostgresDB::new(&connection_string).await.unwrap();
-//         let transaction_model = PgSolanaTransactionModel::new(pool);
-//         let queue = Queue::new("amqp://guest:guest@localhost:5672", "test", 1).await;
+        mock_client
+            .expect_get_transactions_for_account()
+            .withf(|account_id, before, last_signature_checked| {
+                *account_id
+                    == Pubkey::from_str("DaejccUfXqoAFTiDTxDuMQfQ9oa6crjtR9cT52v1AvGK").unwrap()
+                    && before.is_none()
+                    && *last_signature_checked == Some(Signature::default())
+            })
+            .returning(|_, _, _| {
+                Box::pin(async {
+                    Ok(vec![SolanaTransaction {
+                        signature: Signature::default(),
+                        slot: 1,
+                        logs: vec![],
+                        ixs: vec![],
+                        account_keys: vec![],
+                        cost_units: 0,
+                        timestamp: None,
+                    }])
+                })
+            });
 
-//         (cursor_model, transaction_model, queue, container)
-//     }
+        mock_cursor_model
+            .expect_get_latest_signature()
+            .withf(|context, account_type| {
+                context == "test" && *account_type == AccountPollerEnum::GasService
+            })
+            .returning(|_, _| Box::pin(async { Ok(Some(Signature::default().to_string())) }));
 
-//     #[tokio::test]
-//     async fn test_poll_account() {
-//         let (cursor_model, transaction_model, queue, _container) = setup_test_container().await;
-//         let network = std::env::var("NETWORK").expect("NETWORK must be set");
-//         let config: SolanaConfig = config_from_yaml(&format!("config.{}.yaml", network)).unwrap();
-//         let solana_client: SolanaRpcClient =
-//             SolanaRpcClient::new(&config.solana_poll_rpc, CommitmentConfig::confirmed(), 3)
-//                 .unwrap();
-//         let solana_subscriber = SolanaPoller::new(
-//             solana_client,
-//             "test".to_string(),
-//             Arc::new(transaction_model),
-//             Arc::new(cursor_model),
-//             queue,
-//         )
-//         .await
-//         .unwrap();
+        let subscriber_poller = SolanaPoller::new(
+            mock_client,
+            "test".to_string(),
+            Arc::new(mock_transaction_model),
+            Arc::new(mock_cursor_model),
+            queue,
+        )
+        .await
+        .unwrap();
 
-//         let _transactions = solana_subscriber
-//             .poll_account(
-//                 Pubkey::from_str("DaejccUfXqoAFTiDTxDuMQfQ9oa6crjtR9cT52v1AvGK").unwrap(),
-//                 AccountPollerEnum::GasService,
-//             )
-//             .await
-//             .unwrap();
-//     }
-// }
+        let transactions = subscriber_poller
+            .poll_account(
+                Pubkey::from_str("DaejccUfXqoAFTiDTxDuMQfQ9oa6crjtR9cT52v1AvGK").unwrap(),
+                AccountPollerEnum::GasService,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(transactions.len(), 1);
+        assert_eq!(
+            transactions[0],
+            SolanaTransaction {
+                signature: Signature::default(),
+                slot: 1,
+                logs: vec![],
+                ixs: vec![],
+                account_keys: vec![],
+                cost_units: 0,
+                timestamp: None,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn test_poll_tx() {
+        let mock_cursor_model = MockSubscriberCursor::new();
+        let mock_transaction_model = MockSolanaTransactionModel::new();
+        let queue: Arc<dyn QueueTrait> = Arc::new(MockQueueTrait::new());
+        let mut mock_client = MockSolanaRpcClientTrait::new();
+
+        mock_client
+            .expect_get_transaction_by_signature()
+            .withf(|signature| *signature == Signature::default())
+            .returning(|_| {
+                Box::pin(async {
+                    Ok(SolanaTransaction {
+                        signature: Signature::default(),
+                        slot: 1,
+                        logs: vec![],
+                        ixs: vec![],
+                        account_keys: vec![],
+                        cost_units: 0,
+                        timestamp: None,
+                    })
+                })
+            });
+
+        let subscriber_poller = SolanaPoller::new(
+            mock_client,
+            "test".to_string(),
+            Arc::new(mock_transaction_model),
+            Arc::new(mock_cursor_model),
+            queue,
+        )
+        .await
+        .unwrap();
+
+        let tx = subscriber_poller
+            .poll_tx(Signature::default().to_string())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            tx,
+            SolanaTransaction {
+                signature: Signature::default(),
+                slot: 1,
+                logs: vec![],
+                ixs: vec![],
+                account_keys: vec![],
+                cost_units: 0,
+                timestamp: None,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn test_poll_tx_malformed_signature() {
+        let mock_cursor_model = MockSubscriberCursor::new();
+        let mock_transaction_model = MockSolanaTransactionModel::new();
+        let queue: Arc<dyn QueueTrait> = Arc::new(MockQueueTrait::new());
+        let mock_client = MockSolanaRpcClientTrait::new();
+
+        let subscriber_poller = SolanaPoller::new(
+            mock_client,
+            "test".to_string(),
+            Arc::new(mock_transaction_model),
+            Arc::new(mock_cursor_model),
+            queue,
+        )
+        .await
+        .unwrap();
+
+        let res = subscriber_poller
+            .poll_tx("malformed_signature".to_string())
+            .await;
+        assert!(res.is_err());
+    }
+}

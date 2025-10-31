@@ -10,10 +10,10 @@ use crate::{
 use crate::types::SolanaTransaction;
 use crate::utils::upsert_and_publish;
 use futures::StreamExt;
-use relayer_core::{error::SubscriberError, queue::Queue};
+use relayer_core::{error::SubscriberError, queue::QueueTrait};
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Signature;
-use tokio::{select, time::timeout};
+use tokio::{select, sync::Semaphore, time::timeout};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use tracing::{error, info, warn};
 
@@ -21,7 +21,7 @@ pub trait TransactionListener {
     type Transaction;
     type Account;
 
-    fn subscriber(
+    fn subscribe(
         &self,
         account: Self::Account,
     ) -> impl Future<Output = Result<LogsSubscription<'_>, anyhow::Error>>;
@@ -32,7 +32,7 @@ pub trait TransactionListener {
 pub struct SolanaListener<STR: SolanaStreamClientTrait, SM: SolanaTransactionModel> {
     client: STR,
     transaction_model: Arc<SM>,
-    queue: Arc<Queue>,
+    queue: Arc<dyn QueueTrait>,
 }
 
 impl<STR: SolanaStreamClientTrait, SM: SolanaTransactionModel> TransactionListener
@@ -41,7 +41,7 @@ impl<STR: SolanaStreamClientTrait, SM: SolanaTransactionModel> TransactionListen
     type Transaction = SolanaTransaction;
     type Account = Pubkey;
 
-    async fn subscriber(
+    async fn subscribe(
         &self,
         account: Self::Account,
     ) -> Result<LogsSubscription<'_>, anyhow::Error> {
@@ -57,7 +57,7 @@ impl<STR: SolanaStreamClientTrait, SM: SolanaTransactionModel> SolanaListener<ST
     pub async fn new(
         client: STR,
         transaction_model: Arc<SM>,
-        queue: Arc<Queue>,
+        queue: Arc<dyn QueueTrait>,
     ) -> Result<Self, SubscriberError> {
         Ok(SolanaListener {
             client,
@@ -149,7 +149,7 @@ impl<STR: SolanaStreamClientTrait, SM: SolanaTransactionModel> SolanaListener<ST
     async fn setup_connection_and_work(
         solana_config: SolanaConfig,
         account: Pubkey,
-        queue: &Arc<Queue>,
+        queue: &Arc<dyn QueueTrait>,
         transaction_model: &Arc<SM>,
         stream_name: &str,
         cancellation_token: CancellationToken,
@@ -223,12 +223,22 @@ impl<STR: SolanaStreamClientTrait, SM: SolanaTransactionModel> SolanaListener<ST
     async fn work(
         subscriber_stream: &mut LogsSubscription<'_>,
         stream_name: &str,
-        queue: &Arc<Queue>,
+        queue: &Arc<dyn QueueTrait>,
         transaction_model: &Arc<SM>,
         solana_config: &SolanaConfig,
         cancellation_token: CancellationToken,
         tracker: &TaskTracker,
     ) {
+        let semaphore = Arc::new(Semaphore::new(
+            solana_config.common_config.num_workers as usize,
+        ));
+        let num_workers = solana_config.common_config.num_workers as usize;
+
+        // Set pending limit to 10×num_workers, but avoid overflow and enforce a minimum of 1 (Semaphore requires > 0)
+        let pending_limit = num_workers.saturating_mul(10).max(1);
+
+        let pending_semaphore = Arc::new(Semaphore::new(pending_limit));
+
         // Create a single RPC client and reuse it across spawned tasks to leverage
         // the underlying HTTP connection pooling, instead of creating a client per request.
         let solana_rpc_client = match SolanaRpcClient::new(
@@ -264,12 +274,29 @@ impl<STR: SolanaStreamClientTrait, SM: SolanaTransactionModel> SolanaListener<ST
                                 }
                             };
 
+                            let pending_permit = match Arc::clone(&pending_semaphore).try_acquire_owned() {
+                                Ok(permit) => permit,
+                                Err(_) => {
+                                    error!("Too many pending tasks, dropping signature: {}", signature);
+                                    continue;
+                                }
+                            };
+
                             let transaction_model_clone = Arc::clone(transaction_model);
                             let queue_clone = Arc::clone(queue);
                             let stream_name_clone = stream_name.to_string();
                             let rpc_clone = Arc::clone(&solana_rpc_client);
+                            let semaphore_clone = Arc::clone(&semaphore);
 
                             tracker.spawn(async move {
+                                let _pending_permit = pending_permit;
+                                let _work_permit = match semaphore_clone.acquire_owned().await {
+                                    Ok(permit) => permit,
+                                    Err(_) => {
+                                        error!("Failed to acquire semaphore permit");
+                                        return;
+                                    }
+                                };
                                 let tx = match rpc_clone
                                 .get_transaction_by_signature(signature)
                                 .await
@@ -295,8 +322,6 @@ impl<STR: SolanaStreamClientTrait, SM: SolanaTransactionModel> SolanaListener<ST
                                 }
                             }
                             });
-
-
                         }
                         Ok(None) => {
                             warn!("Stream {} was closed", stream_name);
@@ -312,81 +337,3 @@ impl<STR: SolanaStreamClientTrait, SM: SolanaTransactionModel> SolanaListener<ST
         }
     }
 }
-
-// comment out tests to not spam RPC on every push
-
-// #[cfg(test)]
-// mod tests {
-
-//     use std::str::FromStr;
-
-//     use dotenv::dotenv;
-//     use relayer_core::config::config_from_yaml;
-//     use solana_sdk::commitment_config::CommitmentConfig;
-//     use testcontainers::{runners::AsyncRunner, ContainerAsync};
-//     use testcontainers_modules::postgres;
-
-//     use crate::{
-//         client::SolanaRpcClient, config::SolanaConfig,
-//         models::solana_subscriber_cursor::PostgresDB, solana_transaction::PgSolanaTransactionModel,
-//     };
-
-//     use super::*;
-
-//     async fn setup_test_container() -> (
-//         PostgresDB,
-//         PgSolanaTransactionModel,
-//         Arc<Queue>,
-//         ContainerAsync<postgres::Postgres>,
-//     ) {
-//         dotenv().ok();
-//         let init_sql = format!(
-//             "{}\n{}",
-//             include_str!("../../migrations/0015_solana_subscriber_cursors.sql"),
-//             include_str!("../../migrations/0014_solana_transactions.sql")
-//         );
-//         let container = postgres::Postgres::default()
-//             .with_init_sql(init_sql.into_bytes())
-//             .start()
-//             .await
-//             .unwrap();
-//         let connection_string = format!(
-//             "postgres://postgres:postgres@{}:{}/postgres",
-//             container.get_host().await.unwrap(),
-//             container.get_host_port_ipv4(5432).await.unwrap()
-//         );
-//         let pool = sqlx::PgPool::connect(&connection_string).await.unwrap();
-//         let cursor_model = PostgresDB::new(&connection_string).await.unwrap();
-//         let transaction_model = PgSolanaTransactionModel::new(pool);
-//         let queue = Queue::new("amqp://guest:guest@localhost:5672", "test", 1).await;
-
-//         (cursor_model, transaction_model, queue, container)
-//     }
-
-//     #[tokio::test]
-//     async fn test_poll_account() {
-//         let (cursor_model, transaction_model, queue, _container) = setup_test_container().await;
-//         let network = std::env::var("NETWORK").expect("NETWORK must be set");
-//         let config: SolanaConfig = config_from_yaml(&format!("config.{}.yaml", network)).unwrap();
-//         let solana_client: SolanaRpcClient =
-//             SolanaRpcClient::new(&config.solana_poll_rpc, CommitmentConfig::confirmed(), 3)
-//                 .unwrap();
-//         let solana_subscriber = SolanaPoller::new(
-//             solana_client,
-//             "test".to_string(),
-//             Arc::new(transaction_model),
-//             Arc::new(cursor_model),
-//             queue,
-//         )
-//         .await
-//         .unwrap();
-
-//         let _transactions = solana_subscriber
-//             .poll_account(
-//                 Pubkey::from_str("DaejccUfXqoAFTiDTxDuMQfQ9oa6crjtR9cT52v1AvGK").unwrap(),
-//                 AccountPollerEnum::GasService,
-//             )
-//             .await
-//             .unwrap();
-//     }
-// }
