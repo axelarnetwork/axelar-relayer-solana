@@ -37,7 +37,7 @@ pub trait GasCalculatorTrait {
     async fn compute_budget(
         &self,
         ixs: &[Instruction],
-        gas_exceeded_retries: u64,
+        gas_exceeded_count: u64,
     ) -> Result<(Instruction, Hash), GasCalculatorError>;
     async fn compute_unit_price(
         &self,
@@ -50,7 +50,7 @@ impl<IC: IncluderClientTrait> GasCalculatorTrait for GasCalculator<IC> {
     async fn compute_budget(
         &self,
         ixs: &[Instruction],
-        gas_exceeded_retries: u64,
+        gas_exceeded_count: u64,
     ) -> Result<(Instruction, Hash), GasCalculatorError> {
         const PERCENT_POINTS_TO_TOP_UP: u64 = 10;
 
@@ -77,9 +77,9 @@ impl<IC: IncluderClientTrait> GasCalculatorTrait for GasCalculator<IC> {
             .unwrap_or(0);
         let base_compute_budget = computed_units.saturating_add(base_top_up);
 
-        // Add additional 10% for each retry attempt (gas_exceeded_retries)
+        // Add additional 10% for each retry attempt (gas_exceeded_count)
         // This means: 1st retry = +10%, 2nd retry = +20%, 3rd retry = +30%
-        let retry_multiplier = gas_exceeded_retries.saturating_mul(10); // 0, 10, 20, 30
+        let retry_multiplier = gas_exceeded_count.saturating_mul(10); // 0, 10, 20, 30
         let retry_adjustment = base_compute_budget
             .saturating_mul(retry_multiplier)
             .saturating_div(100);
