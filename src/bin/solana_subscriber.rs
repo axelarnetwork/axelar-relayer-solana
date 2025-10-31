@@ -65,7 +65,7 @@ async fn main() -> anyhow::Result<()> {
     .await?;
 
     let redis_client = redis::Client::open(config.common_config.redis_server.clone())?;
-    let redis_conn = connection_manager(redis_client, None, None, None).await?;
+    let redis_conn = connection_manager(redis_client, None, None, None, None).await?;
 
     let cancellation_token = CancellationToken::new();
     setup_heartbeat(

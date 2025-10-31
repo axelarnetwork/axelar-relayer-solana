@@ -43,7 +43,7 @@ async fn main() -> anyhow::Result<()> {
     let its = Pubkey::from_str(&config.solana_its)?;
 
     let redis_client = redis::Client::open(config.common_config.redis_server.clone())?;
-    let redis_conn = connection_manager(redis_client, None, None, None).await?;
+    let redis_conn = connection_manager(redis_client, None, None, None, None).await?;
     let cost_cache = CostCache::new(redis_conn.clone());
 
     let parser = TransactionParser::new(
