@@ -7,7 +7,6 @@ use solana::includer_client::{IncluderClient, IncluderClientTrait};
 use solana::redis::{RedisConnection, RedisConnectionTrait};
 use solana::versioned_transaction::SolanaTransactionType;
 use solana_sdk::address_lookup_table::instruction::{close_lookup_table, deactivate_lookup_table};
-use solana_sdk::address_lookup_table::state::AddressLookupTable;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signer::Signer as _;
 use solana_sdk::transaction::Transaction;
@@ -72,12 +71,13 @@ async fn manage_alts(
 
     let current_timestamp = chrono::Utc::now().timestamp();
 
-    for (message_id, alt_pubkey, created_at, retry_count) in alt_keys {
+    for (message_id, alt_pubkey, created_at, retry_count, active) in alt_keys {
         match process_alt(
             &message_id,
             alt_pubkey,
             created_at,
             current_timestamp,
+            active,
             includer_client,
             keypair,
             authority_pubkey,
@@ -155,6 +155,7 @@ async fn process_alt(
     alt_pubkey: Pubkey,
     created_at: i64,
     current_timestamp: i64,
+    active: bool,
     includer_client: &IncluderClient,
     keypair: &solana_sdk::signer::keypair::Keypair,
     authority_pubkey: Pubkey,
@@ -162,60 +163,59 @@ async fn process_alt(
 ) -> anyhow::Result<bool> {
     let seconds_since_creation = current_timestamp - created_at;
 
-    if seconds_since_creation < ALT_LIFETIME_SECONDS {
-        info!(
-            "ALT {} is not old enough yet (created {} seconds ago, {} seconds remaining)",
-            alt_pubkey,
-            seconds_since_creation,
-            ALT_LIFETIME_SECONDS - seconds_since_creation
-        );
-        return Ok(false);
+    if active {
+        // ALT is active, check if it's time to deactivate (after 10 minutes)
+        if seconds_since_creation >= ALT_LIFETIME_SECONDS {
+            info!(
+                "ALT {} is old enough to deactivate (created {} seconds ago)",
+                alt_pubkey, seconds_since_creation
+            );
+            deactivate_alt(alt_pubkey, includer_client, keypair, authority_pubkey).await?;
+
+            // Set active to false in Redis
+            redis_conn.set_alt_inactive(message_id.to_string()).await?;
+
+            info!(
+                "ALT {} has been deactivated and marked as inactive in Redis",
+                alt_pubkey
+            );
+            Ok(false) // Don't remove from Redis yet
+        } else {
+            info!(
+                "ALT {} is not old enough to deactivate yet (created {} seconds ago, {} seconds remaining)",
+                alt_pubkey,
+                seconds_since_creation,
+                ALT_LIFETIME_SECONDS - seconds_since_creation
+            );
+            Ok(false) // Leave in Redis
+        }
+    } else {
+        // ALT is inactive (deactivated), check if it's time to close (after 2*10 = 20 minutes total)
+        if seconds_since_creation >= 2 * ALT_LIFETIME_SECONDS {
+            info!(
+                "ALT {} is old enough to close (created {} seconds ago)",
+                alt_pubkey, seconds_since_creation
+            );
+            close_alt(
+                message_id,
+                alt_pubkey,
+                includer_client,
+                keypair,
+                authority_pubkey,
+                redis_conn,
+                0,
+            )
+            .await
+        } else {
+            info!(
+                "ALT {} is deactivated but not old enough to close yet (created {} seconds ago, {} seconds remaining)",
+                alt_pubkey,
+                seconds_since_creation,
+                2 * ALT_LIFETIME_SECONDS - seconds_since_creation
+            );
+            Ok(false) // Leave in Redis
+        }
     }
-
-    let alt_account_data = includer_client
-        .inner()
-        .get_account_data(&alt_pubkey)
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to get ALT account data: {}", e))?;
-
-    let alt_state = AddressLookupTable::deserialize(&alt_account_data)
-        .map_err(|e| anyhow::anyhow!("Failed to deserialize ALT state: {}", e))?;
-
-    let deactivation_slot = alt_state.meta.deactivation_slot;
-
-    if deactivation_slot != 0 {
-        info!(
-            "ALT {} is already deactivated (deactivated at slot {}), closing it",
-            alt_pubkey, deactivation_slot
-        );
-        return close_alt(
-            message_id,
-            alt_pubkey,
-            includer_client,
-            keypair,
-            authority_pubkey,
-            redis_conn,
-            0,
-        )
-        .await;
-    }
-
-    info!(
-        "ALT {} is old enough to deactivate and close (created {} seconds ago)",
-        alt_pubkey, seconds_since_creation
-    );
-    deactivate_alt(alt_pubkey, includer_client, keypair, authority_pubkey).await?;
-
-    close_alt(
-        message_id,
-        alt_pubkey,
-        includer_client,
-        keypair,
-        authority_pubkey,
-        redis_conn,
-        0,
-    )
-    .await
 }
 
 async fn deactivate_alt(
