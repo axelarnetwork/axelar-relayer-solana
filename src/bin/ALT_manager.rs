@@ -1,5 +1,4 @@
 use dotenv::dotenv;
-use redis::AsyncCommands;
 use relayer_core::config::config_from_yaml;
 use relayer_core::logging::setup_logging;
 use relayer_core::redis::connection_manager;
@@ -16,9 +15,9 @@ use std::time::Duration;
 use tokio::time;
 use tracing::{error, info, warn};
 
+const MAX_RETRY_ATTEMPTS: u32 = 3;
 const ALT_MANAGEMENT_INTERVAL_SECS: u64 = 30;
 const ALT_LIFETIME_SECONDS: i64 = 600; // 10 minutes
-const ALT_CLOSURE_DELAY_SLOTS: u64 = 512; // Minimum slots after deactivation before closure (still needed for closing)
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -29,7 +28,8 @@ async fn main() -> anyhow::Result<()> {
     let (_sentry_guard, _otel_guard) = setup_logging(&config.common_config);
 
     let redis_client = redis::Client::open(config.common_config.redis_server.clone())?;
-    let redis_conn_manager = connection_manager(redis_client.clone(), None, None, None).await?;
+    let redis_conn_manager =
+        connection_manager(redis_client.clone(), None, None, None, None).await?;
     let redis_conn = RedisConnection::new(redis_conn_manager.clone());
 
     let includer_client = IncluderClient::new(&config.solana_poll_rpc, config.solana_commitment, 3)
@@ -74,7 +74,7 @@ async fn manage_alts(
     // Get current timestamp
     let current_timestamp = chrono::Utc::now().timestamp();
 
-    for (message_id, alt_pubkey, created_at) in alt_keys {
+    for (message_id, alt_pubkey, created_at, retry_count) in alt_keys {
         match process_alt(
             &message_id,
             alt_pubkey,
@@ -83,25 +83,60 @@ async fn manage_alts(
             includer_client,
             keypair,
             authority_pubkey,
+            retry_count,
         )
         .await
         {
             Ok(should_remove) => {
                 if should_remove {
                     // Remove from Redis after successful closure
-                    let mut conn = redis_conn.inner().clone();
-                    let key = format!("ALT:{}", message_id);
-                    let _: () = AsyncCommands::del(&mut conn, key).await.map_err(|e| {
-                        anyhow::anyhow!("Failed to delete ALT key from Redis: {}", e)
-                    })?;
-                    info!("Removed ALT {} from Redis after closure", alt_pubkey);
+                    if let Err(e) = redis_conn
+                        .remove_alt_key_from_redis(message_id.clone())
+                        .await
+                    {
+                        error!(
+                            "Failed to remove ALT {} from Redis after closure: {}",
+                            alt_pubkey, e
+                        );
+                    } else {
+                        info!("Removed ALT {} from Redis after closure", alt_pubkey);
+                    }
                 }
             }
             Err(e) => {
-                warn!(
-                    "Failed to process ALT {} ({}): {}",
-                    alt_pubkey, message_id, e
-                );
+                let new_retry_count = retry_count + 1;
+                if new_retry_count >= MAX_RETRY_ATTEMPTS {
+                    // Exceeded max retries, remove from Redis and log error
+                    error!(
+                        "Failed to process ALT {} ({}): {} (retry_count: {}). Removing from Redis.",
+                        alt_pubkey, message_id, e, retry_count
+                    );
+                    if let Err(redis_err) = redis_conn
+                        .remove_alt_key_from_redis(message_id.clone())
+                        .await
+                    {
+                        error!(
+                            "Failed to remove ALT {} from Redis: {}",
+                            alt_pubkey, redis_err
+                        );
+                    }
+                } else {
+                    // Update retry count in Redis
+                    if let Err(redis_err) = redis_conn
+                        .update_alt_retry_count(message_id.clone(), new_retry_count)
+                        .await
+                    {
+                        error!(
+                            "Failed to update retry count for ALT {} ({}): {}",
+                            alt_pubkey, message_id, redis_err
+                        );
+                    } else {
+                        warn!(
+                            "Failed to process ALT {} ({}): {} (retry_count: {}/{})",
+                            alt_pubkey, message_id, e, new_retry_count, MAX_RETRY_ATTEMPTS
+                        );
+                    }
+                }
             }
         }
     }
@@ -109,6 +144,7 @@ async fn manage_alts(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn process_alt(
     _message_id: &str,
     alt_pubkey: Pubkey,
@@ -117,6 +153,7 @@ async fn process_alt(
     includer_client: &IncluderClient,
     keypair: &solana_sdk::signer::keypair::Keypair,
     authority_pubkey: Pubkey,
+    _retry_count: u32,
 ) -> anyhow::Result<bool> {
     // Check if 10 minutes have passed since creation
     let seconds_since_creation = current_timestamp - created_at;
@@ -144,43 +181,24 @@ async fn process_alt(
     // AddressLookupTable fields - deactivation_slot is u64 (0 means not deactivated)
     let deactivation_slot = alt_state.meta.deactivation_slot;
 
-    // Check if ALT is already deactivated
+    // If ALT is already deactivated, close it immediately
     if deactivation_slot != 0 {
-        // ALT is deactivated, check if enough slots have passed for closure
-        // Get current slot to check closure delay
-        let current_slot = includer_client
-            .inner()
-            .get_slot()
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to get current slot: {}", e))?;
-
-        let slots_since_deactivation = current_slot.saturating_sub(deactivation_slot);
-
-        if slots_since_deactivation >= ALT_CLOSURE_DELAY_SLOTS {
-            info!(
-                "Closing ALT {} (deactivated at slot {}, {} slots ago)",
-                alt_pubkey, deactivation_slot, slots_since_deactivation
-            );
-
-            return close_alt(alt_pubkey, includer_client, keypair, authority_pubkey).await;
-        } else {
-            info!(
-                "ALT {} is deactivated but not ready for closure ({} slots remaining)",
-                alt_pubkey,
-                ALT_CLOSURE_DELAY_SLOTS - slots_since_deactivation
-            );
-            return Ok(false);
-        }
+        info!(
+            "ALT {} is already deactivated (deactivated at slot {}), closing it",
+            alt_pubkey, deactivation_slot
+        );
+        return close_alt(alt_pubkey, includer_client, keypair, authority_pubkey).await;
     }
 
-    // ALT is still active and old enough, deactivate it
+    // ALT is still active and old enough (>10 minutes), deactivate it first
     info!(
-        "ALT {} is old enough to deactivate (created {} seconds ago)",
+        "ALT {} is old enough to deactivate and close (created {} seconds ago)",
         alt_pubkey, seconds_since_creation
     );
     deactivate_alt(alt_pubkey, includer_client, keypair, authority_pubkey).await?;
 
-    Ok(false)
+    // After successful deactivation, close it immediately
+    close_alt(alt_pubkey, includer_client, keypair, authority_pubkey).await
 }
 
 async fn deactivate_alt(
@@ -214,11 +232,25 @@ async fn deactivate_alt(
             info!("Successfully deactivated ALT {}: {}", alt_pubkey, signature);
             Ok(())
         }
-        Err(e) => Err(anyhow::anyhow!(
-            "Failed to deactivate ALT {}: {}",
-            alt_pubkey,
-            e
-        )),
+        Err(e) => {
+            // Check if ALT was already deactivated
+            let error_str = e.to_string();
+            if error_str.contains("already deactivated")
+                || error_str.contains("AddressLookupTableError")
+            {
+                warn!(
+                    "ALT {} appears to be already deactivated: {}",
+                    alt_pubkey, error_str
+                );
+                Ok(()) // Continue to closure
+            } else {
+                Err(anyhow::anyhow!(
+                    "Failed to deactivate ALT {}: {}",
+                    alt_pubkey,
+                    e
+                ))
+            }
+        }
     }
 }
 

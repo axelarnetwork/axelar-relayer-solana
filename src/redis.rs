@@ -15,6 +15,8 @@ const GAS_COST_EXPIRATION: u64 = 604800; // one week
 struct AltEntry {
     pubkey: String,
     created_at: i64, // Unix timestamp in seconds
+    #[serde(default)]
+    retry_count: u32, // Number of retry attempts
 }
 
 #[cfg_attr(any(test), mockall::automock)]
@@ -36,7 +38,13 @@ pub trait RedisConnectionTrait: ThreadSafe {
         &self,
         message_id: String,
     ) -> Result<Option<Pubkey>, IncluderError>;
-    async fn get_all_alt_keys(&self) -> Result<Vec<(String, Pubkey, i64)>, IncluderError>;
+    async fn get_all_alt_keys(&self) -> Result<Vec<(String, Pubkey, i64, u32)>, IncluderError>;
+    async fn remove_alt_key_from_redis(&self, message_id: String) -> Result<(), IncluderError>;
+    async fn update_alt_retry_count(
+        &self,
+        message_id: String,
+        retry_count: u32,
+    ) -> Result<(), IncluderError>;
 }
 
 #[derive(Clone)]
@@ -98,6 +106,7 @@ impl RedisConnectionTrait for RedisConnection {
         let entry = AltEntry {
             pubkey: alt_pubkey.to_string(),
             created_at,
+            retry_count: 0,
         };
 
         let entry_json = serde_json::to_string(&entry).map_err(|e| {
@@ -158,19 +167,37 @@ impl RedisConnectionTrait for RedisConnection {
         }
     }
 
-    async fn get_all_alt_keys(&self) -> Result<Vec<(String, Pubkey, i64)>, IncluderError> {
+    async fn get_all_alt_keys(&self) -> Result<Vec<(String, Pubkey, i64, u32)>, IncluderError> {
         let mut redis_conn = self.conn.clone();
         let mut all_keys = Vec::new();
 
-        // Use KEYS command to get all ALT keys (for ALT management, we won't have thousands)
-        let keys: Vec<String> = redis::AsyncCommands::keys(&mut redis_conn, "ALT:*")
-            .await
-            .map_err(|e| {
-                IncluderError::GenericError(format!("Failed to get ALT keys from Redis: {}", e))
-            })?;
+        let mut cursor = 0;
+        let mut keys = Vec::new();
+        loop {
+            let (next_cursor, mut scanned_keys): (u64, Vec<String>) = redis::cmd("SCAN")
+                .arg(cursor)
+                .arg("MATCH")
+                .arg("ALT:*")
+                .arg("COUNT")
+                .arg(100)
+                .query_async(&mut redis_conn)
+                .await
+                .map_err(|e| {
+                    IncluderError::GenericError(format!(
+                        "Failed to scan ALT keys from Redis: {}",
+                        e
+                    ))
+                })?;
+
+            keys.append(&mut scanned_keys);
+            cursor = next_cursor;
+
+            if cursor == 0 {
+                break;
+            }
+        }
 
         for key in keys {
-            // Extract message_id from key (format: "ALT:{message_id}")
             if let Some(message_id) = key.strip_prefix("ALT:") {
                 if let Ok(Some(value_str)) =
                     redis::AsyncCommands::get::<_, Option<String>>(&mut redis_conn, &key).await
@@ -178,7 +205,12 @@ impl RedisConnectionTrait for RedisConnection {
                     match serde_json::from_str::<AltEntry>(&value_str) {
                         Ok(entry) => {
                             if let Ok(pubkey) = entry.pubkey.parse::<Pubkey>() {
-                                all_keys.push((message_id.to_string(), pubkey, entry.created_at));
+                                all_keys.push((
+                                    message_id.to_string(),
+                                    pubkey,
+                                    entry.created_at,
+                                    entry.retry_count,
+                                ));
                             }
                         }
                         Err(_) => {
@@ -190,6 +222,70 @@ impl RedisConnectionTrait for RedisConnection {
         }
 
         Ok(all_keys)
+    }
+
+    async fn remove_alt_key_from_redis(&self, message_id: String) -> Result<(), IncluderError> {
+        let mut redis_conn = self.conn.clone();
+        let key = format!("ALT:{}", message_id);
+
+        redis::AsyncCommands::del::<_, ()>(&mut redis_conn, key.clone())
+            .await
+            .map_err(|e| {
+                IncluderError::GenericError(format!("Failed to remove ALT key from Redis: {}", e))
+            })?;
+
+        debug!("Removed ALT key from Redis: {}", key);
+        Ok(())
+    }
+
+    async fn update_alt_retry_count(
+        &self,
+        message_id: String,
+        retry_count: u32,
+    ) -> Result<(), IncluderError> {
+        let mut redis_conn = self.conn.clone();
+        let key = format!("ALT:{}", message_id);
+        let set_opts = SetOptions::default().with_expiration(SetExpiry::EX(GAS_COST_EXPIRATION));
+
+        let existing_value: Option<String> = redis::AsyncCommands::get(&mut redis_conn, &key)
+            .await
+            .map_err(|e| {
+                IncluderError::GenericError(format!("Failed to get ALT entry from Redis: {}", e))
+            })?;
+
+        if let Some(value_str) = existing_value {
+            let mut entry: AltEntry = serde_json::from_str(&value_str).map_err(|e| {
+                IncluderError::GenericError(format!("Failed to deserialize ALT entry: {}", e))
+            })?;
+
+            entry.retry_count = retry_count;
+
+            let entry_json = serde_json::to_string(&entry).map_err(|e| {
+                IncluderError::GenericError(format!("Failed to serialize ALT entry: {}", e))
+            })?;
+
+            redis_conn
+                .set_options(key.clone(), entry_json.clone(), set_opts)
+                .await
+                .map_err(|e| {
+                    IncluderError::GenericError(format!(
+                        "Failed to update ALT retry count in Redis: {}",
+                        e
+                    ))
+                })?;
+
+            debug!(
+                "Updated ALT retry count in Redis: {}, retry_count: {}",
+                key, retry_count
+            );
+        } else {
+            return Err(IncluderError::GenericError(format!(
+                "ALT entry not found for message_id: {}",
+                message_id
+            )));
+        }
+
+        Ok(())
     }
 }
 
@@ -225,6 +321,7 @@ mod tests {
             Some(Duration::from_millis(100)),
             Some(Duration::from_millis(100)),
             Some(2),
+            Some(500),
         )
         .await
         .unwrap();
@@ -372,7 +469,7 @@ mod tests {
         let mut found_1 = false;
         let mut found_2 = false;
 
-        for (msg_id, pubkey, timestamp) in result {
+        for (msg_id, pubkey, timestamp, _retry_count) in result {
             if msg_id == message_id_1 && pubkey == alt_pubkey_1 {
                 assert!(timestamp >= before_timestamp);
                 assert!(timestamp <= after_timestamp);
@@ -387,6 +484,163 @@ mod tests {
 
         assert!(found_1);
         assert!(found_2);
+    }
+
+    #[tokio::test]
+    async fn test_get_all_alt_keys_with_many_keys() {
+        let (_container, redis_conn) = create_redis_connection().await;
+
+        // Create more than 100 keys to test SCAN pagination (COUNT=100)
+        let mut message_ids = Vec::new();
+        let mut alt_pubkeys = Vec::new();
+        for i in 0..150 {
+            let message_id = format!("test-message-{}", i);
+            let alt_pubkey = Pubkey::new_unique();
+            message_ids.push(message_id.clone());
+            alt_pubkeys.push(alt_pubkey);
+            redis_conn
+                .write_alt_pubkey_to_redis(message_id, alt_pubkey)
+                .await
+                .unwrap();
+        }
+
+        // Get all ALT keys using SCAN (should handle pagination correctly)
+        let result = redis_conn.get_all_alt_keys().await.unwrap();
+
+        assert_eq!(result.len(), 150);
+
+        // Verify all entries are present
+        let mut found_count = 0;
+        for (msg_id, pubkey, _timestamp, _retry_count) in result {
+            if let Some(idx) = message_ids.iter().position(|m| m == &msg_id) {
+                if alt_pubkeys[idx] == pubkey {
+                    found_count += 1;
+                }
+            }
+        }
+
+        assert_eq!(found_count, 150);
+    }
+
+    #[tokio::test]
+    async fn test_remove_alt_key_from_redis() {
+        let (_container, redis_conn) = create_redis_connection().await;
+
+        let message_id = "test-message-remove".to_string();
+        let alt_pubkey = Pubkey::new_unique();
+
+        // Write ALT pubkey to Redis
+        redis_conn
+            .write_alt_pubkey_to_redis(message_id.clone(), alt_pubkey)
+            .await
+            .unwrap();
+
+        // Verify it exists
+        let result = redis_conn
+            .get_alt_pubkey_from_redis(message_id.clone())
+            .await
+            .unwrap();
+        assert_eq!(result, Some(alt_pubkey));
+
+        // Remove it
+        redis_conn
+            .remove_alt_key_from_redis(message_id.clone())
+            .await
+            .unwrap();
+
+        // Verify it's gone
+        let result = redis_conn
+            .get_alt_pubkey_from_redis(message_id.clone())
+            .await
+            .unwrap();
+        assert_eq!(result, None);
+
+        // Verify it's also gone from get_all_alt_keys
+        let all_keys = redis_conn.get_all_alt_keys().await.unwrap();
+        assert!(!all_keys
+            .iter()
+            .any(|(msg_id, _, _, _)| msg_id == &message_id));
+    }
+
+    #[tokio::test]
+    async fn test_remove_alt_key_from_redis_non_existent() {
+        let (_container, redis_conn) = create_redis_connection().await;
+
+        let message_id = "non-existent-message".to_string();
+
+        // Removing a non-existent key should succeed (Redis DEL returns 0, but doesn't error)
+        let result = redis_conn
+            .remove_alt_key_from_redis(message_id.clone())
+            .await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_remove_alt_key_from_redis_multiple_keys() {
+        let (_container, redis_conn) = create_redis_connection().await;
+
+        let message_id_1 = "test-message-remove-1".to_string();
+        let message_id_2 = "test-message-remove-2".to_string();
+        let message_id_3 = "test-message-remove-3".to_string();
+        let alt_pubkey_1 = Pubkey::new_unique();
+        let alt_pubkey_2 = Pubkey::new_unique();
+        let alt_pubkey_3 = Pubkey::new_unique();
+
+        // Write multiple ALT pubkeys
+        redis_conn
+            .write_alt_pubkey_to_redis(message_id_1.clone(), alt_pubkey_1)
+            .await
+            .unwrap();
+        redis_conn
+            .write_alt_pubkey_to_redis(message_id_2.clone(), alt_pubkey_2)
+            .await
+            .unwrap();
+        redis_conn
+            .write_alt_pubkey_to_redis(message_id_3.clone(), alt_pubkey_3)
+            .await
+            .unwrap();
+
+        // Verify all exist
+        let all_keys = redis_conn.get_all_alt_keys().await.unwrap();
+        assert_eq!(all_keys.len(), 3);
+
+        // Remove one
+        redis_conn
+            .remove_alt_key_from_redis(message_id_2.clone())
+            .await
+            .unwrap();
+
+        // Verify only the removed one is gone
+        let result_1 = redis_conn
+            .get_alt_pubkey_from_redis(message_id_1.clone())
+            .await
+            .unwrap();
+        let result_2 = redis_conn
+            .get_alt_pubkey_from_redis(message_id_2.clone())
+            .await
+            .unwrap();
+        let result_3 = redis_conn
+            .get_alt_pubkey_from_redis(message_id_3.clone())
+            .await
+            .unwrap();
+
+        assert_eq!(result_1, Some(alt_pubkey_1));
+        assert_eq!(result_2, None);
+        assert_eq!(result_3, Some(alt_pubkey_3));
+
+        // Verify get_all_alt_keys reflects the change
+        let all_keys = redis_conn.get_all_alt_keys().await.unwrap();
+        assert_eq!(all_keys.len(), 2);
+        assert!(all_keys
+            .iter()
+            .any(|(msg_id, _, _, _)| msg_id == &message_id_1));
+        assert!(!all_keys
+            .iter()
+            .any(|(msg_id, _, _, _)| msg_id == &message_id_2));
+        assert!(all_keys
+            .iter()
+            .any(|(msg_id, _, _, _)| msg_id == &message_id_3));
     }
 
     #[tokio::test]

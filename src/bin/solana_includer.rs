@@ -34,7 +34,8 @@ async fn main() -> anyhow::Result<()> {
     )
     .await;
     let redis_client = redis::Client::open(config.common_config.redis_server.clone())?;
-    let redis_conn_manager = connection_manager(redis_client.clone(), None, None, None).await?;
+    let redis_conn_manager =
+        connection_manager(redis_client.clone(), None, None, None, None).await?;
     let redis_conn = RedisConnection::new(redis_conn_manager.clone());
 
     let postgres_db = PostgresDB::new(&config.common_config.postgres_url).await?;

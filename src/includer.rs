@@ -288,17 +288,13 @@ impl<G: GmpApiTrait + ThreadSafe + Clone, R: RedisConnectionTrait + Clone> Solan
                 "Not enough gas to execute message. Available gas: {}, required gas: {}",
                 task.task.available_gas_balance.amount, total_cost
             );
-            let event = self
-                .gmp_api
-                .cannot_execute_message(
-                    task.common.id.clone(),
-                    task.task.message.message_id.clone(),
-                    task.task.message.source_chain.clone(),
-                    error_message,
-                    CannotExecuteMessageReason::InsufficientGas,
-                )
-                .await
-                .map_err(|e| IncluderError::GenericError(e.to_string()))?;
+            let event = self.gmp_api.cannot_execute_message(
+                task.common.id.clone(),
+                task.task.message.message_id.clone(),
+                task.task.message.source_chain.clone(),
+                error_message,
+                CannotExecuteMessageReason::InsufficientGas,
+            );
             return Ok(vec![event]);
         }
 
@@ -624,17 +620,13 @@ impl<G: GmpApiTrait + ThreadSafe + Clone, R: RedisConnectionTrait + Clone> Inclu
                         }
                         Err(e) => {
                             // Create the cannot execute event for this specific failed message
-                            let event = self
-                                .gmp_api
-                                .cannot_execute_message(
-                                    task.common.id.clone(),
-                                    result.message_id.unwrap_or("".to_string()),
-                                    result.source_chain.unwrap_or("".to_string()),
-                                    e.to_string(),
-                                    CannotExecuteMessageReason::Error,
-                                )
-                                .await
-                                .map_err(|e| IncluderError::GenericError(e.to_string()))?;
+                            let event = self.gmp_api.cannot_execute_message(
+                                task.common.id.clone(),
+                                result.message_id.unwrap_or("".to_string()),
+                                result.source_chain.unwrap_or("".to_string()),
+                                e.to_string(),
+                                CannotExecuteMessageReason::Error,
+                            );
                             failed_events.push(event);
                         }
                     }

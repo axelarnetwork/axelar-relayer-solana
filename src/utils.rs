@@ -287,18 +287,13 @@ pub async fn get_cannot_execute_events_from_execute_data<G: GmpApiTrait>(
         }
         MerkleisedPayload::NewMessages { messages } => {
             for message in messages {
-                cannot_execute_events.push(
-                    gmp_api
-                        .cannot_execute_message(
-                            task_id.clone(),
-                            message.leaf.message.cc_id.id.clone(),
-                            message.leaf.message.cc_id.chain.clone(),
-                            details.clone(),
-                            reason.clone(),
-                        )
-                        .await
-                        .map_err(|e| anyhow!("Failed to create cannot execute event: {}", e))?,
-                );
+                cannot_execute_events.push(gmp_api.cannot_execute_message(
+                    task_id.clone(),
+                    message.leaf.message.cc_id.id.clone(),
+                    message.leaf.message.cc_id.chain.clone(),
+                    details.clone(),
+                    reason.clone(),
+                ));
             }
         }
     }
