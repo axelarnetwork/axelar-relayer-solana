@@ -140,7 +140,7 @@ impl<G: GmpApiTrait + ThreadSafe + Clone, R: RedisConnectionTrait + Clone> Solan
     ) -> SendToChainResult {
         let tx = match self
             .transaction_builder
-            .build(&[ix.clone()], gas_exceeded_count, None)
+            .build(std::slice::from_ref(&ix), gas_exceeded_count, None)
             .await
         {
             Ok(tx) => tx,
@@ -209,7 +209,11 @@ impl<G: GmpApiTrait + ThreadSafe + Clone, R: RedisConnectionTrait + Clone> Solan
         let alt_pubkey = alt_info.as_ref().and_then(|a| a.alt_pubkey);
         let transaction = self
             .transaction_builder
-            .build(&[instruction.clone()], gas_exceeded_count, alt_pubkey)
+            .build(
+                std::slice::from_ref(&instruction),
+                gas_exceeded_count,
+                alt_pubkey,
+            )
             .await
             .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
