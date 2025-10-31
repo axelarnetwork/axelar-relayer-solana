@@ -45,6 +45,11 @@ pub trait RedisConnectionTrait: ThreadSafe {
         message_id: String,
         retry_count: u32,
     ) -> Result<(), IncluderError>;
+    async fn write_failed_alt_to_redis(
+        &self,
+        message_id: String,
+        alt_pubkey: Pubkey,
+    ) -> Result<(), IncluderError>;
 }
 
 #[derive(Clone)]
@@ -285,6 +290,27 @@ impl RedisConnectionTrait for RedisConnection {
             )));
         }
 
+        Ok(())
+    }
+
+    async fn write_failed_alt_to_redis(
+        &self,
+        message_id: String,
+        alt_pubkey: Pubkey,
+    ) -> Result<(), IncluderError> {
+        let mut redis_conn = self.conn.clone();
+        let key = format!("FAILED:ALT:{}", message_id);
+
+        // Store just the pubkey as a string for manual inspection
+        let pubkey_str = alt_pubkey.to_string();
+
+        redis::AsyncCommands::set::<_, _, ()>(&mut redis_conn, key.clone(), pubkey_str.clone())
+            .await
+            .map_err(|e| {
+                IncluderError::GenericError(format!("Failed to write failed ALT to Redis: {}", e))
+            })?;
+
+        debug!("Written failed ALT to Redis: {} -> {}", key, pubkey_str);
         Ok(())
     }
 }
