@@ -8,11 +8,13 @@ use crate::refund_manager::SolanaRefundManager;
 use crate::transaction_builder::{TransactionBuilder, TransactionBuilderTrait};
 use crate::utils::{
     calculate_total_cost_lamports, get_cannot_execute_events_from_execute_data,
-    get_gateway_event_authority_pda, get_incoming_message_pda, get_signature_verification_pda,
+    get_gas_service_event_authority_pda, get_gateway_event_authority_pda, get_incoming_message_pda,
+    get_operator_pda, get_signature_verification_pda, get_treasury_pda,
     get_verifier_set_tracker_pda,
 };
 use anchor_lang::{InstructionData, ToAccountMetas};
 use async_trait::async_trait;
+use axelar_solana_gas_service_v2;
 use axelar_solana_gateway_v2::{state::incoming_message::Message, CrossChainId};
 use base64::Engine as _;
 use borsh::BorshDeserialize;
@@ -624,11 +626,6 @@ impl<G: GmpApiTrait + ThreadSafe + Clone, R: RedisConnectionTrait + Clone> Inclu
         };
     }
 
-    #[tracing::instrument(skip(self))]
-    async fn handle_refund_task(&self, _task: RefundTask) -> Result<(), IncluderError> {
-        Ok(())
-    }
-
     #[tracing::instrument(skip(self), fields(message_id))]
     async fn handle_execute_task(&self, task: ExecuteTask) -> Result<Vec<Event>, IncluderError> {
         let message = Message {
@@ -693,6 +690,76 @@ impl<G: GmpApiTrait + ThreadSafe + Clone, R: RedisConnectionTrait + Clone> Inclu
         self.build_execute_transaction_and_send(instruction, task, 0, alt_info)
             .await
             .map_err(|e| IncluderError::GenericError(e.to_string()))
+    }
+
+    #[tracing::instrument(skip(self))]
+    async fn handle_refund_task(&self, task: RefundTask) -> Result<(), IncluderError> {
+        let receiver = Pubkey::from_str(&task.task.refund_recipient_address.clone())
+            .map_err(|e| IncluderError::GenericError(e.to_string()))?;
+        let (operator_pda, _) = get_operator_pda(&self.keypair.pubkey());
+        let (treasury, _) = get_treasury_pda();
+        let (event_authority, _) = get_gas_service_event_authority_pda();
+
+        let refund_amount = task
+            .task
+            .remaining_gas_balance
+            .amount
+            .parse::<u64>()
+            .map_err(|e| IncluderError::GenericError(e.to_string()))?;
+
+        let accounts = axelar_solana_gas_service_v2::accounts::RefundFees {
+            operator: self.keypair.pubkey(),
+            operator_pda,
+            receiver,
+            treasury,
+            event_authority,
+            program: axelar_solana_gas_service_v2::ID,
+        }
+        .to_account_metas(None);
+
+        let data = axelar_solana_gas_service_v2::instruction::RefundFees {
+            message_id: task.task.message.message_id.clone(),
+            amount: refund_amount,
+        }
+        .data();
+
+        let ix = Instruction {
+            program_id: axelar_solana_gas_service_v2::ID,
+            accounts,
+            data,
+        };
+
+        let tx = self
+            .transaction_builder
+            .build(&[ix], 0, None)
+            .await
+            .map_err(|e| IncluderError::GenericError(e.to_string()))?;
+        let compute_units_cost = self
+            .client
+            .get_gas_cost_from_simulation(tx.clone())
+            .await
+            .map_err(|e| IncluderError::GenericError(e.to_string()))?;
+        let gas_cost_lamports = calculate_total_cost_lamports(&tx, compute_units_cost)
+            .map_err(|e| IncluderError::GenericError(e.to_string()))?;
+
+        if gas_cost_lamports > refund_amount {
+            return Err(IncluderError::GenericError(format!(
+                "Cost is higher than remaining balance to refund. Cost: {}, Remaining balance: {}",
+                gas_cost_lamports, refund_amount
+            )));
+        }
+        let (signature, _gas_cost) = self
+            .client
+            .send_transaction(tx)
+            .await
+            .map_err(|e| IncluderError::GenericError(e.to_string()))?;
+
+        info!(
+            "Refund fees transaction sent successfully: {}",
+            signature.to_string()
+        );
+
+        Ok(())
     }
 }
 

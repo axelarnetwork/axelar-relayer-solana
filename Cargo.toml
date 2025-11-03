@@ -48,6 +48,8 @@ solana-transaction-parser = { git = "https://github.com/commonprefix/solana-tran
 axelar-solana-its-v2 = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "v2-anchor-its-execute-wip", package = "axelar-solana-its-v2", features = ["no-entrypoint"] }
 axelar-solana-gateway-v2 = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "v2-anchor-its-execute-wip", package = "axelar-solana-gateway-v2", features = ["no-entrypoint"] }
 axelar-solana-governance-v2 = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "v2-anchor-its-execute-wip", package = "axelar-solana-governance-v2", features = ["no-entrypoint"] }
+axelar-solana-gas-service-v2 = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "v2-anchor-its-execute-wip", package = "axelar-solana-gas-service-v2", features = ["no-entrypoint"] }
+axelar-solana-operators = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "v2-anchor-its-execute-wip", package = "axelar-solana-operators", features = ["no-entrypoint"] }
 bytemuck = "1.24.0"
 bincode = "1"
 reqwest = "0.12.24"

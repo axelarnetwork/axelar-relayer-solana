@@ -3,6 +3,7 @@ use crate::{
     types::SolanaTransaction,
     versioned_transaction::SolanaTransactionType,
 };
+use anchor_lang::Key;
 use anchor_spl::{associated_token::spl_associated_token_account, token_2022::spl_token_2022};
 use anyhow::anyhow;
 use relayer_core::{
@@ -274,6 +275,27 @@ pub fn get_minter_roles_pda(token_manager_pda: &Pubkey, minter: &Pubkey) -> (Pub
         ],
         &axelar_solana_its_v2::ID,
     )
+}
+
+pub fn get_operator_pda(operator: &Pubkey) -> (Pubkey, u8) {
+    Pubkey::find_program_address(
+        &[
+            axelar_solana_operators::OperatorAccount::SEED_PREFIX,
+            operator.key().as_ref(),
+        ],
+        &axelar_solana_operators::ID,
+    )
+}
+
+pub fn get_treasury_pda() -> (Pubkey, u8) {
+    Pubkey::find_program_address(
+        &[axelar_solana_gas_service_v2::state::Treasury::SEED_PREFIX],
+        &axelar_solana_gas_service_v2::ID,
+    )
+}
+
+pub fn get_gas_service_event_authority_pda() -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[b"__event_authority"], &axelar_solana_gas_service_v2::ID)
 }
 
 pub async fn get_cannot_execute_events_from_execute_data<G: GmpApiTrait>(
