@@ -58,19 +58,11 @@ where
             .await
             .map_err(|e| IngestorError::GenericError(e.to_string()))?;
 
-        let event_models: Vec<EventModel> = events
-            .iter()
-            .map(|event| EventModel::from_event(event.clone()))
-            .collect();
+        let event_models: Vec<EventModel> =
+            events.clone().into_iter().map(EventModel::from).collect();
 
-        let event_summaries: Vec<EventSummary> = event_models
-            .iter()
-            .map(|model| EventSummary {
-                event_id: model.event_id.clone(),
-                message_id: model.message_id.clone(),
-                event_type: model.event_type.clone(),
-            })
-            .collect();
+        let event_summaries: Vec<EventSummary> =
+            event_models.iter().map(EventSummary::from).collect();
 
         info!("Created {} event summaries", event_summaries.len());
 

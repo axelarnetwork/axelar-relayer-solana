@@ -2,7 +2,7 @@ use std::future::Future;
 
 use anyhow::Result;
 use async_trait::async_trait;
-use relayer_core::utils::ThreadSafe;
+use relayer_core::{models::gmp_events::EventModel, utils::ThreadSafe};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 
@@ -32,6 +32,16 @@ pub struct EventSummary {
     pub event_id: String,
     pub message_id: Option<String>,
     pub event_type: String,
+}
+
+impl From<&EventModel> for EventSummary {
+    fn from(model: &EventModel) -> Self {
+        EventSummary {
+            event_id: model.event_id.clone(),
+            message_id: model.message_id.clone(),
+            event_type: model.event_type.clone(),
+        }
+    }
 }
 
 const PG_TABLE_NAME: &str = "solana_transactions";
