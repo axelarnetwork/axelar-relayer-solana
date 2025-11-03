@@ -3,8 +3,11 @@ use async_trait::async_trait;
 use axelar_solana_gateway_v2::IncomingMessage;
 use bytemuck;
 use relayer_core::{error::ClientError, utils::ThreadSafe};
+use solana_client::rpc_response::RpcPrioritizationFee;
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
-use solana_sdk::{commitment_config::CommitmentConfig, pubkey::Pubkey, signature::Signature};
+use solana_sdk::{
+    commitment_config::CommitmentConfig, hash::Hash, pubkey::Pubkey, signature::Signature,
+};
 use std::{sync::Arc, time::Duration};
 use tracing::warn;
 
@@ -14,6 +17,13 @@ use crate::{error::IncluderClientError, versioned_transaction::SolanaTransaction
 #[cfg_attr(any(test), mockall::automock)]
 pub trait IncluderClientTrait: ThreadSafe {
     fn inner(&self) -> &RpcClient;
+    async fn get_latest_blockhash(&self) -> Result<Hash, IncluderClientError>;
+    async fn get_account_data(&self, pubkey: &Pubkey) -> Result<Vec<u8>, IncluderClientError>;
+    async fn get_slot(&self) -> Result<u64, IncluderClientError>;
+    async fn get_recent_prioritization_fees(
+        &self,
+        addresses: &[Pubkey],
+    ) -> Result<Vec<RpcPrioritizationFee>, IncluderClientError>;
     async fn send_transaction(
         &self,
         transaction: SolanaTransactionType,
@@ -58,6 +68,37 @@ impl IncluderClient {
 impl IncluderClientTrait for IncluderClient {
     fn inner(&self) -> &RpcClient {
         &self.client
+    }
+
+    async fn get_latest_blockhash(&self) -> Result<Hash, IncluderClientError> {
+        self.inner()
+            .get_latest_blockhash()
+            .await
+            .map_err(|e| IncluderClientError::GenericError(e.to_string()))
+    }
+
+    async fn get_account_data(&self, pubkey: &Pubkey) -> Result<Vec<u8>, IncluderClientError> {
+        self.inner()
+            .get_account_data(pubkey)
+            .await
+            .map_err(|e| IncluderClientError::GenericError(e.to_string()))
+    }
+
+    async fn get_slot(&self) -> Result<u64, IncluderClientError> {
+        self.inner()
+            .get_slot()
+            .await
+            .map_err(|e| IncluderClientError::GenericError(e.to_string()))
+    }
+
+    async fn get_recent_prioritization_fees(
+        &self,
+        addresses: &[Pubkey],
+    ) -> Result<Vec<RpcPrioritizationFee>, IncluderClientError> {
+        self.inner()
+            .get_recent_prioritization_fees(addresses)
+            .await
+            .map_err(|e| IncluderClientError::GenericError(e.to_string()))
     }
 
     async fn send_transaction(

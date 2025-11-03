@@ -46,7 +46,7 @@ pub trait TransactionBuilderTrait<IC: IncluderClientTrait + ThreadSafe> {
     async fn build(
         &self,
         ixs: &[Instruction],
-        gas_exceeded_retries: u64, // how many times the gas exceeded the limit in previous attempts
+        gas_exceeded_count: u64, // how many times the gas exceeded the limit in previous attempts
         alt_pubkey: Option<Pubkey>,
     ) -> Result<SolanaTransactionType, TransactionBuilderError>;
 
@@ -84,7 +84,7 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
     async fn build(
         &self,
         ixs: &[Instruction],
-        gas_exceeded_retries: u64,
+        gas_exceeded_count: u64,
         alt_pubkey: Option<Pubkey>,
     ) -> Result<SolanaTransactionType, TransactionBuilderError> {
         let compute_unit_price_ix = self
@@ -96,7 +96,7 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
         // Since simulation gets the latest blockhash we can directly use it for the tx construction
         let (compute_budget_ix, hash) = self
             .gas_calculator
-            .compute_budget(ixs, gas_exceeded_retries)
+            .compute_budget(ixs, gas_exceeded_count)
             .await
             .map_err(|e| TransactionBuilderError::ClientError(e.to_string()))?;
 
@@ -107,7 +107,6 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
             Some(alt_pubkey) => {
                 let alt_account_data = self
                     .includer_client
-                    .inner()
                     .get_account_data(&alt_pubkey)
                     .await
                     .map_err(|e| TransactionBuilderError::ClientError(e.to_string()))?;
@@ -241,7 +240,6 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
                     // Create new ALT
                     let recent_slot = self
                         .includer_client
-                        .inner()
                         .get_slot()
                         .await
                         .map_err(|e| TransactionBuilderError::ClientError(e.to_string()))?;

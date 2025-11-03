@@ -230,7 +230,6 @@ async fn deactivate_alt(
     let deactivate_ix = deactivate_lookup_table(alt_pubkey, authority_pubkey);
 
     let recent_blockhash = includer_client
-        .inner()
         .get_latest_blockhash()
         .await
         .map_err(|e| anyhow::anyhow!("Failed to get recent blockhash: {}", e))?;
@@ -273,7 +272,6 @@ async fn close_alt(
     let close_ix = close_lookup_table(alt_pubkey, authority_pubkey, recipient_pubkey);
 
     let recent_blockhash = includer_client
-        .inner()
         .get_latest_blockhash()
         .await
         .map_err(|e| anyhow::anyhow!("Failed to get recent blockhash: {}", e))?;
