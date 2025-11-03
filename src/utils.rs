@@ -1,7 +1,7 @@
 use crate::{
     program_types::{ExecuteData, MerkleisedPayload},
+    transaction_type::SolanaTransactionType,
     types::SolanaTransaction,
-    versioned_transaction::SolanaTransactionType,
 };
 use anchor_lang::Key;
 use anchor_spl::{associated_token::spl_associated_token_account, token_2022::spl_token_2022};

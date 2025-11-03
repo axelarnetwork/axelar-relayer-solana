@@ -5,7 +5,7 @@ use relayer_core::redis::connection_manager;
 use solana::config::SolanaConfig;
 use solana::includer_client::{IncluderClient, IncluderClientTrait};
 use solana::redis::{RedisConnection, RedisConnectionTrait};
-use solana::versioned_transaction::SolanaTransactionType;
+use solana::transaction_type::SolanaTransactionType;
 use solana_sdk::address_lookup_table::instruction::{close_lookup_table, deactivate_lookup_table};
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signer::Signer as _;
@@ -87,10 +87,7 @@ async fn manage_alts(
         {
             Ok(should_remove) => {
                 if should_remove {
-                    if let Err(e) = redis_conn
-                        .remove_alt_key_from_redis(message_id.clone())
-                        .await
-                    {
+                    if let Err(e) = redis_conn.remove_alt_key(message_id.clone()).await {
                         error!(
                             "Failed to remove ALT {} from Redis after closure: {}",
                             alt_pubkey, e
@@ -110,7 +107,7 @@ async fn manage_alts(
 
                     // Write to FAILED:ALT:{message_id}
                     if let Err(redis_err) = redis_conn
-                        .write_failed_alt_to_redis(message_id.clone(), alt_pubkey)
+                        .write_failed_alt(message_id.clone(), alt_pubkey)
                         .await
                     {
                         error!(
@@ -119,10 +116,7 @@ async fn manage_alts(
                         );
                     }
 
-                    if let Err(redis_err) = redis_conn
-                        .remove_alt_key_from_redis(message_id.clone())
-                        .await
-                    {
+                    if let Err(redis_err) = redis_conn.remove_alt_key(message_id.clone()).await {
                         error!(
                             "Failed to remove ALT {} from Redis: {}",
                             alt_pubkey, redis_err
@@ -299,7 +293,7 @@ async fn close_alt(
                 error!("Failed to close ALT {} ({}): {}", alt_pubkey, message_id, e);
 
                 if let Err(redis_err) = redis_conn
-                    .write_failed_alt_to_redis(message_id.to_string(), alt_pubkey)
+                    .write_failed_alt(message_id.to_string(), alt_pubkey)
                     .await
                 {
                     error!(

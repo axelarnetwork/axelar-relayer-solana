@@ -9,8 +9,8 @@ use crate::utils::{
     get_validate_message_signing_pda,
 };
 use crate::{
-    error::TransactionBuilderError, utils::get_gateway_event_authority_pda,
-    versioned_transaction::SolanaTransactionType,
+    error::TransactionBuilderError, transaction_type::SolanaTransactionType,
+    utils::get_gateway_event_authority_pda,
 };
 use anchor_lang::InstructionData;
 use anchor_lang::ToAccountMetas;

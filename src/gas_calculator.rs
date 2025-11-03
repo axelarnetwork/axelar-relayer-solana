@@ -4,7 +4,7 @@
 
 use crate::error::GasCalculatorError;
 use crate::includer_client::IncluderClientTrait;
-use crate::versioned_transaction::SolanaTransactionType;
+use crate::transaction_type::SolanaTransactionType;
 use async_trait::async_trait;
 use solana_sdk::compute_budget::ComputeBudgetInstruction;
 use solana_sdk::hash::Hash;

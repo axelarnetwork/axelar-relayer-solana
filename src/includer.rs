@@ -2,6 +2,7 @@ use crate::config::SolanaConfig;
 use crate::error::IncluderClientError;
 use crate::gas_calculator::GasCalculator;
 use crate::includer_client::{IncluderClient, IncluderClientTrait};
+use crate::models::refunds::RefundsModel;
 use crate::program_types::{ExecuteData, MerkleisedPayload};
 use crate::redis::RedisConnectionTrait;
 use crate::refund_manager::SolanaRefundManager;
@@ -29,6 +30,7 @@ use relayer_core::{
 };
 use solana_sdk::instruction::Instruction;
 use solana_sdk::pubkey::Pubkey;
+use solana_sdk::signature::Signature;
 use solana_sdk::signer::{keypair::Keypair, Signer};
 use solana_transaction_parser::gmp_types::{
     Amount, CannotExecuteMessageReason, Event, ExecuteTask, GatewayTxTask, MessageExecutionStatus,
@@ -42,7 +44,11 @@ use tracing::{debug, error, info, warn};
 pub const MAX_GAS_EXCEEDED_RETRIES: u64 = 3;
 
 #[derive(Clone)]
-pub struct SolanaIncluder<G: GmpApiTrait + ThreadSafe + Clone, R: RedisConnectionTrait + Clone> {
+pub struct SolanaIncluder<
+    G: GmpApiTrait + ThreadSafe + Clone,
+    R: RedisConnectionTrait + Clone,
+    RF: RefundsModel + Clone,
+> {
     client: Arc<IncluderClient>,
     keypair: Arc<Keypair>,
     gateway_address: Pubkey,
@@ -50,9 +56,16 @@ pub struct SolanaIncluder<G: GmpApiTrait + ThreadSafe + Clone, R: RedisConnectio
     transaction_builder: TransactionBuilder<GasCalculator<IncluderClient>, IncluderClient>,
     gmp_api: Arc<G>,
     redis_conn: R,
+    refunds_model: Arc<RF>,
 }
 
-impl<G: GmpApiTrait + ThreadSafe + Clone, R: RedisConnectionTrait + Clone> SolanaIncluder<G, R> {
+impl<
+        G: GmpApiTrait + ThreadSafe + Clone,
+        R: RedisConnectionTrait + Clone,
+        RF: RefundsModel + Clone,
+    > SolanaIncluder<G, R, RF>
+{
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         client: Arc<IncluderClient>,
         keypair: Arc<Keypair>,
@@ -61,6 +74,7 @@ impl<G: GmpApiTrait + ThreadSafe + Clone, R: RedisConnectionTrait + Clone> Solan
         transaction_builder: TransactionBuilder<GasCalculator<IncluderClient>, IncluderClient>,
         gmp_api: Arc<G>,
         redis_conn: R,
+        refunds_model: Arc<RF>,
     ) -> Self {
         Self {
             client,
@@ -70,6 +84,7 @@ impl<G: GmpApiTrait + ThreadSafe + Clone, R: RedisConnectionTrait + Clone> Solan
             transaction_builder,
             gmp_api,
             redis_conn,
+            refunds_model,
         }
     }
 
@@ -82,8 +97,9 @@ impl<G: GmpApiTrait + ThreadSafe + Clone, R: RedisConnectionTrait + Clone> Solan
         redis_conn: R,
         payload_cache_for_includer: PayloadCache<DB>,
         construct_proof_queue: Arc<Queue>,
+        refunds_model: Arc<RF>,
     ) -> error_stack::Result<
-        Includer<Arc<IncluderClient>, SolanaRefundManager, DB, GMP, SolanaIncluder<GMP, R>>,
+        Includer<Arc<IncluderClient>, SolanaRefundManager, DB, GMP, SolanaIncluder<GMP, R, RF>>,
         IncluderError,
     > {
         let solana_rpc = config.solana_poll_rpc.clone();
@@ -113,6 +129,7 @@ impl<G: GmpApiTrait + ThreadSafe + Clone, R: RedisConnectionTrait + Clone> Solan
             transaction_builder,
             Arc::clone(&gmp_api),
             redis_conn.clone(),
+            refunds_model,
         );
 
         let refund_manager = SolanaRefundManager::new()
@@ -301,10 +318,7 @@ impl<G: GmpApiTrait + ThreadSafe + Clone, R: RedisConnectionTrait + Clone> Solan
                     if let Some(alt_pubkey) = alt_info.as_ref().and_then(|a| a.alt_pubkey) {
                         if let Err(e) = self
                             .redis_conn
-                            .write_alt_pubkey_to_redis(
-                                task.task.message.message_id.clone(),
-                                alt_pubkey,
-                            )
+                            .write_alt_pubkey(task.task.message.message_id.clone(), alt_pubkey)
                             .await
                         {
                             error!("Failed to write ALT pubkey to Redis: {}", e);
@@ -340,7 +354,7 @@ impl<G: GmpApiTrait + ThreadSafe + Clone, R: RedisConnectionTrait + Clone> Solan
 
                 // TODO: Spawn a task to write to Redis
                 self.redis_conn
-                    .write_gas_cost_to_redis(
+                    .write_gas_cost(
                         task.task.message.message_id.clone(),
                         gas_cost.unwrap_or(0).saturating_add(alt_actual_gas_cost),
                         TransactionType::Execute,
@@ -383,6 +397,34 @@ impl<G: GmpApiTrait + ThreadSafe + Clone, R: RedisConnectionTrait + Clone> Solan
             },
         }
     }
+
+    async fn refund_already_processed(&self, refund_id: String) -> Result<bool, IncluderError> {
+        let potential_refund = self
+            .refunds_model
+            .find(refund_id)
+            .await
+            .map_err(|e| IncluderError::GenericError(format!("Failed to get refund: {}", e)))?;
+
+        match potential_refund {
+            // if signature was written in DB, check its status to see if we need to re-process it or if is has already been processed
+            Some(signature) => {
+                let tx_res = self
+                    .client
+                    .get_signature_status(
+                        &Signature::from_str(&signature)
+                            .map_err(|e| IncluderError::GenericError(e.to_string()))?,
+                    )
+                    .await;
+                match tx_res {
+                    Ok(Some(Ok(_))) => Ok(true),
+                    Ok(Some(Err(_))) => Ok(false), // failed on chain
+                    Ok(None) => Ok(false), // TODO: An edge case is if it is still queued in the mempool, possibly sleep here and check again?
+                    Err(e) => Err(IncluderError::GenericError(e.to_string())),
+                }
+            }
+            None => Ok(false),
+        }
+    }
 }
 
 struct SendToChainResult {
@@ -394,8 +436,11 @@ struct SendToChainResult {
 }
 
 #[async_trait]
-impl<G: GmpApiTrait + ThreadSafe + Clone, R: RedisConnectionTrait + Clone> IncluderTrait
-    for SolanaIncluder<G, R>
+impl<
+        G: GmpApiTrait + ThreadSafe + Clone,
+        R: RedisConnectionTrait + Clone,
+        RF: RefundsModel + Clone,
+    > IncluderTrait for SolanaIncluder<G, R, RF>
 {
     #[tracing::instrument(skip(self), fields(message_id))]
     async fn handle_gateway_tx_task(
@@ -599,7 +644,7 @@ impl<G: GmpApiTrait + ThreadSafe + Clone, R: RedisConnectionTrait + Clone> Inclu
                                 result.tx_hash.unwrap_or("".to_string())
                             );
                             self.redis_conn
-                                .write_gas_cost_to_redis(
+                                .write_gas_cost(
                                     result.message_id.unwrap_or("".to_string()),
                                     message_cost,
                                     TransactionType::Approve,
@@ -673,7 +718,7 @@ impl<G: GmpApiTrait + ThreadSafe + Clone, R: RedisConnectionTrait + Clone> Inclu
         // Check if ALT already exists in Redis for this message_id
         let existing_alt_pubkey = self
             .redis_conn
-            .get_alt_pubkey_from_redis(task.task.message.message_id.clone())
+            .get_alt_pubkey(task.task.message.message_id.clone())
             .await?;
 
         let (instruction, alt_info) = self
@@ -694,6 +739,17 @@ impl<G: GmpApiTrait + ThreadSafe + Clone, R: RedisConnectionTrait + Clone> Inclu
 
     #[tracing::instrument(skip(self))]
     async fn handle_refund_task(&self, task: RefundTask) -> Result<(), IncluderError> {
+        let refund_id = task.task.message.message_id.clone();
+        if self.refund_already_processed(refund_id.clone()).await? {
+            warn!("Refund already processed: {}", refund_id);
+            self.refunds_model
+                .delete(refund_id.clone())
+                .await
+                .map_err(|e| IncluderError::GenericError(e.to_string()))?;
+            debug!("Deleted refund from database: {}", refund_id);
+            return Ok(());
+        }
+
         let receiver = Pubkey::from_str(&task.task.refund_recipient_address.clone())
             .map_err(|e| IncluderError::GenericError(e.to_string()))?;
         let (operator_pda, _) = get_operator_pda(&self.keypair.pubkey());
@@ -748,6 +804,21 @@ impl<G: GmpApiTrait + ThreadSafe + Clone, R: RedisConnectionTrait + Clone> Inclu
                 gas_cost_lamports, refund_amount
             )));
         }
+
+        // write the signature to the database before sending the transaction to avoid
+        // re processing it if we do not capture the success/failure response
+        self.refunds_model
+            .upsert(
+                refund_id.clone(),
+                tx.get_signature()
+                    .ok_or_else(|| {
+                        IncluderError::GenericError("Failed to get signature".to_string())
+                    })?
+                    .to_string(),
+            )
+            .await
+            .map_err(|e| IncluderError::GenericError(e.to_string()))?;
+
         let (signature, _gas_cost) = self
             .client
             .send_transaction(tx)
@@ -758,6 +829,13 @@ impl<G: GmpApiTrait + ThreadSafe + Clone, R: RedisConnectionTrait + Clone> Inclu
             "Refund fees transaction sent successfully: {}",
             signature.to_string()
         );
+
+        // Should we delete it here or keep it?
+        self.refunds_model
+            .delete(refund_id.clone())
+            .await
+            .map_err(|e| IncluderError::GenericError(e.to_string()))?;
+        debug!("Deleted refund from database: {}", refund_id);
 
         Ok(())
     }

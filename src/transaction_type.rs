@@ -1,4 +1,5 @@
 use solana_sdk::compute_budget::ComputeBudgetInstruction;
+use solana_sdk::signature::Signature;
 use solana_sdk::transaction::{Transaction, VersionedTransaction};
 
 #[derive(Clone)]
@@ -52,6 +53,13 @@ impl SolanaTransactionType {
             SolanaTransactionType::Versioned(tx) => {
                 tx.message.header().num_required_signatures as u64
             }
+        }
+    }
+
+    pub fn get_signature(&self) -> Option<&Signature> {
+        match self {
+            SolanaTransactionType::Legacy(tx) => tx.signatures.first(),
+            SolanaTransactionType::Versioned(tx) => tx.signatures.first(),
         }
     }
 }

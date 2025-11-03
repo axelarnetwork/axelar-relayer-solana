@@ -11,7 +11,7 @@ use solana_sdk::{
 use std::{sync::Arc, time::Duration};
 use tracing::warn;
 
-use crate::{error::IncluderClientError, versioned_transaction::SolanaTransactionType};
+use crate::{error::IncluderClientError, transaction_type::SolanaTransactionType};
 
 #[async_trait]
 #[cfg_attr(any(test), mockall::automock)]
@@ -32,7 +32,10 @@ pub trait IncluderClientTrait: ThreadSafe {
         &self,
         incoming_message_pda: &Pubkey,
     ) -> Result<bool, IncluderClientError>;
-    async fn get_signature_status(&self, signature: &Signature) -> Result<(), IncluderClientError>;
+    async fn get_signature_status(
+        &self,
+        signature: &Signature,
+    ) -> Result<Option<Result<(), IncluderClientError>>, IncluderClientError>;
     async fn get_gas_cost_from_simulation(
         &self,
         transaction: SolanaTransactionType,
@@ -171,19 +174,19 @@ impl IncluderClientTrait for IncluderClient {
         Ok(incoming_message.status.is_executed())
     }
 
-    async fn get_signature_status(&self, signature: &Signature) -> Result<(), IncluderClientError> {
-        let status = self
+    async fn get_signature_status(
+        &self,
+        signature: &Signature,
+    ) -> Result<Option<Result<(), IncluderClientError>>, IncluderClientError> {
+        match self
             .inner()
             .get_signature_status_with_commitment(signature, self.commitment)
             .await
-            .map_err(|e| IncluderClientError::GenericError(e.to_string()))?;
-
-        match status {
-            Some(Ok(_)) => Ok(()),
-            Some(Err(e)) => Err(IncluderClientError::GenericError(e.to_string())),
-            None => Err(IncluderClientError::GenericError(
-                "Unknown transaction status".into(),
-            )),
+        {
+            Ok(Some(Ok(_))) => Ok(Some(Ok(()))),
+            Ok(Some(Err(e))) => Ok(Some(Err(IncluderClientError::GenericError(e.to_string())))),
+            Ok(None) => Ok(None),
+            Err(e) => Err(IncluderClientError::GenericError(e.to_string())),
         }
     }
 
