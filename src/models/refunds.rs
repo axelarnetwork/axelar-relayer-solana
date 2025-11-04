@@ -7,24 +7,30 @@ use crate::models::solana_subscriber_cursor::PostgresDB;
 #[async_trait]
 #[cfg_attr(any(test), mockall::automock)]
 pub trait RefundsModel: ThreadSafe {
-    async fn find(&self, refund_id: String) -> Result<Option<String>>;
+    async fn find(
+        &self,
+        refund_id: String,
+    ) -> Result<Option<(String, chrono::DateTime<chrono::Utc>)>>;
     async fn upsert(&self, refund_id: String, signature: String) -> Result<()>;
     async fn delete(&self, refund_id: String) -> Result<()>;
 }
 
 #[async_trait]
 impl RefundsModel for PostgresDB {
-    async fn find(&self, refund_id: String) -> Result<Option<String>> {
-        let query = "SELECT signature FROM solana_refunds WHERE refund_id = $1";
-        let signature = sqlx::query_scalar(query)
+    async fn find(
+        &self,
+        refund_id: String,
+    ) -> Result<Option<(String, chrono::DateTime<chrono::Utc>)>> {
+        let query = "SELECT signature, updated_at FROM solana_refunds WHERE refund_id = $1";
+        let result = sqlx::query_as::<_, (String, chrono::DateTime<chrono::Utc>)>(query)
             .bind(refund_id)
             .fetch_optional(self.inner())
             .await?;
-        Ok(signature)
+        Ok(result)
     }
 
     async fn upsert(&self, refund_id: String, signature: String) -> Result<()> {
-        let query = "INSERT INTO solana_refunds (refund_id, signature) VALUES ($1, $2) ON CONFLICT (refund_id) DO UPDATE SET signature = $2";
+        let query = "INSERT INTO solana_refunds (refund_id, signature, updated_at) VALUES ($1, $2, NOW()) ON CONFLICT (refund_id) DO UPDATE SET signature = $2, updated_at = NOW()";
         sqlx::query(query)
             .bind(refund_id)
             .bind(signature)
@@ -75,7 +81,7 @@ mod tests {
             .await
             .unwrap();
 
-        let retrieved = model.find(refund_id.clone()).await.unwrap().unwrap();
+        let (retrieved, _) = model.find(refund_id.clone()).await.unwrap().unwrap();
         assert_eq!(retrieved, signature);
     }
 
@@ -134,17 +140,17 @@ mod tests {
             .await
             .unwrap();
 
-        let retrieved_1 = model
+        let (retrieved_1, _) = model
             .find("test-refund-1".to_string())
             .await
             .unwrap()
             .unwrap();
-        let retrieved_2 = model
+        let (retrieved_2, _) = model
             .find("test-refund-2".to_string())
             .await
             .unwrap()
             .unwrap();
-        let retrieved_3 = model
+        let (retrieved_3, _) = model
             .find("test-refund-3".to_string())
             .await
             .unwrap()
@@ -182,7 +188,7 @@ mod tests {
             .await
             .unwrap();
 
-        let first_retrieved = model.find(refund_id.clone()).await.unwrap().unwrap();
+        let (first_retrieved, _) = model.find(refund_id.clone()).await.unwrap().unwrap();
         assert_eq!(first_retrieved, original_signature);
 
         model
@@ -190,7 +196,7 @@ mod tests {
             .await
             .unwrap();
 
-        let second_retrieved = model.find(refund_id.clone()).await.unwrap().unwrap();
+        let (second_retrieved, _) = model.find(refund_id.clone()).await.unwrap().unwrap();
         assert_eq!(second_retrieved, updated_signature);
         assert_ne!(second_retrieved, original_signature);
     }
@@ -256,7 +262,7 @@ mod tests {
             .await
             .unwrap();
 
-        let found = model.find(refund_id.clone()).await.unwrap().unwrap();
+        let (found, _) = model.find(refund_id.clone()).await.unwrap().unwrap();
         assert_eq!(found, signature);
 
         let updated_signature = "updated-signature".to_string();
@@ -265,7 +271,7 @@ mod tests {
             .await
             .unwrap();
 
-        let found_after_update = model.find(refund_id.clone()).await.unwrap().unwrap();
+        let (found_after_update, _) = model.find(refund_id.clone()).await.unwrap().unwrap();
         assert_eq!(found_after_update, updated_signature);
 
         model.delete(refund_id.clone()).await.unwrap();
@@ -300,7 +306,7 @@ mod tests {
             .await
             .unwrap();
 
-        let retrieved = model.find(refund_id.clone()).await.unwrap().unwrap();
+        let (retrieved, _) = model.find(refund_id.clone()).await.unwrap().unwrap();
         assert_eq!(retrieved, empty_signature);
     }
 }

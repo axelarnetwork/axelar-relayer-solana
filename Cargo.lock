@@ -1363,7 +1363,7 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 [[package]]
 name = "axelar-core-std"
 version = "1.0.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#eb92f3afcf6e39b94926c8a3bbdd4eae5a9befd1"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#5a14206a4d481077d8f7d260818e2240d5fda776"
 dependencies = [
  "axelar-wasm-std",
  "client",
@@ -1374,6 +1374,22 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "axelar-solana-encoding"
+version = "0.1.0"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main#3080fba040d4ab84feff583e6ed92989068b3f9a"
+dependencies = [
+ "arrayref",
+ "borsh 1.5.7",
+ "bs58",
+ "hex",
+ "rs_merkle",
+ "sha3",
+ "solana-program",
+ "thiserror 1.0.69",
+ "udigest",
 ]
 
 [[package]]
@@ -1400,7 +1416,7 @@ dependencies = [
  "anchor-lang",
  "axelar-solana-operators",
  "bytemuck",
- "program-utils",
+ "program-utils 0.1.0 (git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor-its-execute-wip)",
 ]
 
 [[package]]
@@ -1410,7 +1426,7 @@ source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2
 dependencies = [
  "alloy-sol-types",
  "anchor-lang",
- "axelar-solana-encoding",
+ "axelar-solana-encoding 0.1.0 (git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor-its-execute-wip)",
  "bitvec",
  "borsh 1.5.7",
  "bytemuck",
@@ -1427,11 +1443,11 @@ source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2
 dependencies = [
  "alloy-sol-types",
  "anchor-lang",
- "axelar-solana-encoding",
+ "axelar-solana-encoding 0.1.0 (git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor-its-execute-wip)",
  "axelar-solana-gateway-v2",
  "bytemuck",
  "governance-gmp",
- "program-utils",
+ "program-utils 0.1.0 (git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor-its-execute-wip)",
 ]
 
 [[package]]
@@ -1449,7 +1465,7 @@ dependencies = [
  "bytemuck",
  "interchain-token-transfer-gmp",
  "mpl-token-metadata",
- "program-utils",
+ "program-utils 0.1.0 (git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor-its-execute-wip)",
  "solana-program",
  "spl-token-metadata-interface 0.6.0",
 ]
@@ -1460,13 +1476,13 @@ version = "0.1.0"
 source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor-its-execute-wip#73358edbded1bca04539f1f107b1ca91207bcfd3"
 dependencies = [
  "anchor-lang",
- "program-utils",
+ "program-utils 0.1.0 (git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor-its-execute-wip)",
 ]
 
 [[package]]
 name = "axelar-wasm-std"
 version = "1.0.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#eb92f3afcf6e39b94926c8a3bbdd4eae5a9befd1"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#5a14206a4d481077d8f7d260818e2240d5fda776"
 dependencies = [
  "alloy-primitives",
  "axelar-wasm-std-derive",
@@ -1502,7 +1518,7 @@ dependencies = [
 [[package]]
 name = "axelar-wasm-std-derive"
 version = "1.0.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#eb92f3afcf6e39b94926c8a3bbdd4eae5a9befd1"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#5a14206a4d481077d8f7d260818e2240d5fda776"
 dependencies = [
  "cosmwasm-std",
  "error-stack 0.4.1",
@@ -1519,7 +1535,7 @@ dependencies = [
 [[package]]
 name = "axelarnet-gateway"
 version = "1.0.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#eb92f3afcf6e39b94926c8a3bbdd4eae5a9befd1"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#5a14206a4d481077d8f7d260818e2240d5fda776"
 dependencies = [
  "axelar-core-std",
  "axelar-wasm-std",
@@ -1735,6 +1751,16 @@ dependencies = [
  "futures-io",
  "futures-lite 2.6.1",
  "piper",
+]
+
+[[package]]
+name = "bnum"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "56953345e39537a3e18bdaeba4cb0c58a78c1f61f361dc0fa7c5c7340ae87c5f"
+dependencies = [
+ "serde",
+ "serde-big-array",
 ]
 
 [[package]]
@@ -2067,7 +2093,7 @@ dependencies = [
 [[package]]
 name = "client"
 version = "1.0.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#eb92f3afcf6e39b94926c8a3bbdd4eae5a9befd1"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#5a14206a4d481077d8f7d260818e2240d5fda776"
 dependencies = [
  "cosmwasm-std",
  "error-stack 0.4.1",
@@ -2335,7 +2361,7 @@ checksum = "bf82335c14bd94eeb4d3c461b7aa419ecd7ea13c2efe24b97cd972bdb8044e7d"
 dependencies = [
  "base64 0.22.1",
  "bech32",
- "bnum",
+ "bnum 0.11.0",
  "cosmwasm-core",
  "cosmwasm-crypto",
  "cosmwasm-derive",
@@ -4391,7 +4417,7 @@ dependencies = [
 [[package]]
 name = "interchain-token-service"
 version = "1.3.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#eb92f3afcf6e39b94926c8a3bbdd4eae5a9befd1"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#5a14206a4d481077d8f7d260818e2240d5fda776"
 dependencies = [
  "axelar-core-std",
  "axelar-wasm-std",
@@ -4421,7 +4447,7 @@ dependencies = [
 [[package]]
 name = "interchain-token-service-std"
 version = "1.0.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#eb92f3afcf6e39b94926c8a3bbdd4eae5a9befd1"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#5a14206a4d481077d8f7d260818e2240d5fda776"
 dependencies = [
  "axelar-wasm-std",
  "client",
@@ -4450,7 +4476,7 @@ dependencies = [
 [[package]]
 name = "into-inner-derive"
 version = "1.0.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#eb92f3afcf6e39b94926c8a3bbdd4eae5a9befd1"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#5a14206a4d481077d8f7d260818e2240d5fda776"
 dependencies = [
  "error-stack 0.4.1",
  "quote",
@@ -4551,7 +4577,7 @@ checksum = "4a5f13b858c8d314ee3e8f639011f7ccefe71f97f96e50151fb991f267928e2c"
 [[package]]
 name = "its-msg-translator-api"
 version = "1.0.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#eb92f3afcf6e39b94926c8a3bbdd4eae5a9befd1"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#5a14206a4d481077d8f7d260818e2240d5fda776"
 dependencies = [
  "client",
  "cosmwasm-schema",
@@ -5091,7 +5117,7 @@ dependencies = [
 [[package]]
 name = "msgs-derive"
 version = "1.0.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#eb92f3afcf6e39b94926c8a3bbdd4eae5a9befd1"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#5a14206a4d481077d8f7d260818e2240d5fda776"
 dependencies = [
  "axelar-wasm-std",
  "cosmwasm-schema",
@@ -5109,7 +5135,7 @@ dependencies = [
 [[package]]
 name = "multisig"
 version = "2.3.2"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#eb92f3afcf6e39b94926c8a3bbdd4eae5a9befd1"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#5a14206a4d481077d8f7d260818e2240d5fda776"
 dependencies = [
  "axelar-wasm-std",
  "client",
@@ -6084,6 +6110,17 @@ dependencies = [
 [[package]]
 name = "program-utils"
 version = "0.1.0"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main#3080fba040d4ab84feff583e6ed92989068b3f9a"
+dependencies = [
+ "mpl-token-metadata",
+ "solana-program",
+ "solana-sdk-ids",
+ "spl-associated-token-account 6.0.0",
+]
+
+[[package]]
+name = "program-utils"
+version = "0.1.0"
 source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor-its-execute-wip#73358edbded1bca04539f1f107b1ca91207bcfd3"
 dependencies = [
  "anchor-discriminators",
@@ -6617,7 +6654,7 @@ dependencies = [
 [[package]]
 name = "report"
 version = "1.0.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#eb92f3afcf6e39b94926c8a3bbdd4eae5a9befd1"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#5a14206a4d481077d8f7d260818e2240d5fda776"
 dependencies = [
  "error-stack 0.4.1",
  "eyre",
@@ -6746,7 +6783,7 @@ dependencies = [
 [[package]]
 name = "rewards"
 version = "1.2.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#eb92f3afcf6e39b94926c8a3bbdd4eae5a9befd1"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#5a14206a4d481077d8f7d260818e2240d5fda776"
 dependencies = [
  "axelar-wasm-std",
  "client",
@@ -6860,7 +6897,7 @@ dependencies = [
 [[package]]
 name = "router-api"
 version = "1.0.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#eb92f3afcf6e39b94926c8a3bbdd4eae5a9befd1"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#5a14206a4d481077d8f7d260818e2240d5fda776"
 dependencies = [
  "axelar-wasm-std",
  "client",
@@ -7774,7 +7811,7 @@ dependencies = [
 [[package]]
 name = "signature-verifier-api"
 version = "1.0.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#eb92f3afcf6e39b94926c8a3bbdd4eae5a9befd1"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#5a14206a4d481077d8f7d260818e2240d5fda776"
 dependencies = [
  "axelar-wasm-std",
  "client",
@@ -8033,6 +8070,59 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d52e52720efe60465b052b9e7445a01c17550666beec855cce66f44766697bc2"
 dependencies = [
  "parking_lot 0.12.5",
+]
+
+[[package]]
+name = "solana-axelar-gas-service"
+version = "0.1.0"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main#3080fba040d4ab84feff583e6ed92989068b3f9a"
+dependencies = [
+ "anchor-lang",
+ "bytemuck",
+ "program-utils 0.1.0 (git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main)",
+ "solana-axelar-operators",
+]
+
+[[package]]
+name = "solana-axelar-gateway"
+version = "0.1.0"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main#3080fba040d4ab84feff583e6ed92989068b3f9a"
+dependencies = [
+ "alloy-primitives",
+ "alloy-sol-types",
+ "anchor-lang",
+ "axelar-solana-encoding 0.1.0 (git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main)",
+ "bitvec",
+ "bnum 0.10.0",
+ "bytemuck",
+ "libsecp256k1 0.6.0",
+ "num-derive 0.4.2",
+ "num-traits",
+ "program-utils 0.1.0 (git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main)",
+ "udigest",
+]
+
+[[package]]
+name = "solana-axelar-its"
+version = "0.1.0"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main#3080fba040d4ab84feff583e6ed92989068b3f9a"
+dependencies = [
+ "anchor-lang",
+ "anchor-spl",
+ "bitflags 2.9.4",
+ "bytemuck",
+ "program-utils 0.1.0 (git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main)",
+ "solana-axelar-gas-service",
+ "solana-axelar-operators",
+]
+
+[[package]]
+name = "solana-axelar-operators"
+version = "0.1.0"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main#3080fba040d4ab84feff583e6ed92989068b3f9a"
+dependencies = [
+ "anchor-lang",
+ "program-utils 0.1.0 (git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main)",
 ]
 
 [[package]]
@@ -9860,14 +9950,11 @@ dependencies = [
 [[package]]
 name = "solana-transaction-parser"
 version = "0.1.0"
-source = "git+https://github.com/commonprefix/solana-transaction-parser?branch=v2-parsing#172d6bae9055dfea6f6503859e2a405538a7e9d8"
+source = "git+https://github.com/commonprefix/solana-transaction-parser?branch=v2-parsing#a16aa2b19f7c5158d3abcc2cf57bf33294a8838f"
 dependencies = [
  "anchor-lang",
  "anyhow",
  "async-trait",
- "axelar-solana-gas-service-v2",
- "axelar-solana-gateway-v2",
- "axelar-solana-its-v2",
  "base64 0.22.1",
  "borsh 1.5.7",
  "bs58",
@@ -9878,6 +9965,9 @@ dependencies = [
  "relayer-core",
  "serde",
  "serde_json",
+ "solana-axelar-gas-service",
+ "solana-axelar-gateway",
+ "solana-axelar-its",
  "solana-sdk",
  "solana-transaction-status",
  "solana-transaction-status-client-types",
@@ -10897,7 +10987,7 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 [[package]]
 name = "starknet-checked-felt"
 version = "1.0.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#eb92f3afcf6e39b94926c8a3bbdd4eae5a9befd1"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#5a14206a4d481077d8f7d260818e2240d5fda776"
 dependencies = [
  "alloy-primitives",
  "error-stack 0.4.1",
@@ -11037,7 +11127,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 [[package]]
 name = "sui-types"
 version = "1.0.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#eb92f3afcf6e39b94926c8a3bbdd4eae5a9befd1"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#5a14206a4d481077d8f7d260818e2240d5fda776"
 dependencies = [
  "error-stack 0.4.1",
  "hex",
@@ -12742,7 +12832,7 @@ dependencies = [
 [[package]]
 name = "xrpl-types"
 version = "1.0.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#eb92f3afcf6e39b94926c8a3bbdd4eae5a9befd1"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#5a14206a4d481077d8f7d260818e2240d5fda776"
 dependencies = [
  "axelar-wasm-std",
  "bs58",
