@@ -235,42 +235,28 @@ impl<G: GmpApiTrait + ThreadSafe + Clone, R: RedisConnectionTrait + Clone> Solan
             alt_pubkey: Some(_),
         }) = alt_info
         {
-            // Check if ALT already exists in Redis before creating it
-            let existing_alt = self
-                .redis_conn
-                .get_alt_pubkey_from_redis(task.task.message.message_id.clone())
-                .await?;
+            // ALT doesn't exist, create it
+            let alt_tx_build = self
+                .transaction_builder
+                .build(
+                    &[alt_ix_create.clone(), alt_ix_extend.clone()],
+                    gas_exceeded_count,
+                    None,
+                )
+                .await
+                .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
-            if existing_alt.is_some() {
-                // ALT already exists in Redis (from previous attempt), skip creating it
-                debug!(
-                    "ALT already exists in Redis for message_id: {}, skipping ALT creation",
-                    task.task.message.message_id
-                );
-            } else {
-                // ALT doesn't exist, create it
-                let alt_tx_build = self
-                    .transaction_builder
-                    .build(
-                        &[alt_ix_create.clone(), alt_ix_extend.clone()],
-                        gas_exceeded_count,
-                        None,
-                    )
-                    .await
+            alt_tx = Some(alt_tx_build.clone());
+
+            let alt_simulation_res = self
+                .client
+                .get_gas_cost_from_simulation(alt_tx_build.clone())
+                .await
+                .map_err(|e| IncluderError::GenericError(e.to_string()))?;
+
+            alt_gas_cost_lamports =
+                calculate_total_cost_lamports(&alt_tx_build, alt_simulation_res)
                     .map_err(|e| IncluderError::GenericError(e.to_string()))?;
-
-                alt_tx = Some(alt_tx_build.clone());
-
-                let alt_simulation_res = self
-                    .client
-                    .get_gas_cost_from_simulation(alt_tx_build.clone())
-                    .await
-                    .map_err(|e| IncluderError::GenericError(e.to_string()))?;
-
-                alt_gas_cost_lamports =
-                    calculate_total_cost_lamports(&alt_tx_build, alt_simulation_res)
-                        .map_err(|e| IncluderError::GenericError(e.to_string()))?;
-            }
         }
 
         debug!(
