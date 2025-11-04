@@ -68,16 +68,16 @@ unnecessary_box_returns = "warn"
 
 [[bin]]
 name = "subscriber"
-path = "src/bin/solana_subscriber.rs"
+path = "src/bin/subscriber.rs"
 
 [[bin]]
 name = "ingestor"
-path = "src/bin/solana_ingestor.rs"
+path = "src/bin/ingestor.rs"
 
 [[bin]]
 name = "includer"
-path = "src/bin/solana_includer.rs"
+path = "src/bin/includer.rs"
 
 [[bin]]
-name = "ALT_manager"
-path = "src/bin/ALT_manager.rs"
+name = "alt_manager"
+path = "src/bin/alt_manager.rs"
