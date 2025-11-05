@@ -38,14 +38,11 @@ use solana_transaction_parser::gmp_types::{
     RefundTask,
 };
 use solana_transaction_parser::redis::TransactionType;
-use std::cmp::min;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::Duration;
 use tracing::{debug, error, info, warn};
 
 pub const MAX_GAS_EXCEEDED_RETRIES: u64 = 3;
-const MAX_REFUND_SLEEP_TIME: u64 = 30;
 const SOLANA_EXPIRATION_TIME: u64 = 90;
 
 #[derive(Clone)]
@@ -426,6 +423,7 @@ impl<
     }
 
     async fn refund_already_processed(&self, refund_id: String) -> Result<bool, IncluderError> {
+        let refund_id_clone = refund_id.clone();
         let potential_refund = self
             .refunds_model
             .find(refund_id)
@@ -435,19 +433,6 @@ impl<
         match potential_refund {
             // if signature was written in DB, check its status to see if we need to re-process it or if is has already been processed
             Some((signature, updated_at)) => {
-                let now = Utc::now();
-                // Handle clock skew: if updated_at is in the future, treat as 0 elapsed
-                let time_elapsed_seconds = if updated_at > now {
-                    0i64
-                } else {
-                    (now - updated_at).num_seconds().max(0)
-                };
-                let time_elapsed = time_elapsed_seconds as u64;
-                let time_remaining = SOLANA_EXPIRATION_TIME.saturating_sub(time_elapsed);
-                // We take the min out of max_refund_sleep_time and how long the tx has left until it expires (aprox 90 seconds), so that we do not sleep more than we need to
-                let time_to_sleep = min(MAX_REFUND_SLEEP_TIME, time_remaining);
-                // We need to sleep to ensure that Ok(None) response means that it does not exist and not that it is in the mempool still, so we can throw an error on it
-                tokio::time::sleep(Duration::from_secs(time_to_sleep)).await;
                 let tx_res = self
                     .client
                     .get_signature_status(
@@ -458,9 +443,27 @@ impl<
                 match tx_res {
                     Ok(Some(Ok(_))) => Ok(true),
                     Ok(Some(Err(_))) => Ok(false), // failed on chain
-                    Ok(None) => Err(IncluderError::GenericError(
-                        "RPC Returned None, re-processing refund".to_string(),
-                    )),
+                    Ok(None) => {
+                        // Check if transaction has expired (90 seconds has passed)
+                        let expiration_time = updated_at.checked_add_signed(
+                            chrono::Duration::seconds(SOLANA_EXPIRATION_TIME as i64),
+                        );
+
+                        match expiration_time {
+                            Some(expires_at) => {
+                                if Utc::now() > expires_at {
+                                    // Transaction has expired, allow reprocessing
+                                    Ok(false)
+                                } else {
+                                    // Transaction hasn't expired yet, recurse to check again
+                                    Box::pin(self.refund_already_processed(refund_id_clone)).await
+                                }
+                            }
+                            None => {
+                                Err(IncluderError::GenericError("Overflow occurred".to_string()))
+                            }
+                        }
+                    }
                     Err(e) => Err(IncluderError::GenericError(e.to_string())),
                 }
             }
