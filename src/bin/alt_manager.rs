@@ -210,18 +210,11 @@ async fn handle_alt_processing_error(
 
         // Set ALT as failed and remove from Redis
         if let Err(redis_err) = redis_conn
-            .set_alt_failed(message_id.clone(), alt_pubkey)
+            .remove_and_set_failed_alt_key(message_id.clone(), alt_pubkey)
             .await
         {
             error!(
-                "Failed to set failed ALT {} in Redis: {}",
-                alt_pubkey, redis_err
-            );
-        }
-
-        if let Err(redis_err) = redis_conn.remove_alt_key(message_id.clone()).await {
-            error!(
-                "Failed to remove ALT {} from Redis: {}",
+                "Failed to remove and set failed ALT {} in Redis: {}",
                 alt_pubkey, redis_err
             );
         }
@@ -392,11 +385,11 @@ async fn close_alt(
                 error!("Failed to close ALT {} ({}): {}", alt_pubkey, message_id, e);
 
                 if let Err(redis_err) = redis_conn
-                    .set_alt_failed(message_id.to_string(), alt_pubkey)
+                    .remove_and_set_failed_alt_key(message_id.to_string(), alt_pubkey)
                     .await
                 {
                     error!(
-                        "Failed to set failed ALT {} in Redis: {}",
+                        "Failed to remove and set failed ALT {} in Redis: {}",
                         alt_pubkey, redis_err
                     );
                 }

@@ -55,7 +55,7 @@ pub trait RedisConnectionTrait: ThreadSafe {
         retry_count: u32,
     ) -> Result<(), RedisInterfaceError>;
     async fn set_alt_inactive(&self, message_id: String) -> Result<(), RedisInterfaceError>;
-    async fn set_alt_failed(
+    async fn remove_and_set_failed_alt_key(
         &self,
         message_id: String,
         alt_pubkey: Pubkey,
@@ -374,26 +374,45 @@ impl RedisConnectionTrait for RedisConnection {
         }
     }
 
-    async fn set_alt_failed(
+    async fn remove_and_set_failed_alt_key(
         &self,
         message_id: String,
         alt_pubkey: Pubkey,
     ) -> Result<(), RedisInterfaceError> {
         let mut redis_conn = self.conn.clone();
-        let key = format!("FAILED:ALT:{}", message_id);
+        let alt_key = format!("ALT:{}", message_id);
+        let failed_key = format!("FAILED:ALT:{}", message_id);
 
         let pubkey_str = alt_pubkey.to_string();
 
-        redis::AsyncCommands::set::<_, _, ()>(&mut redis_conn, key.clone(), pubkey_str.clone())
+        // Set as failed first
+        redis::AsyncCommands::set::<_, _, ()>(
+            &mut redis_conn,
+            failed_key.clone(),
+            pubkey_str.clone(),
+        )
+        .await
+        .map_err(|e| {
+            RedisInterfaceError::SetAltFailedError(format!(
+                "Failed to set failed ALT in Redis: {}",
+                e
+            ))
+        })?;
+
+        // Then remove from ALT keys
+        redis::AsyncCommands::del::<_, ()>(&mut redis_conn, alt_key.clone())
             .await
             .map_err(|e| {
-                RedisInterfaceError::SetAltFailedError(format!(
-                    "Failed to set failed ALT in Redis: {}",
+                RedisInterfaceError::RemoveAltKeyError(format!(
+                    "Failed to remove ALT key from Redis: {}",
                     e
                 ))
             })?;
 
-        debug!("Set failed ALT in Redis: {} -> {}", key, pubkey_str);
+        debug!(
+            "Set failed ALT and removed from Redis: {} -> {} (removed key: {})",
+            failed_key, pubkey_str, alt_key
+        );
         Ok(())
     }
 }
@@ -928,22 +947,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_set_alt_failed() {
+    async fn test_remove_and_set_failed_alt_key() {
         let (_container, redis_conn) = create_redis_connection().await;
 
         let message_id = "test-message-failed".to_string();
         let alt_pubkey = Pubkey::new_unique();
 
+        // First create an ALT entry
         redis_conn
-            .set_alt_failed(message_id.clone(), alt_pubkey)
+            .write_alt_pubkey(message_id.clone(), alt_pubkey)
             .await
             .unwrap();
 
+        // Verify it exists
+        let result = redis_conn.get_alt_pubkey(message_id.clone()).await.unwrap();
+        assert_eq!(result, Some(alt_pubkey));
+
+        // Now remove and set as failed
+        redis_conn
+            .remove_and_set_failed_alt_key(message_id.clone(), alt_pubkey)
+            .await
+            .unwrap();
+
+        // Verify it's in FAILED:ALT
         let mut conn = redis_conn.inner().clone();
         let key = format!("FAILED:ALT:{}", message_id);
         let value: String = redis::AsyncCommands::get(&mut conn, &key).await.unwrap();
         assert_eq!(value, alt_pubkey.to_string());
 
+        // Verify it's removed from ALT keys
         let all_keys = redis_conn.get_all_alt_keys().await.unwrap();
         assert!(!all_keys
             .iter()
@@ -962,12 +994,22 @@ mod tests {
         let alt_pubkey_1 = Pubkey::new_unique();
         let alt_pubkey_2 = Pubkey::new_unique();
 
+        // Create ALT entries first
         redis_conn
-            .set_alt_failed(message_id_1.clone(), alt_pubkey_1)
+            .write_alt_pubkey(message_id_1.clone(), alt_pubkey_1)
             .await
             .unwrap();
         redis_conn
-            .set_alt_failed(message_id_2.clone(), alt_pubkey_2)
+            .write_alt_pubkey(message_id_2.clone(), alt_pubkey_2)
+            .await
+            .unwrap();
+
+        redis_conn
+            .remove_and_set_failed_alt_key(message_id_1.clone(), alt_pubkey_1)
+            .await
+            .unwrap();
+        redis_conn
+            .remove_and_set_failed_alt_key(message_id_2.clone(), alt_pubkey_2)
             .await
             .unwrap();
 
