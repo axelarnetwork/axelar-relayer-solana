@@ -56,6 +56,7 @@ async fn main() -> anyhow::Result<()> {
         >,
         RedisConnection,
         SolanaPostgresDB,
+        solana::includer_client::IncluderClient,
     >::create_includer(
         config,
         gmp_api,

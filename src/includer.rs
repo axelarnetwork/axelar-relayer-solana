@@ -50,12 +50,13 @@ pub struct SolanaIncluder<
     G: GmpApiTrait + ThreadSafe + Clone,
     R: RedisConnectionTrait + Clone,
     RF: RefundsModel + Clone,
+    IC: IncluderClientTrait + Clone,
 > {
-    client: Arc<IncluderClient>,
+    client: Arc<IC>,
     keypair: Arc<Keypair>,
     gateway_address: Pubkey,
     chain_name: String,
-    transaction_builder: TransactionBuilder<GasCalculator<IncluderClient>, IncluderClient>,
+    transaction_builder: TransactionBuilder<GasCalculator<IC>, IC>,
     gmp_api: Arc<G>,
     redis_conn: R,
     refunds_model: Arc<RF>,
@@ -65,15 +66,16 @@ impl<
         G: GmpApiTrait + ThreadSafe + Clone,
         R: RedisConnectionTrait + Clone,
         RF: RefundsModel + Clone,
-    > SolanaIncluder<G, R, RF>
+        IC: IncluderClientTrait + Clone,
+    > SolanaIncluder<G, R, RF, IC>
 {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        client: Arc<IncluderClient>,
+        client: Arc<IC>,
         keypair: Arc<Keypair>,
         gateway_address: Pubkey,
         chain_name: String,
-        transaction_builder: TransactionBuilder<GasCalculator<IncluderClient>, IncluderClient>,
+        transaction_builder: TransactionBuilder<GasCalculator<IC>, IC>,
         gmp_api: Arc<G>,
         redis_conn: R,
         refunds_model: Arc<RF>,
@@ -101,7 +103,13 @@ impl<
         construct_proof_queue: Arc<Queue>,
         refunds_model: Arc<RF>,
     ) -> error_stack::Result<
-        Includer<Arc<IncluderClient>, SolanaRefundManager, DB, GMP, SolanaIncluder<GMP, R, RF>>,
+        Includer<
+            Arc<IncluderClient>,
+            SolanaRefundManager,
+            DB,
+            GMP,
+            SolanaIncluder<GMP, R, RF, IncluderClient>,
+        >,
         IncluderError,
     > {
         let solana_rpc = config.solana_poll_rpc.clone();
@@ -485,7 +493,8 @@ impl<
         G: GmpApiTrait + ThreadSafe + Clone,
         R: RedisConnectionTrait + Clone,
         RF: RefundsModel + Clone,
-    > IncluderTrait for SolanaIncluder<G, R, RF>
+        IC: IncluderClientTrait + Clone,
+    > IncluderTrait for SolanaIncluder<G, R, RF, IC>
 {
     #[tracing::instrument(skip(self), fields(message_id))]
     async fn handle_gateway_tx_task(
@@ -903,3 +912,146 @@ impl ALTInfo {
         self
     }
 }
+
+// #[cfg(test)]
+// mod tests {
+//     use super::*;
+//     use crate::includer_client::MockIncluderClientTrait;
+//     use crate::models::refunds::MockRefundsModel;
+//     use crate::redis::MockRedisConnectionTrait;
+//     use crate::transaction_builder::TransactionBuilder;
+//     use chrono::Utc;
+//     use relayer_core::gmp_api::GmpApi;
+//     use solana_sdk::pubkey::Pubkey;
+//     use solana_sdk::signature::Signature;
+//     use std::str::FromStr;
+//     use std::sync::Arc;
+
+//     fn create_test_includer(
+//         mock_client: MockIncluderClientTrait,
+//         mock_refunds_model: MockRefundsModel,
+//     ) -> SolanaIncluder<
+//         Arc<GmpApi>,
+//         MockRedisConnectionTrait,
+//         MockRefundsModel,
+//         MockIncluderClientTrait,
+//     > {
+//         let keypair = Arc::new(Keypair::new());
+//         let gateway_address = Pubkey::new_unique();
+//         let chain_name = "test-chain".to_string();
+//         // Use a real GmpApi instance (refund_already_processed doesn't use it anyway)
+//         let gmp_api = Arc::new(
+//             GmpApi::new("http://localhost:8080".to_string())
+//                 .unwrap_or_else(|_| panic!("Failed to create GmpApi")),
+//         );
+//         let redis_conn = MockRedisConnectionTrait::new();
+
+//         let gas_calculator =
+//             crate::gas_calculator::GasCalculator::new(mock_client.clone(), Arc::clone(&keypair));
+//         let transaction_builder = TransactionBuilder::new(
+//             Arc::clone(&keypair),
+//             gas_calculator,
+//             Arc::new(mock_client.clone()),
+//         );
+
+//         SolanaIncluder::new(
+//             Arc::new(mock_client),
+//             keypair,
+//             gateway_address,
+//             chain_name,
+//             transaction_builder,
+//             gmp_api,
+//             redis_conn,
+//             Arc::new(mock_refunds_model),
+//         )
+//     }
+
+//     #[tokio::test]
+//     async fn test_refund_already_processed_successful_transaction() {
+//         let mut mock_client = MockIncluderClientTrait::new();
+//         let mut mock_refunds_model = MockRefundsModel::new();
+
+//         let refund_id = "test-refund-123".to_string();
+//         let signature_str = "4BmMcXeedDZ3p3sugJmtHTx2rHScRW6RYYXydjrSHUstDN4ELFVZRmWBqh5ZxPwoQ6WbhqwkUhnbDM341Qc8vHii";
+//         let signature = Signature::from_str(signature_str).unwrap();
+//         let updated_at = Utc::now() - chrono::Duration::seconds(30); // 30 seconds ago
+
+//         // Mock refunds_model.find to return the signature and updated_at
+//         mock_refunds_model
+//             .expect_find()
+//             .withf(move |id| id == &refund_id)
+//             .times(1)
+//             .returning(move |_| {
+//                 Box::pin(async move { Ok(Some((signature_str.to_string(), updated_at))) })
+//             });
+
+//         // Mock client.get_signature_status to return Ok(Some(Ok(()))) for successful transaction
+//         mock_client
+//             .expect_get_signature_status()
+//             .withf(move |sig| *sig == signature)
+//             .times(1)
+//             .returning(|_| Box::pin(async move { Ok(Some(Ok(()))) }));
+
+//         let includer = create_test_includer(mock_client, mock_refunds_model);
+
+//         let result = includer.refund_already_processed(refund_id).await;
+
+//         assert!(result.is_ok());
+//         assert_eq!(result.unwrap(), true);
+//     }
+
+//     #[tokio::test]
+//     async fn test_refund_already_processed_not_found_on_chain() {
+//         let mut mock_client = MockIncluderClientTrait::new();
+//         let mut mock_refunds_model = MockRefundsModel::new();
+
+//         let refund_id = "test-refund-456".to_string();
+//         let signature_str = "4BmMcXeedSZ3p3sugJmtHTx2rHScRW6RYYXydjrSHUstDN4ELFVZRmWBqh5ZxPwoQ6WbhqwkUhnbDM341Qc8vHod";
+//         let signature = Signature::from_str(signature_str).unwrap();
+//         let updated_at = Utc::now() - chrono::Duration::seconds(30); // 30 seconds ago
+
+//         // Mock refunds_model.find to return the signature and updated_at
+//         mock_refunds_model
+//             .expect_find()
+//             .withf(move |id| id == &refund_id)
+//             .times(1)
+//             .returning(move |_| {
+//                 Box::pin(async move { Ok(Some((signature_str.to_string(), updated_at))) })
+//             });
+
+//         // Mock client.get_signature_status to return Ok(None) for transaction not found
+//         mock_client
+//             .expect_get_signature_status()
+//             .withf(move |sig| *sig == signature)
+//             .times(1)
+//             .returning(|_| Box::pin(async move { Ok(None) }));
+
+//         let includer = create_test_includer(mock_client, mock_refunds_model);
+
+//         let result = includer.refund_already_processed(refund_id).await;
+
+//         assert!(result.is_ok());
+//         assert_eq!(result.unwrap(), false);
+//     }
+
+//     #[tokio::test]
+//     async fn test_refund_already_processed_not_in_db() {
+//         let mut mock_refunds_model = MockRefundsModel::new();
+//         let refund_id = "test-refund-789".to_string();
+
+//         // Mock refunds_model.find to return None (not in database)
+//         mock_refunds_model
+//             .expect_find()
+//             .withf(move |id| id == &refund_id)
+//             .times(1)
+//             .returning(|_| Box::pin(async move { Ok(None) }));
+
+//         let mock_client = Arc::new(MockIncluderClientTrait::new());
+//         let includer = create_test_includer(mock_client, Arc::new(mock_refunds_model));
+
+//         let result = includer.refund_already_processed(refund_id).await;
+
+//         assert!(result.is_ok());
+//         assert_eq!(result.unwrap(), false);
+//     }
+// }
