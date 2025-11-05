@@ -759,7 +759,8 @@ impl<
         let existing_alt_pubkey = self
             .redis_conn
             .get_alt_pubkey(task.task.message.message_id.clone())
-            .await?;
+            .await
+            .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
         let (instruction, alt_info) = self
             .transaction_builder
