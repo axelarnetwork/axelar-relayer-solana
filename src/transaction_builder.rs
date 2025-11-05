@@ -47,7 +47,7 @@ pub trait TransactionBuilderTrait<IC: IncluderClientTrait + ThreadSafe> {
         &self,
         ixs: &[Instruction],
         gas_exceeded_count: u64, // how many times the gas exceeded the limit in previous attempts
-        alt_pubkey: Option<Pubkey>,
+        alt_info: Option<ALTInfo>,
     ) -> Result<SolanaTransactionType, TransactionBuilderError>;
 
     async fn build_execute_instruction(
@@ -85,7 +85,7 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
         &self,
         ixs: &[Instruction],
         gas_exceeded_count: u64,
-        alt_pubkey: Option<Pubkey>,
+        alt_info: Option<ALTInfo>,
     ) -> Result<SolanaTransactionType, TransactionBuilderError> {
         let compute_unit_price_ix = self
             .gas_calculator
@@ -103,18 +103,32 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
         let mut instructions = vec![compute_unit_price_ix, compute_budget_ix];
         instructions.extend_from_slice(ixs);
 
-        match alt_pubkey {
-            Some(alt_pubkey) => {
-                let alt_account_data = self
-                    .includer_client
-                    .get_account_data(&alt_pubkey)
-                    .await
-                    .map_err(|e| TransactionBuilderError::ClientError(e.to_string()))?;
-                let alt_state = AddressLookupTable::deserialize(&alt_account_data)
-                    .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+        match alt_info {
+            Some(alt_info) => {
+                let alt_pubkey = alt_info.alt_pubkey.ok_or_else(|| {
+                    TransactionBuilderError::GenericError(
+                        "ALTInfo provided without pubkey".to_string(),
+                    )
+                })?;
+
+                let addresses = if let Some(addresses) = alt_info.alt_addresses {
+                    addresses
+                } else {
+                    // In case ALT exists already (retries): fetch from chain
+                    debug!("Fetching ALT addresses from chain");
+                    let alt_account_data = self
+                        .includer_client
+                        .get_account_data(&alt_pubkey)
+                        .await
+                        .map_err(|e| TransactionBuilderError::ClientError(e.to_string()))?;
+                    let alt_state = AddressLookupTable::deserialize(&alt_account_data)
+                        .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+                    alt_state.addresses.to_vec()
+                };
+
                 let alt_ref = AddressLookupTableAccount {
                     key: alt_pubkey,
-                    addresses: alt_state.addresses.to_vec(),
+                    addresses,
                 };
                 let v0_msg = v0::Message::try_compile(
                     &self.keypair.pubkey(),
@@ -231,6 +245,7 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
 
                 let alt_info = if let Some(existing_alt_pubkey) = existing_alt_pubkey {
                     // Use existing ALT pubkey, no need to create new ALT transaction
+                    // Addresses will be fetched from chain in build() method
                     debug!(
                         "Using existing ALT pubkey from Redis: {}",
                         existing_alt_pubkey
@@ -244,15 +259,16 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
                         .await
                         .map_err(|e| TransactionBuilderError::ClientError(e.to_string()))?;
 
+                    let alt_accounts: Vec<Pubkey> = accounts.iter().map(|acc| acc.pubkey).collect();
+
                     let (alt_ix_create, alt_ix_extend, alt_pubkey) = self
                         .build_lookup_table_instructions(recent_slot, &accounts)
                         .await
                         .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
-                    Some(ALTInfo::new(
-                        Some(alt_ix_create),
-                        Some(alt_ix_extend),
-                        Some(alt_pubkey),
-                    ))
+                    Some(
+                        ALTInfo::new(Some(alt_ix_create), Some(alt_ix_extend), Some(alt_pubkey))
+                            .with_addresses(alt_accounts),
+                    )
                 };
 
                 Ok((

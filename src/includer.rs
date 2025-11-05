@@ -236,7 +236,7 @@ impl<
             .build(
                 std::slice::from_ref(&instruction),
                 gas_exceeded_count,
-                alt_pubkey,
+                alt_info.clone(),
             )
             .await
             .map_err(|e| IncluderError::GenericError(e.to_string()))?;
@@ -253,34 +253,53 @@ impl<
         let mut alt_gas_cost_lamports = 0;
         let mut alt_tx = None;
         // create the ALT table first if it is a versioned transaction
+        // Check if ALT already exists in Redis (from a previous attempt) before trying to create it
+        let alt_exists_in_redis = if let Some(alt_pubkey) = alt_pubkey {
+            self.redis_conn
+                .get_alt_pubkey(task.task.message.message_id.clone())
+                .await
+                .ok()
+                .flatten()
+                .map(|existing| existing == alt_pubkey)
+                .unwrap_or(false)
+        } else {
+            false
+        };
+
         if let Some(ALTInfo {
             alt_ix_create: Some(ref alt_ix_create),
             alt_ix_extend: Some(ref alt_ix_extend),
             alt_pubkey: Some(_),
+            alt_addresses: _,
         }) = alt_info
         {
-            // ALT doesn't exist, create it
-            let alt_tx_build = self
-                .transaction_builder
-                .build(
-                    &[alt_ix_create.clone(), alt_ix_extend.clone()],
-                    gas_exceeded_count,
-                    None,
-                )
-                .await
-                .map_err(|e| IncluderError::GenericError(e.to_string()))?;
-
-            alt_tx = Some(alt_tx_build.clone());
-
-            let alt_simulation_res = self
-                .client
-                .get_gas_cost_from_simulation(alt_tx_build.clone())
-                .await
-                .map_err(|e| IncluderError::GenericError(e.to_string()))?;
-
-            alt_gas_cost_lamports =
-                calculate_total_cost_lamports(&alt_tx_build, alt_simulation_res)
+            // Only create ALT if it doesn't already exist in Redis
+            if !alt_exists_in_redis {
+                // ALT doesn't exist, create it
+                let alt_tx_build = self
+                    .transaction_builder
+                    .build(
+                        &[alt_ix_create.clone(), alt_ix_extend.clone()],
+                        gas_exceeded_count,
+                        None,
+                    )
+                    .await
                     .map_err(|e| IncluderError::GenericError(e.to_string()))?;
+
+                alt_tx = Some(alt_tx_build.clone());
+
+                let alt_simulation_res = self
+                    .client
+                    .get_gas_cost_from_simulation(alt_tx_build.clone())
+                    .await
+                    .map_err(|e| IncluderError::GenericError(e.to_string()))?;
+
+                alt_gas_cost_lamports =
+                    calculate_total_cost_lamports(&alt_tx_build, alt_simulation_res)
+                        .map_err(|e| IncluderError::GenericError(e.to_string()))?;
+            } else {
+                debug!("ALT already exists in Redis, skipping creation");
+            }
         }
 
         debug!(
@@ -320,7 +339,8 @@ impl<
                         signature.to_string()
                     );
                     // Write ALT pubkey to Redis upon successful ALT transaction
-                    if let Some(alt_pubkey) = alt_info.as_ref().and_then(|a| a.alt_pubkey) {
+                    // Use alt_pubkey extracted earlier (line 233) - we only write if we created a new ALT
+                    if let Some(alt_pubkey) = alt_pubkey {
                         if let Err(e) = self
                             .redis_conn
                             .write_alt_pubkey(task.task.message.message_id.clone(), alt_pubkey)
@@ -856,9 +876,10 @@ impl<
 
 #[derive(Clone)]
 pub struct ALTInfo {
-    alt_ix_create: Option<Instruction>,
-    alt_ix_extend: Option<Instruction>,
-    alt_pubkey: Option<Pubkey>,
+    pub alt_ix_create: Option<Instruction>,
+    pub alt_ix_extend: Option<Instruction>,
+    pub alt_pubkey: Option<Pubkey>,
+    pub alt_addresses: Option<Vec<Pubkey>>,
 }
 
 impl ALTInfo {
@@ -871,6 +892,12 @@ impl ALTInfo {
             alt_ix_create,
             alt_ix_extend,
             alt_pubkey,
+            alt_addresses: None,
         }
+    }
+
+    pub fn with_addresses(mut self, addresses: Vec<Pubkey>) -> Self {
+        self.alt_addresses = Some(addresses);
+        self
     }
 }
