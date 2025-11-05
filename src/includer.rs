@@ -40,6 +40,7 @@ use solana_transaction_parser::gmp_types::{
 use solana_transaction_parser::redis::TransactionType;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Duration;
 use tracing::{debug, error, info, warn};
 
 pub const MAX_GAS_EXCEEDED_RETRIES: u64 = 3;
@@ -463,6 +464,7 @@ impl<
                                     // Transaction has expired, allow reprocessing
                                     Ok(false)
                                 } else {
+                                    tokio::time::sleep(Duration::from_secs(1)).await;
                                     // Transaction hasn't expired yet, recurse to check again
                                     Box::pin(self.refund_already_processed(refund_id_clone)).await
                                 }
