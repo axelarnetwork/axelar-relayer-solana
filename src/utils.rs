@@ -58,26 +58,30 @@ pub fn get_tx_batch_command(
     serde_json::to_string(&batch).unwrap_or_else(|_| "[]".to_string())
 }
 
-pub async fn exec_curl_batch(url: &str, body_json: &str) -> anyhow::Result<String> {
-    let output = tokio::process::Command::new("bash")
-        .arg("-lc")
-        .arg(format!(
-            "curl '{}' -s -X POST -H 'Content-Type: application/json' --data-binary \"$BODY\"",
-            url
-        ))
-        .env("BODY", body_json)
-        .output()
-        .await?;
+pub async fn post_request(url: &str, body_json: &str) -> anyhow::Result<String> {
+    let client = reqwest::Client::new();
+    debug!("Executing request: POST {} with body {}", url, body_json);
+    let response = client
+        .post(url)
+        .header("Content-Type", "application/json")
+        .body(body_json.to_string())
+        .send()
+        .await
+        .map_err(|e| anyhow::anyhow!("HTTP request failed: {}", e))?;
 
-    if !output.status.success() {
+    if !response.status().is_success() {
         return Err(anyhow::anyhow!(
-            "Command failed with status: {}",
-            output.status
+            "Request failed with status: {}",
+            response.status()
         ));
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    Ok(stdout)
+    let text = response
+        .text()
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to read response body: {}", e))?;
+
+    Ok(text)
 }
 
 fn get_commitment_str(commitment: CommitmentConfig) -> String {

@@ -4,7 +4,10 @@ use anyhow::anyhow;
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::types::{RpcGetTransactionResponse, SolanaTransaction};
+use crate::{
+    types::{RpcGetTransactionResponse, SolanaTransaction},
+    utils::post_request,
+};
 use relayer_core::{error::ClientError, utils::ThreadSafe};
 use solana_client::{
     rpc_client::GetConfirmedSignaturesForAddress2Config, rpc_config::RpcTransactionConfig,
@@ -16,7 +19,7 @@ use solana_sdk::signature::Signature;
 use solana_transaction_status::UiTransactionEncoding;
 use tracing::{debug, info};
 
-use crate::utils::{exec_curl_batch, get_tx_batch_command};
+use crate::utils::get_tx_batch_command;
 
 const SIGNATURE_PAGE_LIMIT: usize = 100;
 
@@ -154,7 +157,7 @@ impl SolanaRpcClientTrait for SolanaRpcClient {
 
                     let body_json_str =
                         get_tx_batch_command(response.clone(), self.client.commitment());
-                    let raw = exec_curl_batch(&self.rpc_url, &body_json_str)
+                    let raw = post_request(&self.rpc_url, &body_json_str)
                         .await
                         .map_err(|e| anyhow!(format!("batch curl failed: {}", e)))?;
 
