@@ -406,12 +406,14 @@ impl<
                 }
                 IncluderClientError::TransactionError(e) => {
                     warn!("Transaction reverted: {}", e);
+                    // Include ALT cost if ALT transaction was sent successfully
+                    let total_reverted_cost = gas_cost_lamports.saturating_add(alt_actual_gas_cost);
                     let event = self.gmp_api.execute_message(
                         task.task.message.message_id.clone(),
                         task.task.message.source_chain.clone(),
                         MessageExecutionStatus::REVERTED,
                         Amount {
-                            amount: gas_cost_lamports.to_string(),
+                            amount: total_reverted_cost.to_string(),
                             token_id: None,
                         },
                     );
