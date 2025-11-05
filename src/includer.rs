@@ -502,7 +502,6 @@ impl<
             get_signature_verification_pda(&execute_data.payload_merkle_root);
 
         let ix_data = axelar_solana_gateway_v2::instruction::InitializePayloadVerificationSession {
-            signing_verifier_set_hash: execute_data.signing_verifier_set_merkle_root,
             merkle_root: execute_data.payload_merkle_root,
         }
         .data();
@@ -550,7 +549,6 @@ impl<
             .into_iter()
             .map(|verifier_info| {
                 let ix_data = axelar_solana_gateway_v2::instruction::VerifySignature {
-                    signing_verifier_set_hash: execute_data.signing_verifier_set_merkle_root,
                     payload_merkle_root: execute_data.payload_merkle_root,
                     verifier_info,
                 }
@@ -647,8 +645,6 @@ impl<
                         let chain = merkleised_message.leaf.message.cc_id.chain.clone();
 
                         let ix_data = axelar_solana_gateway_v2::instruction::ApproveMessage {
-                            signing_verifier_set_hash: execute_data
-                                .signing_verifier_set_merkle_root,
                             merkleised_message,
                             payload_merkle_root: execute_data.payload_merkle_root,
                         }

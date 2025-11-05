@@ -298,6 +298,17 @@ pub fn get_gas_service_event_authority_pda() -> (Pubkey, u8) {
     Pubkey::find_program_address(&[b"__event_authority"], &axelar_solana_gas_service_v2::ID)
 }
 
+pub fn get_destination_ata(destination_pubkey: &Pubkey, token_mint_pda: &Pubkey) -> (Pubkey, u8) {
+    Pubkey::find_program_address(
+        &[
+            destination_pubkey.as_ref(),
+            spl_token_2022::id().as_ref(),
+            token_mint_pda.as_ref(),
+        ],
+        &spl_associated_token_account::id(),
+    )
+}
+
 pub async fn get_cannot_execute_events_from_execute_data<G: GmpApiTrait>(
     execute_data: &ExecuteData,
     reason: CannotExecuteMessageReason,
