@@ -1393,6 +1393,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "axelar-solana-encoding"
+version = "0.1.0"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?rev=84ffdfafb7d62e548eb61eb96f212b8e447b094c#84ffdfafb7d62e548eb61eb96f212b8e447b094c"
+dependencies = [
+ "arrayref",
+ "borsh 1.5.7",
+ "bs58",
+ "hex",
+ "rs_merkle",
+ "sha3",
+ "thiserror 1.0.69",
+ "udigest",
+]
+
+[[package]]
 name = "axelar-solana-gas-service-v2"
 version = "0.1.0"
 source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor-its-execute-wip#73358edbded1bca04539f1f107b1ca91207bcfd3"
@@ -1410,7 +1425,7 @@ source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2
 dependencies = [
  "alloy-sol-types",
  "anchor-lang",
- "axelar-solana-encoding",
+ "axelar-solana-encoding 0.1.0 (git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor-its-execute-wip)",
  "bitvec",
  "borsh 1.5.7",
  "bytemuck",
@@ -1427,7 +1442,7 @@ source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2
 dependencies = [
  "alloy-sol-types",
  "anchor-lang",
- "axelar-solana-encoding",
+ "axelar-solana-encoding 0.1.0 (git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=v2-anchor-its-execute-wip)",
  "axelar-solana-gateway-v2",
  "bytemuck",
  "governance-gmp",
@@ -7874,6 +7889,7 @@ dependencies = [
  "anchor-spl",
  "anyhow",
  "async-trait",
+ "axelar-solana-encoding 0.1.0 (git+https://github.com/axelarnetwork/axelar-amplifier-solana?rev=84ffdfafb7d62e548eb61eb96f212b8e447b094c)",
  "axelar-solana-gateway-v2",
  "axelar-solana-governance-v2",
  "axelar-solana-its-v2",

@@ -2,7 +2,6 @@ use crate::config::SolanaConfig;
 use crate::error::IncluderClientError;
 use crate::gas_calculator::GasCalculator;
 use crate::includer_client::{IncluderClient, IncluderClientTrait};
-use crate::program_types::{ExecuteData, MerkleisedPayload};
 use crate::redis::RedisConnectionTrait;
 use crate::refund_manager::SolanaRefundManager;
 use crate::transaction_builder::{TransactionBuilder, TransactionBuilderTrait};
@@ -13,9 +12,10 @@ use crate::utils::{
 };
 use anchor_lang::{InstructionData, ToAccountMetas};
 use async_trait::async_trait;
+use axelar_solana_encoding::borsh::{BorshDeserialize, BorshSerialize};
+use axelar_solana_encoding::types::execute_data::{ExecuteData, MerkleisedPayload};
 use axelar_solana_gateway_v2::{state::incoming_message::Message, CrossChainId};
 use base64::Engine as _;
-use borsh::BorshDeserialize;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt as _;
 use relayer_core::error::IncluderError;
@@ -38,6 +38,11 @@ use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
 pub const MAX_GAS_EXCEEDED_RETRIES: u64 = 3;
+
+pub fn command_id(message: &axelar_solana_encoding::types::messages::Message) -> [u8; 32] {
+    let cc_id = &message.cc_id;
+    solana_program::keccak::hashv(&[cc_id.chain.as_bytes(), b"-", cc_id.id.as_bytes()]).0
+}
 
 #[derive(Clone)]
 pub struct SolanaIncluder<G: GmpApiTrait + ThreadSafe + Clone, R: RedisConnectionTrait + Clone> {
@@ -405,9 +410,15 @@ impl<G: GmpApiTrait + ThreadSafe + Clone, R: RedisConnectionTrait + Clone> Inclu
         let execute_data_bytes = base64::prelude::BASE64_STANDARD
             .decode(task.task.execute_data)
             .map_err(|e| IncluderError::GenericError(e.to_string()))?;
+        // let utf = String::from_utf8(execute_data_bytes).unwrap();
+        // let execute_data_bytes = hex::decode(utf).unwrap();
 
+        println!("execute_data_bytes: {:?}", execute_data_bytes);
+        // deserialize execute data from borsh
+        let execute_data = ExecuteData::deserialize(&mut &execute_data_bytes[..]).unwrap();
         let execute_data = ExecuteData::try_from_slice(&execute_data_bytes)
-            .map_err(|_| IncluderError::GenericError("cannot decode execute data".to_string()))?;
+            .map_err(|e| IncluderError::GenericError(e.to_string()))?;
+        println!("nope");
 
         let (verification_session_tracker_pda, _) =
             get_signature_verification_pda(&execute_data.payload_merkle_root);
@@ -437,15 +448,15 @@ impl<G: GmpApiTrait + ThreadSafe + Clone, R: RedisConnectionTrait + Clone> Inclu
 
         let send_to_chain_res = self.send_gateway_tx_to_chain(ix, None, None, 0).await;
         if let Err(e) = send_to_chain_res.status {
-            return get_cannot_execute_events_from_execute_data(
-                &execute_data,
-                CannotExecuteMessageReason::Error,
-                e.to_string(),
-                task.common.id.clone(),
-                Arc::clone(&self.gmp_api),
-            )
-            .await
-            .map_err(|e| IncluderError::GenericError(e.to_string()));
+            // return get_cannot_execute_events_from_execute_data(
+            //     &execute_data,
+            //     CannotExecuteMessageReason::Error,
+            //     e.to_string(),
+            //     task.common.id.clone(),
+            //     Arc::clone(&self.gmp_api),
+            // )
+            // .await
+            // .map_err(|e| IncluderError::GenericError(e.to_string()));
         }
         debug!(
             "Transaction for initializing payload verification session successfully: {}. Cost: {}",
@@ -460,46 +471,46 @@ impl<G: GmpApiTrait + ThreadSafe + Clone, R: RedisConnectionTrait + Clone> Inclu
         let mut verifier_ver_future_set = signing_verifier_set_leaves
             .into_iter()
             .map(|verifier_info| {
-                let ix_data = axelar_solana_gateway_v2::instruction::VerifySignature {
-                    signing_verifier_set_hash: execute_data.signing_verifier_set_merkle_root,
-                    payload_merkle_root: execute_data.payload_merkle_root,
-                    verifier_info,
-                }
-                .data();
+                // let ix_data = axelar_solana_gateway_v2::instruction::VerifySignature {
+                //     signing_verifier_set_hash: execute_data.signing_verifier_set_merkle_root,
+                //     payload_merkle_root: execute_data.payload_merkle_root,
+                //     verifier_info,
+                // }
+                // .data();
 
-                let accounts = axelar_solana_gateway_v2::accounts::VerifySignature {
-                    gateway_root_pda: self.gateway_address,
-                    verification_session_account: verification_session_tracker_pda,
-                    verifier_set_tracker_pda,
-                };
-                let ix = Instruction {
-                    program_id: axelar_solana_gateway_v2::ID,
-                    accounts: accounts.to_account_metas(None),
-                    data: ix_data,
-                };
+                // let accounts = axelar_solana_gateway_v2::accounts::VerifySignature {
+                //     gateway_root_pda: self.gateway_address,
+                //     verification_session_account: verification_session_tracker_pda,
+                //     verifier_set_tracker_pda,
+                // };
+                // let ix = Instruction {
+                //     program_id: axelar_solana_gateway_v2::ID,
+                //     accounts: accounts.to_account_metas(None),
+                //     data: ix_data,
+                // };
 
-                self.send_gateway_tx_to_chain(ix, None, None, 0)
+                // self.send_gateway_tx_to_chain(ix, None, None, 0)
             })
             .collect::<FuturesUnordered<_>>();
-        while let Some(result) = verifier_ver_future_set.next().await {
-            if let Err(e) = result.status {
-                return get_cannot_execute_events_from_execute_data(
-                    &execute_data,
-                    CannotExecuteMessageReason::Error,
-                    e.to_string(),
-                    task.common.id.clone(),
-                    Arc::clone(&self.gmp_api),
-                )
-                .await
-                .map_err(|e| IncluderError::GenericError(e.to_string()));
-            }
-            total_cost += result.gas_cost.unwrap_or(0);
-            debug!(
-                "Transaction for verifying signature successfully: {}. Cost: {}",
-                result.tx_hash.unwrap_or("".to_string()),
-                result.gas_cost.unwrap_or(0)
-            );
-        }
+        // while let Some(result) = verifier_ver_future_set.next().await {
+        //     if let Err(e) = result.status {
+        //         // return get_cannot_execute_events_from_execute_data(
+        //         //     &execute_data,
+        //         //     CannotExecuteMessageReason::Error,
+        //         //     e.to_string(),
+        //         //     task.common.id.clone(),
+        //         //     Arc::clone(&self.gmp_api),
+        //         // )
+        //         // .await
+        //         // .map_err(|e| IncluderError::GenericError(e.to_string()));
+        //     }
+        //     total_cost += result.gas_cost.unwrap_or(0);
+        //     debug!(
+        //         "Transaction for verifying signature successfully: {}. Cost: {}",
+        //         result.tx_hash.unwrap_or("".to_string()),
+        //         result.gas_cost.unwrap_or(0)
+        //     );
+        // }
 
         let (event_authority, _) = get_gateway_event_authority_pda();
 
@@ -551,16 +562,37 @@ impl<G: GmpApiTrait + ThreadSafe + Clone, R: RedisConnectionTrait + Clone> Inclu
                 let mut merkelised_message_futures = messages
                     .into_iter()
                     .map(|merkleised_message| {
-                        let command_id = merkleised_message.leaf.message.command_id();
+                        let command_id = command_id(&merkleised_message.leaf.message);
                         let (pda, _) = get_incoming_message_pda(&command_id);
 
                         let msg_id = merkleised_message.leaf.message.cc_id.id.clone();
                         let chain = merkleised_message.leaf.message.cc_id.chain.clone();
 
+                        // let message = axelar_solana_gateway_v2::state::incoming_message::MerkleisedMessage::from(merkleised_message.clone());
+                        // serialize message with borsh
+                        let foo: axelar_solana_gateway_v2::state::incoming_message::MerkleisedMessage =
+                            axelar_solana_gateway_v2::state::incoming_message::MerkleisedMessage {
+                                leaf: axelar_solana_gateway_v2::state::incoming_message::MessageLeaf {
+                                    message: axelar_solana_gateway_v2::state::incoming_message::Message {
+                                        cc_id: axelar_solana_gateway_v2::CrossChainId {
+                                            chain: merkleised_message.leaf.message.cc_id.chain.clone(),
+                                            id: merkleised_message.leaf.message.cc_id.id.clone(),
+                                        },
+                                        source_address: merkleised_message.leaf.message.source_address.clone(),
+                                        destination_chain: merkleised_message.leaf.message.destination_chain.clone(),
+                                        destination_address: merkleised_message.leaf.message.destination_address.clone(),
+                                        payload_hash: merkleised_message.leaf.message.payload_hash.clone(),
+                                    },   
+                                    position: merkleised_message.leaf.position,
+                                    set_size: merkleised_message.leaf.set_size,
+                                    domain_separator: merkleised_message.leaf.domain_separator,
+                                },
+                                proof: merkleised_message.proof.clone(),
+                            };
                         let ix_data = axelar_solana_gateway_v2::instruction::ApproveMessage {
                             signing_verifier_set_hash: execute_data
                                 .signing_verifier_set_merkle_root,
-                            merkleised_message,
+                            merkleised_message: foo,
                             payload_merkle_root: execute_data.payload_merkle_root,
                         }
                         .data();
