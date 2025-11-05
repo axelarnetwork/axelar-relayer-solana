@@ -431,32 +431,53 @@ mod tests {
         testcontainers::ContainerAsync<GenericImage>,
         RedisConnection,
     ) {
-        let container = GenericImage::new("redis", "7.2.4")
-            .with_exposed_port(6379.tcp())
-            .with_wait_for(WaitFor::message_on_stdout("Ready to accept connections"))
-            .start()
-            .await
-            .unwrap();
+        // Retry container creation to handle transient Docker/testcontainers issues in CI
+        let mut retries = 0;
+        let max_retries = 3;
+        let mut delay = Duration::from_millis(500);
 
-        let host = container.get_host().await.unwrap();
-        let host_port = container.get_host_port_ipv4(6379).await.unwrap();
+        loop {
+            match GenericImage::new("redis", "7.2.4")
+                .with_exposed_port(6379.tcp())
+                .with_wait_for(WaitFor::message_on_stdout("Ready to accept connections"))
+                .start()
+                .await
+            {
+                Ok(container) => {
+                    let host = container.get_host().await.unwrap();
+                    let host_port = container.get_host_port_ipv4(6379).await.unwrap();
 
-        let url = format!("redis://{host}:{host_port}");
-        let client = Client::open(url.as_ref()).unwrap();
+                    let url = format!("redis://{host}:{host_port}");
+                    let client = Client::open(url.as_ref()).unwrap();
 
-        let conn = relayer_core::redis::connection_manager(
-            client,
-            Some(Duration::from_millis(100)),
-            Some(Duration::from_millis(100)),
-            Some(2),
-            Some(500),
-        )
-        .await
-        .unwrap();
+                    let conn = relayer_core::redis::connection_manager(
+                        client,
+                        Some(Duration::from_millis(100)),
+                        Some(Duration::from_millis(100)),
+                        Some(2),
+                        Some(500),
+                    )
+                    .await
+                    .unwrap();
 
-        let redis_conn = RedisConnection::new(conn);
+                    let redis_conn = RedisConnection::new(conn);
 
-        (container, redis_conn)
+                    return (container, redis_conn);
+                }
+                Err(e) => {
+                    if retries >= max_retries {
+                        panic!(
+                            "Failed to create Redis container after {} retries: {:?}",
+                            max_retries, e
+                        );
+                    }
+                    eprintln!("Failed to create Redis container (attempt {}/{}): {:?}. Retrying in {:?}...", retries + 1, max_retries + 1, e, delay);
+                    tokio::time::sleep(delay).await;
+                    retries += 1;
+                    delay = delay.mul_f32(2.0);
+                }
+            }
+        }
     }
 
     #[tokio::test]
