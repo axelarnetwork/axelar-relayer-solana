@@ -311,7 +311,7 @@ async fn close_alt(
                 Ok(())
             } else {
                 tokio::time::sleep(Duration::from_secs(1)).await;
-                close_alt(
+                Box::pin(close_alt(
                     message_id,
                     alt_pubkey,
                     includer_client,
