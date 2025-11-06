@@ -1,0 +1,36 @@
+services:
+  ingestor:
+    build:
+      context: .
+      args:
+        BINARY_NAME: ingestor
+    env_file:
+      - .env
+
+  includer:
+    build:
+      context: .
+      args:
+        BINARY_NAME: includer
+    env_file:
+      - .env
+
+  subscriber:
+    build:
+      context: .
+      args:
+        BINARY_NAME: subscriber
+    env_file:
+      - .env
+
+  alt_manager:
+    build:
+      context: .
+      args:
+        BINARY_NAME: alt_manager
+    env_file:
+      - .env
+
+networks:
+  axelar-relayer:
+    name: axelar-relayer

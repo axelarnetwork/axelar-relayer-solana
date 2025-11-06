@@ -1,10 +1,10 @@
 use crate::{
+    program_types::{ExecuteData, MerkleisedPayload},
     types::SolanaTransaction,
-    v2_program_types::{ExecuteData, MerkleisedPayload},
+    versioned_transaction::SolanaTransactionType,
 };
 use anchor_spl::{associated_token::spl_associated_token_account, token_2022::spl_token_2022};
 use anyhow::anyhow;
-use bincode;
 use relayer_core::{
     gmp_api::GmpApiTrait,
     queue::{QueueItem, QueueTrait},
@@ -18,10 +18,8 @@ use axelar_solana_gateway_v2::{seed_prefixes, VerifierSetHash, ID};
 use solana_rpc_client_api::response::RpcConfirmedTransactionStatusWithSignature;
 use solana_sdk::{
     commitment_config::{CommitmentConfig, CommitmentLevel},
-    compute_budget::ComputeBudgetInstruction,
     pubkey::Pubkey,
     signature::Signature,
-    transaction::Transaction,
 };
 use std::sync::Arc;
 
@@ -60,26 +58,30 @@ pub fn get_tx_batch_command(
     serde_json::to_string(&batch).unwrap_or_else(|_| "[]".to_string())
 }
 
-pub async fn exec_curl_batch(url: &str, body_json: &str) -> anyhow::Result<String> {
-    let output = tokio::process::Command::new("bash")
-        .arg("-lc")
-        .arg(format!(
-            "curl '{}' -s -X POST -H 'Content-Type: application/json' --data-binary \"$BODY\"",
-            url
-        ))
-        .env("BODY", body_json)
-        .output()
-        .await?;
+pub async fn post_request(url: &str, body_json: &str) -> anyhow::Result<String> {
+    let client = reqwest::Client::new();
+    debug!("Executing request: POST {} with body {}", url, body_json);
+    let response = client
+        .post(url)
+        .header("Content-Type", "application/json")
+        .body(body_json.to_string())
+        .send()
+        .await
+        .map_err(|e| anyhow::anyhow!("HTTP request failed: {}", e))?;
 
-    if !output.status.success() {
+    if !response.status().is_success() {
         return Err(anyhow::anyhow!(
-            "Command failed with status: {}",
-            output.status
+            "Request failed with status: {}",
+            response.status()
         ));
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    Ok(stdout)
+    let text = response
+        .text()
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to read response body: {}", e))?;
+
+    Ok(text)
 }
 
 fn get_commitment_str(commitment: CommitmentConfig) -> String {
@@ -289,38 +291,27 @@ pub async fn get_cannot_execute_events_from_execute_data<G: GmpApiTrait>(
         }
         MerkleisedPayload::NewMessages { messages } => {
             for message in messages {
-                cannot_execute_events.push(
-                    gmp_api
-                        .cannot_execute_message(
-                            task_id.clone(),
-                            message.leaf.message.cc_id.id.clone(),
-                            message.leaf.message.cc_id.chain.clone(),
-                            details.clone(),
-                            reason.clone(),
-                        )
-                        .await
-                        .map_err(|e| anyhow!("Failed to create cannot execute event: {}", e))?,
-                );
+                cannot_execute_events.push(gmp_api.cannot_execute_message(
+                    task_id.clone(),
+                    message.leaf.message.cc_id.id.clone(),
+                    message.leaf.message.cc_id.chain.clone(),
+                    details.clone(),
+                    reason.clone(),
+                ));
             }
         }
     }
     Ok(cannot_execute_events)
 }
 
-pub fn calculate_total_cost_lamports(tx: &Transaction, units: u64) -> Result<u64, anyhow::Error> {
+pub fn calculate_total_cost_lamports(
+    tx: &SolanaTransactionType,
+    units: u64,
+) -> Result<u64, anyhow::Error> {
     const LAMPORTS_PER_SIGNATURE: u64 = 5_000;
     const MICRO_PER_LAMPORT: u128 = 1_000_000;
 
-    let mut micro_price: u64 = 0;
-    for ix in &tx.message.instructions {
-        if ix.program_id(&tx.message.account_keys) == &solana_sdk::compute_budget::id() {
-            if let Ok(ComputeBudgetInstruction::SetComputeUnitPrice(p)) =
-                bincode::deserialize(&ix.data)
-            {
-                micro_price = p;
-            }
-        }
-    }
+    let micro_price = tx.get_potential_micro_priority_price();
 
     // to avoid overflows
     #[inline]
@@ -338,7 +329,7 @@ pub fn calculate_total_cost_lamports(tx: &Transaction, units: u64) -> Result<u64
     let priority_u128 = ceil_div_u128(total_micro, MICRO_PER_LAMPORT);
     let priority_lamports: u64 = priority_u128.try_into().unwrap_or(u64::MAX);
 
-    let sigs = tx.message.header.num_required_signatures as u64;
+    let sigs = tx.get_num_required_signatures();
     let base_fee = LAMPORTS_PER_SIGNATURE.saturating_mul(sigs);
 
     Ok(base_fee.saturating_add(priority_lamports))

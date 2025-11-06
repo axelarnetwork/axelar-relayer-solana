@@ -6,6 +6,7 @@ use relayer_core::utils::setup_heartbeat;
 use relayer_core::{database::PostgresDB, gmp_api, payload_cache::PayloadCache, queue::Queue};
 use solana::config::SolanaConfig;
 use solana::includer::SolanaIncluder;
+use solana::redis::RedisConnection;
 use sqlx::PgPool;
 use std::sync::Arc;
 use tokio::signal::unix::{signal, SignalKind};
@@ -33,7 +34,9 @@ async fn main() -> anyhow::Result<()> {
     )
     .await;
     let redis_client = redis::Client::open(config.common_config.redis_server.clone())?;
-    let redis_conn = connection_manager(redis_client.clone(), None, None, None).await?;
+    let redis_conn_manager =
+        connection_manager(redis_client.clone(), None, None, None, None).await?;
+    let redis_conn = RedisConnection::new(redis_conn_manager.clone());
 
     let postgres_db = PostgresDB::new(&config.common_config.postgres_url).await?;
     let payload_cache_for_includer = PayloadCache::new(postgres_db);
@@ -47,6 +50,7 @@ async fn main() -> anyhow::Result<()> {
             relayer_core::models::gmp_tasks::PgGMPTasks,
             relayer_core::models::gmp_events::PgGMPEvents,
         >,
+        RedisConnection,
     >::create_includer(
         config,
         gmp_api,
@@ -62,7 +66,7 @@ async fn main() -> anyhow::Result<()> {
     let token = CancellationToken::new();
     setup_heartbeat(
         "heartbeat:includer".to_owned(),
-        redis_conn,
+        redis_conn_manager,
         Some(token.clone()),
     );
     let sigint_cloned_token = token.clone();

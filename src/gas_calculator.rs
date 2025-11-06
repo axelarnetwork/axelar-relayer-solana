@@ -4,6 +4,7 @@
 
 use crate::error::GasCalculatorError;
 use crate::includer_client::IncluderClientTrait;
+use crate::versioned_transaction::SolanaTransactionType;
 use async_trait::async_trait;
 use solana_sdk::compute_budget::ComputeBudgetInstruction;
 use solana_sdk::hash::Hash;
@@ -55,7 +56,6 @@ impl<IC: IncluderClientTrait> GasCalculatorTrait for GasCalculator<IC> {
 
         let hash = self
             .includer_client
-            .inner()
             .get_latest_blockhash()
             .await
             .map_err(|e| GasCalculatorError::Generic(e.to_string()))?;
@@ -67,7 +67,7 @@ impl<IC: IncluderClientTrait> GasCalculatorTrait for GasCalculator<IC> {
         );
         let computed_units = self
             .includer_client
-            .get_gas_cost_from_simulation(&tx_to_simulate)
+            .get_gas_cost_from_simulation(SolanaTransactionType::Legacy(tx_to_simulate))
             .await
             .map_err(|e| GasCalculatorError::Generic(e.to_string()))?;
 
@@ -76,7 +76,7 @@ impl<IC: IncluderClientTrait> GasCalculatorTrait for GasCalculator<IC> {
             .unwrap_or(0);
         let base_compute_budget = computed_units.saturating_add(base_top_up);
 
-        // Add additional 10% for each retry attempt (gas_exceeded_count)
+        // Add additional 10% for each retry attempt (gas_exceeded_retries)
         // This means: 1st retry = +10%, 2nd retry = +20%, 3rd retry = +30%
         let retry_multiplier = gas_exceeded_count.saturating_mul(10); // 0, 10, 20, 30
         let retry_adjustment = base_compute_budget
@@ -107,7 +107,6 @@ impl<IC: IncluderClientTrait> GasCalculatorTrait for GasCalculator<IC> {
             .collect::<Vec<_>>();
         let fees = self
             .includer_client
-            .inner()
             .get_recent_prioritization_fees(&all_touched_accounts)
             .await
             .map_err(|e| GasCalculatorError::Generic(e.to_string()))?;
