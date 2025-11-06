@@ -13,7 +13,6 @@ WORKDIR /app
 
 # Copy workspace Cargo files first
 COPY Cargo.toml Cargo.lock ./
-COPY Cargo.lock ./
 
 # Create dummy files for each workspace member to cache dependencies
 RUN mkdir -p src/bin && \
