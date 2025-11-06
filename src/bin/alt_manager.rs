@@ -1,4 +1,5 @@
 use dotenv::dotenv;
+use futures::TryFutureExt;
 use relayer_core::config::config_from_yaml;
 use relayer_core::logging::setup_logging;
 use relayer_core::redis::connection_manager;
@@ -70,8 +71,6 @@ async fn manage_alts(
 
     debug!("Found {} ALT(s) in Redis", alt_keys.len());
 
-    let current_timestamp = chrono::Utc::now().timestamp();
-
     let (active_alts, deactivated_alts): (
         Vec<(String, Pubkey, i64, u32, bool)>,
         Vec<(String, Pubkey, i64, u32, bool)>,
@@ -87,7 +86,6 @@ async fn manage_alts(
 
     process_active_alts(
         active_alts,
-        current_timestamp,
         includer_client,
         keypair,
         authority_pubkey,
@@ -97,7 +95,6 @@ async fn manage_alts(
 
     process_deactivated_alts(
         deactivated_alts,
-        current_timestamp,
         includer_client,
         keypair,
         authority_pubkey,
@@ -110,41 +107,33 @@ async fn manage_alts(
 
 async fn process_active_alts(
     active_alts: Vec<(String, Pubkey, i64, u32, bool)>,
-    current_timestamp: i64,
     includer_client: &IncluderClient,
     keypair: &solana_sdk::signer::keypair::Keypair,
     authority_pubkey: Pubkey,
     redis_conn: &RedisConnection,
 ) -> anyhow::Result<()> {
+    let current_timestamp = chrono::Utc::now().timestamp();
+
     for (message_id, alt_pubkey, created_at, retry_count, _) in active_alts {
-        match process_alt(
-            &message_id,
-            alt_pubkey,
-            created_at,
-            current_timestamp,
-            true, // active
-            includer_client,
-            keypair,
-            authority_pubkey,
-            redis_conn,
-        )
-        .await
-        {
-            Ok(should_remove) => {
-                if should_remove {
-                    if let Err(e) = redis_conn.remove_alt_key(message_id.clone()).await {
-                        error!(
-                            "Failed to remove ALT {} from Redis after closure: {}",
-                            alt_pubkey, e
-                        );
-                    } else {
-                        debug!("Removed ALT {} from Redis after closure", alt_pubkey);
-                    }
-                }
-            }
-            Err(e) => {
+        let seconds_since_creation = current_timestamp - created_at;
+        if seconds_since_creation >= ALT_LIFETIME_SECONDS {
+            if let Err(e) = deactivate_alt(alt_pubkey, includer_client, keypair, authority_pubkey)
+                .and_then(|_| {
+                    redis_conn
+                        .set_alt_inactive(message_id.to_string())
+                        .map_err(|e| {
+                            anyhow::anyhow!("Failed to set ALT as inactive in Redis: {}", e)
+                        })
+                })
+                .await
+            {
                 handle_alt_processing_error(message_id, alt_pubkey, retry_count, e, redis_conn)
                     .await?;
+            } else {
+                debug!(
+                    "ALT {} has been deactivated and marked as inactive in Redis",
+                    alt_pubkey
+                );
             }
         }
     }
@@ -153,41 +142,35 @@ async fn process_active_alts(
 
 async fn process_deactivated_alts(
     deactivated_alts: Vec<(String, Pubkey, i64, u32, bool)>,
-    current_timestamp: i64,
     includer_client: &IncluderClient,
     keypair: &solana_sdk::signer::keypair::Keypair,
     authority_pubkey: Pubkey,
     redis_conn: &RedisConnection,
 ) -> anyhow::Result<()> {
-    for (message_id, alt_pubkey, created_at, retry_count, _) in deactivated_alts {
-        match process_alt(
-            &message_id,
-            alt_pubkey,
-            created_at,
-            current_timestamp,
-            false, // inactive
-            includer_client,
-            keypair,
-            authority_pubkey,
-            redis_conn,
-        )
-        .await
-        {
-            Ok(should_remove) => {
-                if should_remove {
-                    if let Err(e) = redis_conn.remove_alt_key(message_id.clone()).await {
-                        error!(
-                            "Failed to remove ALT {} from Redis after closure: {}",
-                            alt_pubkey, e
-                        );
-                    } else {
-                        debug!("Removed ALT {} from Redis after closure", alt_pubkey);
-                    }
-                }
-            }
-            Err(e) => {
+    let current_timestamp = chrono::Utc::now().timestamp();
+
+    for (message_id, alt_pubkey, deactivated_at, retry_count, _) in deactivated_alts {
+        let seconds_since_creation = current_timestamp - deactivated_at;
+        if seconds_since_creation >= ALT_LIFETIME_SECONDS {
+            debug!(
+                "ALT {} is old enough to close (inactive for {} seconds)",
+                alt_pubkey, seconds_since_creation
+            );
+            if let Err(e) = close_alt(
+                &message_id,
+                alt_pubkey,
+                includer_client,
+                keypair,
+                authority_pubkey,
+                redis_conn,
+                0,
+            )
+            .await
+            {
                 handle_alt_processing_error(message_id, alt_pubkey, retry_count, e, redis_conn)
                     .await?;
+            } else {
+                debug!("ALT {} has been closed successfully.", alt_pubkey);
             }
         }
     }
@@ -233,76 +216,6 @@ async fn handle_alt_processing_error(
         );
     }
     Ok(())
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn process_alt(
-    message_id: &str,
-    alt_pubkey: Pubkey,
-    created_at: i64,
-    current_timestamp: i64,
-    active: bool,
-    includer_client: &IncluderClient,
-    keypair: &solana_sdk::signer::keypair::Keypair,
-    authority_pubkey: Pubkey,
-    redis_conn: &RedisConnection,
-) -> anyhow::Result<bool> {
-    let seconds_since_creation = current_timestamp - created_at;
-
-    if active {
-        // ALT is active, check if it's time to deactivate (after 10 minutes)
-        if seconds_since_creation >= ALT_LIFETIME_SECONDS {
-            debug!(
-                "ALT {} is old enough to deactivate (created {} seconds ago)",
-                alt_pubkey, seconds_since_creation
-            );
-            deactivate_alt(alt_pubkey, includer_client, keypair, authority_pubkey).await?;
-
-            // Set active to false in Redis
-            redis_conn.set_alt_inactive(message_id.to_string()).await?;
-
-            debug!(
-                "ALT {} has been deactivated and marked as inactive in Redis",
-                alt_pubkey
-            );
-            Ok(false) // Don't remove from Redis yet
-        } else {
-            debug!(
-                "ALT {} is not old enough to deactivate yet (created {} seconds ago, {} seconds remaining)",
-                alt_pubkey,
-                seconds_since_creation,
-                ALT_LIFETIME_SECONDS - seconds_since_creation
-            );
-            Ok(false) // Leave in Redis
-        }
-    } else {
-        // ALT is inactive (deactivated), check if it's time to close (after ALT_LIFETIME_SECONDS since deactivation)
-        // Note: created_at timestamp is updated to "now" when we set active to false
-        if seconds_since_creation >= ALT_LIFETIME_SECONDS {
-            debug!(
-                "ALT {} is old enough to close (inactive for {} seconds)",
-                alt_pubkey, seconds_since_creation
-            );
-            close_alt(
-                message_id,
-                alt_pubkey,
-                includer_client,
-                keypair,
-                authority_pubkey,
-                redis_conn,
-                0,
-            )
-            .await
-        } else {
-            debug!(
-                "ALT {} is deactivated but not old enough to close yet (inactive for {} seconds, {} seconds remaining)",
-                alt_pubkey,
-                seconds_since_creation,
-                ALT_LIFETIME_SECONDS - seconds_since_creation
-            );
-            Ok(false) // Leave in Redis
-        }
-    }
 }
 
 async fn deactivate_alt(
@@ -351,7 +264,7 @@ async fn close_alt(
     authority_pubkey: Pubkey,
     redis_conn: &RedisConnection,
     close_attempts: u32,
-) -> anyhow::Result<bool> {
+) -> anyhow::Result<()> {
     debug!("Closing ALT: {}", alt_pubkey);
 
     let recipient_pubkey = authority_pubkey; // Close to the authority wallet
@@ -375,7 +288,8 @@ async fn close_alt(
     {
         Ok((signature, _)) => {
             info!("Successfully closed ALT {}: {}", alt_pubkey, signature);
-            Ok(true)
+            redis_conn.remove_alt_key(message_id.to_string()).await?;
+            Ok(())
         }
         Err(e) => {
             // Add a custom retry logic that does not go through redis for this case
@@ -394,10 +308,10 @@ async fn close_alt(
                     );
                 }
 
-                Ok(true) // Return true to indicate removal from Redis
+                Ok(())
             } else {
                 tokio::time::sleep(Duration::from_secs(1)).await;
-                Box::pin(close_alt(
+                close_alt(
                     message_id,
                     alt_pubkey,
                     includer_client,
