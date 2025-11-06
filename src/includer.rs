@@ -844,7 +844,7 @@ impl<
             .map_err(|e| IncluderError::GenericError(e.to_string()))?;
         let compute_units_cost = self
             .client
-            .get_gas_cost_from_simulation(tx.clone())
+            .get_units_consumed_from_simulation(tx.clone())
             .await
             .map_err(|e| IncluderError::GenericError(e.to_string()))?;
         let gas_cost_lamports = calculate_total_cost_lamports(&tx, compute_units_cost)

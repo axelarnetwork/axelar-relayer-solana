@@ -48,7 +48,6 @@ impl<IC: IncluderClientTrait> GasCalculatorTrait for GasCalculator<IC> {
     async fn compute_budget(
         &self,
         ixs: &[Instruction],
-        gas_exceeded_count: u64,
     ) -> Result<(Instruction, Hash), GasCalculatorError> {
         const PERCENT_POINTS_TO_TOP_UP: u64 = 10;
 
