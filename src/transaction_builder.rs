@@ -17,6 +17,10 @@ use anchor_lang::ToAccountMetas;
 use anchor_spl::{associated_token::spl_associated_token_account, token_2022::spl_token_2022};
 use async_trait::async_trait;
 use axelar_solana_gateway_v2::{executable::ExecutablePayload, state::incoming_message::Message};
+use axelar_solana_its_v2::instructions::{
+    execute_deploy_interchain_token_extra_accounts, execute_interchain_transfer_extra_accounts,
+    execute_link_token_extra_accounts,
+};
 use base64::Engine;
 use interchain_token_transfer_gmp::GMPPayload;
 use mpl_token_metadata;
@@ -33,17 +37,14 @@ use std::sync::Arc;
 use tracing::debug;
 
 #[derive(Clone)]
-pub struct TransactionBuilder<
-    GE: GasCalculatorTrait + ThreadSafe,
-    IC: IncluderClientTrait + ThreadSafe,
-> {
+pub struct TransactionBuilder<GE: GasCalculatorTrait, IC: IncluderClientTrait> {
     keypair: Arc<Keypair>,
     gas_calculator: GE,
     includer_client: Arc<IC>,
 }
 
 #[async_trait]
-pub trait TransactionBuilderTrait<IC: IncluderClientTrait + ThreadSafe> {
+pub trait TransactionBuilderTrait<IC: IncluderClientTrait>: ThreadSafe {
     async fn build(
         &self,
         ixs: &[Instruction],
@@ -172,36 +173,6 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
                     .token_id()
                     .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
 
-                let minter = match gmp_decoded_payload {
-                    GMPPayload::DeployInterchainToken(ref deploy) if !deploy.minter.is_empty() => {
-                        Some(Pubkey::try_from(deploy.minter.as_ref()).map_err(|e| {
-                            TransactionBuilderError::GenericError(format!(
-                                "Invalid minter pubkey: {}",
-                                e
-                            ))
-                        })?)
-                    }
-                    _ => None,
-                };
-
-                let destination_address = match gmp_decoded_payload {
-                    GMPPayload::InterchainTransfer(ref transfer)
-                        if !transfer.destination_address.is_empty() =>
-                    {
-                        Some(
-                            Pubkey::try_from(transfer.destination_address.as_ref()).map_err(
-                                |e| {
-                                    TransactionBuilderError::GenericError(format!(
-                                        "Invalid destination address: {}",
-                                        e
-                                    ))
-                                },
-                            )?,
-                        )
-                    }
-                    _ => None,
-                };
-
                 let (signing_pda, _) = get_validate_message_signing_pda(
                     &message.command_id(),
                     &axelar_solana_gateway_v2::ID,
@@ -221,22 +192,8 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
                 let (token_manager_pda, _) = get_token_manager_pda(&its_root_pda, &token_id);
                 let (token_mint, _) = get_token_mint_pda(&its_root_pda, &token_id);
                 let (token_manager_ata, _) = get_token_manager_ata(&token_manager_pda, &token_mint);
-                let (deployer_ata, _) = get_deployer_ata(&self.keypair.pubkey(), &token_mint);
-                let (mpl_token_metadata_account, _) = get_mpl_token_metadata_account(&token_mint);
 
-                let minter_roles_pda =
-                    minter.map(|minter| get_minter_roles_pda(&token_manager_pda, &minter).0);
-
-                let destination_ata = destination_address.map(|destination_address| {
-                    get_destination_ata(&destination_address, &token_mint).0
-                });
-
-                let authority = match gmp_decoded_payload {
-                    GMPPayload::InterchainTransfer(_) => Some(self.keypair.pubkey()),
-                    _ => None,
-                };
-
-                let accounts = axelar_solana_its_v2::accounts::Execute {
+                let mut accounts = axelar_solana_its_v2::accounts::Execute {
                     executable,
                     payer: self.keypair.pubkey(),
                     system_program: solana_program::system_program::id(),
@@ -250,6 +207,67 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
                     program: axelar_solana_its_v2::ID,
                 }
                 .to_account_metas(None);
+
+                match gmp_decoded_payload {
+                    GMPPayload::InterchainTransfer(ref transfer) => {
+                        let destination_address = Pubkey::try_from(
+                            transfer.destination_address.as_ref(),
+                        )
+                        .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+                        let (destination_ata, _) =
+                            get_destination_ata(&destination_address, &token_mint);
+                        accounts.extend(execute_interchain_transfer_extra_accounts(
+                            destination_address,
+                            destination_ata,
+                        ));
+                    }
+
+                    GMPPayload::DeployInterchainToken(ref deploy) => {
+                        let (deployer_ata, _) =
+                            get_deployer_ata(&self.keypair.pubkey(), &token_mint);
+                        let minter = if deploy.minter.is_empty() {
+                            None
+                        } else {
+                            Some(Pubkey::try_from(deploy.minter.as_ref()).map_err(|e| {
+                                TransactionBuilderError::GenericError(format!(
+                                    "Invalid minter pubkey: {}",
+                                    e
+                                ))
+                            })?)
+                        };
+
+                        let minter_roles_pda = minter
+                            .map(|minter| get_minter_roles_pda(&token_manager_pda, &minter).0);
+
+                        let (mpl_token_metadata_account, _) =
+                            get_mpl_token_metadata_account(&token_mint);
+
+                        accounts.extend(execute_deploy_interchain_token_extra_accounts(
+                            deployer_ata,
+                            self.keypair.pubkey(),
+                            solana_program::sysvar::instructions::ID,
+                            mpl_token_metadata::ID,
+                            mpl_token_metadata_account,
+                            minter,
+                            minter_roles_pda,
+                        ));
+                    }
+                    GMPPayload::LinkToken(ref link) => {
+                        let (deployer_ata, _) =
+                            get_deployer_ata(&self.keypair.pubkey(), &token_mint);
+                        let minter = Pubkey::try_from(link.link_params.as_ref()).ok();
+
+                        let minter_roles_pda = minter
+                            .map(|minter| get_minter_roles_pda(&token_manager_pda, &minter).0);
+
+                        accounts.extend(execute_link_token_extra_accounts(
+                            deployer_ata,
+                            minter,
+                            minter_roles_pda,
+                        ))
+                    }
+                    _ => {}
+                }
 
                 let data = axelar_solana_its_v2::instruction::Execute {
                     message: message.clone(),

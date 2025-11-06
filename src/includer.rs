@@ -52,11 +52,12 @@ pub struct SolanaIncluder<
     R: RedisConnectionTrait + Clone,
     RF: RefundsModel + Clone,
     IC: IncluderClientTrait + Clone,
+    TB: TransactionBuilderTrait<IC> + Clone,
 > {
     client: Arc<IC>,
     keypair: Arc<Keypair>,
     chain_name: String,
-    transaction_builder: TransactionBuilder<GasCalculator<IC>, IC>,
+    transaction_builder: TB,
     gmp_api: Arc<G>,
     redis_conn: R,
     refunds_model: Arc<RF>,
@@ -67,14 +68,15 @@ impl<
         R: RedisConnectionTrait + Clone,
         RF: RefundsModel + Clone,
         IC: IncluderClientTrait + Clone,
-    > SolanaIncluder<G, R, RF, IC>
+        TB: TransactionBuilderTrait<IC> + Clone,
+    > SolanaIncluder<G, R, RF, IC, TB>
 {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         client: Arc<IC>,
         keypair: Arc<Keypair>,
         chain_name: String,
-        transaction_builder: TransactionBuilder<GasCalculator<IC>, IC>,
+        transaction_builder: TB,
         gmp_api: Arc<G>,
         redis_conn: R,
         refunds_model: Arc<RF>,
@@ -106,7 +108,13 @@ impl<
             SolanaRefundManager,
             DB,
             GMP,
-            SolanaIncluder<GMP, R, RF, IncluderClient>,
+            SolanaIncluder<
+                GMP,
+                R,
+                RF,
+                IncluderClient,
+                TransactionBuilder<GasCalculator<IncluderClient>, IncluderClient>,
+            >,
         >,
         IncluderError,
     > {
@@ -487,7 +495,8 @@ impl<
         R: RedisConnectionTrait + Clone,
         RF: RefundsModel + Clone,
         IC: IncluderClientTrait + Clone,
-    > IncluderTrait for SolanaIncluder<G, R, RF, IC>
+        TB: TransactionBuilderTrait<IC> + Clone,
+    > IncluderTrait for SolanaIncluder<G, R, RF, IC, TB>
 {
     #[tracing::instrument(skip(self), fields(message_id))]
     async fn handle_gateway_tx_task(
