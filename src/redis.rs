@@ -205,7 +205,7 @@ impl RedisConnectionTrait for RedisConnection {
                 .arg("MATCH")
                 .arg("ALT:*")
                 .arg("COUNT")
-                .arg(100)
+                .arg(1000)
                 .query_async(&mut redis_conn)
                 .await
                 .map_err(|e| {
