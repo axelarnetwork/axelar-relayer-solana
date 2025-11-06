@@ -510,7 +510,7 @@ impl<
             .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
         let execute_data = ExecuteData::try_from_slice(&execute_data_bytes)
-            .map_err(|_| IncluderError::GenericError("cannot decode execute data".to_string()))?;
+            .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
         let (verification_session_tracker_pda, _) =
             get_signature_verification_pda(&execute_data.payload_merkle_root);
