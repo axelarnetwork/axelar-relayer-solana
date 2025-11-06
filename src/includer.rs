@@ -249,7 +249,7 @@ impl<
 
         let gas_cost = self
             .client
-            .get_gas_cost_from_simulation(transaction.clone())
+            .get_units_consumed_from_simulation(transaction.clone())
             .await
             .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
@@ -296,7 +296,7 @@ impl<
 
                 let alt_simulation_res = self
                     .client
-                    .get_gas_cost_from_simulation(alt_tx_build.clone())
+                    .get_units_consumed_from_simulation(alt_tx_build.clone())
                     .await
                     .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
@@ -400,7 +400,6 @@ impl<
                     if gas_exceeded_count > MAX_GAS_EXCEEDED_RETRIES {
                         return Err(IncluderError::GenericError(e));
                     }
-                    // needed because of recursive async functions in rust
                     Box::pin(self.build_execute_transaction_and_send(
                         instruction.clone(),
                         task.clone(),

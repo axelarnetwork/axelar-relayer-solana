@@ -89,14 +89,14 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
     ) -> Result<SolanaTransactionType, TransactionBuilderError> {
         let compute_unit_price_ix = self
             .gas_calculator
-            .compute_unit_price(ixs)
+            .compute_unit_price(ixs, gas_exceeded_count)
             .await
             .map_err(|e| TransactionBuilderError::ClientError(e.to_string()))?;
 
         // Since simulation gets the latest blockhash we can directly use it for the tx construction
         let (compute_budget_ix, hash) = self
             .gas_calculator
-            .compute_budget(ixs, gas_exceeded_count)
+            .compute_budget(ixs)
             .await
             .map_err(|e| TransactionBuilderError::ClientError(e.to_string()))?;
 

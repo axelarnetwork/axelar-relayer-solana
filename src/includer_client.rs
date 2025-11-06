@@ -36,7 +36,7 @@ pub trait IncluderClientTrait: ThreadSafe {
         &self,
         signature: &Signature,
     ) -> Result<Option<Result<(), IncluderClientError>>, IncluderClientError>;
-    async fn get_gas_cost_from_simulation(
+    async fn get_units_consumed_from_simulation(
         &self,
         transaction: SolanaTransactionType,
     ) -> Result<u64, IncluderClientError>;
@@ -190,7 +190,7 @@ impl IncluderClientTrait for IncluderClient {
         }
     }
 
-    async fn get_gas_cost_from_simulation(
+    async fn get_units_consumed_from_simulation(
         &self,
         transaction: SolanaTransactionType,
     ) -> Result<u64, IncluderClientError> {

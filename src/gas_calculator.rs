@@ -14,8 +14,6 @@ use solana_sdk::signer::Signer;
 use solana_sdk::transaction::Transaction;
 use std::sync::Arc;
 
-pub const MAX_COMPUTE_UNIT_LIMIT: u32 = 1_399_850;
-
 #[derive(Clone)]
 pub struct GasCalculator<IC: IncluderClientTrait> {
     includer_client: IC,
@@ -37,11 +35,11 @@ pub trait GasCalculatorTrait {
     async fn compute_budget(
         &self,
         ixs: &[Instruction],
-        gas_exceeded_count: u64,
     ) -> Result<(Instruction, Hash), GasCalculatorError>;
     async fn compute_unit_price(
         &self,
         ixs: &[Instruction],
+        gas_exceeded_count: u64,
     ) -> Result<Instruction, GasCalculatorError>;
 }
 
@@ -67,24 +65,15 @@ impl<IC: IncluderClientTrait> GasCalculatorTrait for GasCalculator<IC> {
         );
         let computed_units = self
             .includer_client
-            .get_gas_cost_from_simulation(SolanaTransactionType::Legacy(tx_to_simulate))
+            .get_units_consumed_from_simulation(SolanaTransactionType::Legacy(tx_to_simulate))
             .await
             .map_err(|e| GasCalculatorError::Generic(e.to_string()))?;
 
-        let base_top_up = computed_units
-            .checked_div(PERCENT_POINTS_TO_TOP_UP)
-            .unwrap_or(0);
-        let base_compute_budget = computed_units.saturating_add(base_top_up);
-
-        // Add additional 10% for each retry attempt (gas_exceeded_retries)
-        // This means: 1st retry = +10%, 2nd retry = +20%, 3rd retry = +30%
-        let retry_multiplier = gas_exceeded_count.saturating_mul(10); // 0, 10, 20, 30
-        let retry_adjustment = base_compute_budget
-            .saturating_mul(retry_multiplier)
+        let safety_margin = computed_units
+            .saturating_mul(PERCENT_POINTS_TO_TOP_UP)
             .saturating_div(100);
+        let compute_budget = computed_units.saturating_add(safety_margin);
 
-        let compute_budget = base_compute_budget.saturating_add(retry_adjustment);
-        let compute_budget = compute_budget.min(u64::from(MAX_COMPUTE_UNIT_LIMIT));
         let ix =
             ComputeBudgetInstruction::set_compute_unit_limit(compute_budget.try_into().map_err(
                 |e: std::num::TryFromIntError| GasCalculatorError::Generic(e.to_string()),
@@ -95,6 +84,7 @@ impl<IC: IncluderClientTrait> GasCalculatorTrait for GasCalculator<IC> {
     async fn compute_unit_price(
         &self,
         ixs: &[Instruction],
+        gas_exceeded_count: u64,
     ) -> Result<Instruction, GasCalculatorError> {
         const MAX_ACCOUNTS: usize = 128;
         const N_SLOTS_TO_CHECK: usize = 10;
@@ -120,10 +110,17 @@ impl<IC: IncluderClientTrait> GasCalculatorTrait for GasCalculator<IC> {
                 (sum.saturating_add(fee), count.saturating_add(1))
             });
         let average = if count > 0 {
-            sum.checked_div(count).unwrap_or(0)
+            sum.saturating_div(count)
         } else {
             0
         };
-        Ok(ComputeBudgetInstruction::set_compute_unit_price(average))
+
+        let retry_multiplier = gas_exceeded_count.saturating_mul(10); // 0, 10, 20, 30
+        let retry_adjustment = average.saturating_mul(retry_multiplier).saturating_div(100);
+        let adjusted_unit_price = average.saturating_add(retry_adjustment);
+
+        Ok(ComputeBudgetInstruction::set_compute_unit_price(
+            adjusted_unit_price,
+        ))
     }
 }
