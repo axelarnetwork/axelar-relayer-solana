@@ -43,6 +43,7 @@ pub struct TransactionBuilder<GE: GasCalculatorTrait, IC: IncluderClientTrait> {
     includer_client: Arc<IC>,
 }
 
+#[cfg_attr(test, mockall::automock)]
 #[async_trait]
 pub trait TransactionBuilderTrait<IC: IncluderClientTrait>: ThreadSafe {
     async fn build(
