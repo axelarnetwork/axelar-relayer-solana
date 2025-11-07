@@ -947,6 +947,7 @@ mod tests {
         }
     }
 
+    #[cfg(test)]
     fn create_test_includer(
         mock_client: MockIncluderClientTrait,
         mock_refunds_model: MockRefundsModel,
@@ -982,92 +983,173 @@ mod tests {
             Arc::new(mock_refunds_model),
         )
     }
-    // #[tokio::test]
-    // async fn test_refund_already_processed_successful_transaction() {
-    //     let mut mock_client = MockIncluderClientTrait::new();
-    //     let mut mock_refunds_model = MockRefundsModel::new();
 
-    //     let refund_id = "test-refund-123".to_string();
-    //     let signature_str = "4BmMcXeedDZ3p3sugJmtHTx2rHScRW6RYYXydjrSHUstDN4ELFVZRmWBqh5ZxPwoQ6WbhqwkUhnbDM341Qc8vHii";
-    //     let signature = Signature::from_str(signature_str).unwrap();
-    //     let updated_at = Utc::now() - chrono::Duration::seconds(30); // 30 seconds ago
+    #[tokio::test]
+    async fn test_refund_already_processed_successful_transaction() {
+        let mut mock_client = MockIncluderClientTrait::new();
+        let mut mock_refunds_model = MockRefundsModel::new();
 
-    //     // Mock refunds_model.find to return the signature and updated_at
-    //     mock_refunds_model
-    //         .expect_find()
-    //         .withf(move |id| id == &refund_id)
-    //         .times(1)
-    //         .returning(move |_| {
-    //             Box::pin(async move { Ok(Some((signature_str.to_string(), updated_at))) })
-    //         });
+        let refund_id = "test-refund-123".to_string();
+        let refund_id_clone = refund_id.clone();
+        let signature_str = "4BmMcXeedDZ3p3sugJmtHTx2rHScRW6RYYXydjrSHUstDN4ELFVZRmWBqh5ZxPwoQ6WbhqwkUhnbDM341Qc8vHii";
+        let signature = Signature::from_str(signature_str).unwrap();
+        let updated_at = Utc::now() - chrono::Duration::seconds(30); // 30 seconds ago
 
-    //     // Mock client.get_signature_status to return Ok(Some(Ok(()))) for successful transaction
-    //     mock_client
-    //         .expect_get_signature_status()
-    //         .withf(move |sig| *sig == signature)
-    //         .times(1)
-    //         .returning(|_| Box::pin(async move { Ok(Some(Ok(()))) }));
+        // Mock refunds_model.find to return the signature and updated_at
+        mock_refunds_model
+            .expect_find()
+            .withf(move |id| *id == refund_id_clone)
+            .times(1)
+            .returning(move |_| {
+                Box::pin(async move { Ok(Some((signature_str.to_string(), updated_at))) })
+            });
 
-    //     let includer = create_test_includer(mock_client, mock_refunds_model);
+        // Mock client.get_signature_status to return Ok(Some(Ok(()))) for successful transaction
+        mock_client
+            .expect_get_signature_status()
+            .withf(move |sig| *sig == signature)
+            .times(1)
+            .returning(|_| Box::pin(async move { Ok(Some(Ok(()))) }));
 
-    //     let result = includer.refund_already_processed(refund_id).await;
+        let includer = create_test_includer(mock_client, mock_refunds_model);
 
-    //     assert!(result.is_ok());
-    //     assert_eq!(result.unwrap(), true);
-    // }
+        let result = includer.refund_already_processed(refund_id).await;
+
+        assert!(result.is_ok());
+        assert!(result.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_refund_not_found() {
+        let mock_client = MockIncluderClientTrait::new();
+        let mut mock_refunds_model = MockRefundsModel::new();
+
+        let refund_id = "test-refund-123".to_string();
+        let refund_id_clone = refund_id.clone();
+
+        // Mock refunds_model.find to return the signature and updated_at
+        mock_refunds_model
+            .expect_find()
+            .withf(move |id| *id == refund_id_clone)
+            .times(1)
+            .returning(move |_| Box::pin(async move { Ok(None) }));
+        let includer = create_test_includer(mock_client, mock_refunds_model);
+
+        let result = includer.refund_already_processed(refund_id).await;
+
+        assert!(result.is_ok());
+        assert!(!result.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_refund_already_processed_failed_transaction() {
+        let mut mock_client = MockIncluderClientTrait::new();
+        let mut mock_refunds_model = MockRefundsModel::new();
+
+        let refund_id = "test-refund-123".to_string();
+        let refund_id_clone = refund_id.clone();
+        let signature_str = "4BmMcXeedDZ3p3sugJmtHTx2rHScRW6RYYXydjrSHUstDN4ELFVZRmWBqh5ZxPwoQ6WbhqwkUhnbDM341Qc8vHii";
+        let signature = Signature::from_str(signature_str).unwrap();
+        let updated_at = Utc::now() - chrono::Duration::seconds(30); // 30 seconds ago
+
+        // Mock refunds_model.find to return the signature and updated_at
+        mock_refunds_model
+            .expect_find()
+            .withf(move |id| *id == refund_id_clone)
+            .times(1)
+            .returning(move |_| {
+                Box::pin(async move { Ok(Some((signature_str.to_string(), updated_at))) })
+            });
+
+        // Mock client.get_signature_status to return Ok(Some(Ok(()))) for successful transaction
+        mock_client
+            .expect_get_signature_status()
+            .withf(move |sig| *sig == signature)
+            .times(1)
+            .returning(|_| {
+                Box::pin(async move {
+                    Ok(Some(Err(IncluderClientError::GenericError(
+                        "Some Error".to_string(),
+                    ))))
+                })
+            });
+
+        let includer = create_test_includer(mock_client, mock_refunds_model);
+
+        let result = includer.refund_already_processed(refund_id).await;
+
+        assert!(result.is_ok());
+        assert!(!result.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_refund_already_processed_client_error() {
+        let mut mock_client = MockIncluderClientTrait::new();
+        let mut mock_refunds_model = MockRefundsModel::new();
+
+        let refund_id = "test-refund-123".to_string();
+        let refund_id_clone = refund_id.clone();
+        let signature_str = "4BmMcXeedDZ3p3sugJmtHTx2rHScRW6RYYXydjrSHUstDN4ELFVZRmWBqh5ZxPwoQ6WbhqwkUhnbDM341Qc8vHii";
+        let signature = Signature::from_str(signature_str).unwrap();
+        let updated_at = Utc::now() - chrono::Duration::seconds(30); // 30 seconds ago
+
+        // Mock refunds_model.find to return the signature and updated_at
+        mock_refunds_model
+            .expect_find()
+            .withf(move |id| *id == refund_id_clone)
+            .times(1)
+            .returning(move |_| {
+                Box::pin(async move { Ok(Some((signature_str.to_string(), updated_at))) })
+            });
+
+        // Mock client.get_signature_status to return Ok(Some(Ok(()))) for successful transaction
+        mock_client
+            .expect_get_signature_status()
+            .withf(move |sig| *sig == signature)
+            .times(1)
+            .returning(|_| {
+                Box::pin(
+                    async move { Err(IncluderClientError::GenericError("Some Error".to_string())) },
+                )
+            });
+
+        let includer = create_test_includer(mock_client, mock_refunds_model);
+
+        let result = includer.refund_already_processed(refund_id).await;
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_refund_already_processed_pending_on_chain() {
+        let mut mock_client = MockIncluderClientTrait::new();
+        let mut mock_refunds_model = MockRefundsModel::new();
+
+        let refund_id = "test-refund-789".to_string();
+        let signature_str = "4BmMcXeedDZ3p3sugJmtHTx2rHScRW6RYYXydjrSHUstDN4ELFVZRmWBqh5ZxPwoQ6WbhqwkUhnbDM341Qc8vHii";
+        let signature = Signature::from_str(signature_str).unwrap();
+        // Make the stored timestamp already expired so the recursion terminates immediately.
+        let updated_at = Utc::now() - chrono::Duration::seconds(SOLANA_EXPIRATION_TIME as i64 + 5);
+
+        mock_refunds_model
+            .expect_find()
+            .withf(|id| id == "test-refund-789")
+            .times(1)
+            .returning(move |_| {
+                Box::pin(async move { Ok(Some((signature_str.to_string(), updated_at))) })
+            });
+
+        mock_client
+            .expect_get_signature_status()
+            .withf(move |sig| *sig == signature)
+            .times(1)
+            .returning(|_| Box::pin(async move { Ok(None) }));
+
+        let includer = create_test_includer(mock_client, mock_refunds_model);
+
+        let result = includer.refund_already_processed(refund_id).await;
+
+        assert!(result.is_ok());
+        assert!(!result.unwrap());
+    }
 }
-//     #[tokio::test]
-//     async fn test_refund_already_processed_not_found_on_chain() {
-//         let mut mock_client = MockIncluderClientTrait::new();
-//         let mut mock_refunds_model = MockRefundsModel::new();
-
-//         let refund_id = "test-refund-456".to_string();
-//         let signature_str = "4BmMcXeedSZ3p3sugJmtHTx2rHScRW6RYYXydjrSHUstDN4ELFVZRmWBqh5ZxPwoQ6WbhqwkUhnbDM341Qc8vHod";
-//         let signature = Signature::from_str(signature_str).unwrap();
-//         let updated_at = Utc::now() - chrono::Duration::seconds(30); // 30 seconds ago
-
-//         // Mock refunds_model.find to return the signature and updated_at
-//         mock_refunds_model
-//             .expect_find()
-//             .withf(move |id| id == &refund_id)
-//             .times(1)
-//             .returning(move |_| {
-//                 Box::pin(async move { Ok(Some((signature_str.to_string(), updated_at))) })
-//             });
-
-//         // Mock client.get_signature_status to return Ok(None) for transaction not found
-//         mock_client
-//             .expect_get_signature_status()
-//             .withf(move |sig| *sig == signature)
-//             .times(1)
-//             .returning(|_| Box::pin(async move { Ok(None) }));
-
-//         let includer = create_test_includer(mock_client, mock_refunds_model);
-
-//         let result = includer.refund_already_processed(refund_id).await;
-
-//         assert!(result.is_ok());
-//         assert_eq!(result.unwrap(), false);
-//     }
-
-//     #[tokio::test]
-//     async fn test_refund_already_processed_not_in_db() {
-//         let mut mock_refunds_model = MockRefundsModel::new();
-//         let refund_id = "test-refund-789".to_string();
-
-//         // Mock refunds_model.find to return None (not in database)
-//         mock_refunds_model
-//             .expect_find()
-//             .withf(move |id| id == &refund_id)
-//             .times(1)
-//             .returning(|_| Box::pin(async move { Ok(None) }));
-
-//         let mock_client = Arc::new(MockIncluderClientTrait::new());
-//         let includer = create_test_includer(mock_client, Arc::new(mock_refunds_model));
-
-//         let result = includer.refund_already_processed(refund_id).await;
-
-//         assert!(result.is_ok());
-//         assert_eq!(result.unwrap(), false);
-//     }
-// }
