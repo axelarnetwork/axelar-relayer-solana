@@ -328,9 +328,7 @@ impl<
             }
         }
 
-        let signature_res = self.client.send_transaction(transaction).await;
-
-        match signature_res {
+        match self.client.send_transaction(transaction).await {
             Ok((signature, gas_cost)) => {
                 info!("Transaction sent successfully: {}", signature.to_string());
 
@@ -726,9 +724,7 @@ impl<
 
         self.build_execute_transaction_and_send(instruction, task, alt_info)
             .await
-            .map_err(|e| IncluderError::GenericError(e.to_string()))?;
-
-        Ok(vec![])
+            .map_err(|e| IncluderError::GenericError(e.to_string()))
     }
 
     #[tracing::instrument(skip(self), fields(refund_id))]
@@ -861,8 +857,10 @@ mod tests {
     use relayer_core::gmp_api::MockGmpApiTrait;
     use solana_sdk::compute_budget::ComputeBudgetInstruction;
     use solana_sdk::pubkey::Pubkey;
+    use solana_transaction_parser::gmp_types::RefundTaskFields;
     use solana_transaction_parser::gmp_types::{
-        CommonTaskFields, GatewayV2Message, RefundTask, RefundTaskFields,
+        Amount, CannotExecuteMessageReason, CommonEventFields, CommonTaskFields, Event,
+        ExecuteTask, ExecuteTaskFields, GatewayV2Message, RefundTask,
     };
     use std::str::FromStr;
     use std::sync::Arc;
@@ -1461,5 +1459,558 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("Cost is higher than remaining balance"));
+    }
+
+    #[tokio::test]
+    async fn test_handle_execute_task_governance_success() {
+        let (
+            mock_gmp_api,
+            keypair,
+            gateway_address,
+            chain_name,
+            mut redis_conn,
+            mock_refunds_model,
+            mut mock_client,
+            mut transaction_builder,
+        ) = get_includer_fields();
+
+        let message_id = "test-execute-governance-123".to_string();
+        let message_id_clone = message_id.clone();
+        let source_chain = "ethereum".to_string();
+        let destination_address = axelar_solana_governance_v2::ID.to_string();
+        let available_gas = 10_000_000_000u64; // 10 billion lamports
+        let payload_hash = "a".repeat(32);
+
+        // Mock incoming_message_already_executed to return false
+        // The PDA is calculated from the message, so we accept any PDA
+        mock_client
+            .expect_incoming_message_already_executed()
+            .times(1)
+            .returning(|_| Box::pin(async move { Ok(false) }));
+
+        // Mock get_alt_pubkey to return None (no ALT exists)
+        redis_conn
+            .expect_get_alt_pubkey()
+            .withf(move |id| *id == message_id_clone)
+            .times(1)
+            .returning(|_| Ok(None));
+
+        // Mock build_execute_instruction to return instruction and None ALT info (governance doesn't use ALTs)
+        let test_instruction =
+            Instruction::new_with_bytes(axelar_solana_governance_v2::ID, &[1, 2, 3, 4], vec![]);
+        let instruction_for_mock = test_instruction.clone();
+        transaction_builder
+            .expect_build_execute_instruction()
+            .times(1)
+            .returning(move |_, _, _, _| {
+                Ok::<
+                    (Instruction, Option<crate::includer::ALTInfo>),
+                    crate::error::TransactionBuilderError,
+                >((
+                    instruction_for_mock.clone(),
+                    None, // No ALT for governance
+                ))
+            });
+
+        // Mock transaction_builder.build
+        let mut test_tx =
+            solana_sdk::transaction::Transaction::new_with_payer(&[], Some(&keypair.pubkey()));
+        test_tx.sign(&[&keypair], solana_sdk::hash::Hash::default());
+        let test_signature = test_tx.signatures[0];
+        let test_tx_for_build = test_tx.clone();
+        transaction_builder
+            .expect_build()
+            .times(1)
+            .returning(move |_, _| {
+                Ok::<
+                    crate::transaction_type::SolanaTransactionType,
+                    crate::error::TransactionBuilderError,
+                >(crate::transaction_type::SolanaTransactionType::Legacy(
+                    test_tx_for_build.clone(),
+                ))
+            });
+
+        let message_id_clone = message_id.clone();
+
+        // Mock get_units_consumed_from_simulation - low compute units so cost < available gas
+        let compute_units = 100_000u64;
+        mock_client
+            .expect_get_units_consumed_from_simulation()
+            .times(1)
+            .returning(move |_| Box::pin(async move { Ok(compute_units) }));
+
+        // Mock send_transaction to succeed
+        mock_client
+            .expect_send_transaction()
+            .times(1)
+            .returning(move |_| Box::pin(async move { Ok((test_signature, Some(5_000u64))) }));
+
+        // Mock write_gas_cost to Redis
+        redis_conn
+            .expect_write_gas_cost()
+            .withf(move |id, cost, tx_type| {
+                *id == message_id_clone
+                    && *cost == 5_000u64
+                    && matches!(tx_type, TransactionType::Execute)
+            })
+            .times(1)
+            .returning(|_, _, _| ());
+
+        let includer = SolanaIncluder::new(
+            Arc::new(mock_client),
+            Arc::new(keypair),
+            gateway_address,
+            chain_name,
+            transaction_builder,
+            Arc::new(mock_gmp_api),
+            redis_conn,
+            Arc::new(mock_refunds_model),
+        );
+
+        let result = includer
+            .handle_execute_task(ExecuteTask {
+                common: CommonTaskFields {
+                    id: "test-execute-task-123".to_string(),
+                    chain: "test-chain".to_string(),
+                    timestamp: Utc::now().to_string(),
+                    r#type: "execute".to_string(),
+                    meta: None,
+                },
+                task: ExecuteTaskFields {
+                    message: GatewayV2Message {
+                        message_id: message_id.clone(),
+                        source_chain: source_chain.clone(),
+                        destination_address: destination_address.clone(),
+                        payload_hash: payload_hash.clone(),
+                        source_address: gateway_address.to_string(),
+                    },
+                    payload: "test-payload".to_string(),
+                    available_gas_balance: Amount {
+                        amount: available_gas.to_string(),
+                        token_id: None,
+                    },
+                },
+            })
+            .await;
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), vec![]);
+    }
+
+    #[tokio::test]
+    async fn test_handle_execute_task_governance_insufficient_gas() {
+        let (
+            mut mock_gmp_api,
+            keypair,
+            gateway_address,
+            chain_name,
+            mut redis_conn,
+            mock_refunds_model,
+            mut mock_client,
+            mut transaction_builder,
+        ) = get_includer_fields();
+
+        let message_id = "test-execute-governance-456".to_string();
+        let message_id_clone = message_id.clone();
+        let source_chain = "ethereum".to_string();
+        let destination_address = axelar_solana_governance_v2::ID.to_string();
+        let available_gas = 1_000u64;
+        let payload_hash = "b".repeat(32);
+
+        mock_client
+            .expect_incoming_message_already_executed()
+            .times(1)
+            .returning(|_| Box::pin(async move { Ok(false) }));
+
+        redis_conn
+            .expect_get_alt_pubkey()
+            .withf(move |id| *id == message_id_clone)
+            .times(1)
+            .returning(|_| Ok(None));
+
+        let test_instruction =
+            Instruction::new_with_bytes(axelar_solana_governance_v2::ID, &[1, 2, 3, 4], vec![]);
+        let instruction_for_mock = test_instruction.clone();
+        transaction_builder
+            .expect_build_execute_instruction()
+            .times(1)
+            .returning(move |_, _, _, _| {
+                Ok::<
+                    (Instruction, Option<crate::includer::ALTInfo>),
+                    crate::error::TransactionBuilderError,
+                >((instruction_for_mock.clone(), None))
+            });
+
+        let mut test_tx =
+            solana_sdk::transaction::Transaction::new_with_payer(&[], Some(&keypair.pubkey()));
+        test_tx.sign(&[&keypair], solana_sdk::hash::Hash::default());
+        let test_tx_for_build = test_tx.clone();
+        transaction_builder
+            .expect_build()
+            .times(1)
+            .returning(move |_, _| {
+                Ok::<
+                    crate::transaction_type::SolanaTransactionType,
+                    crate::error::TransactionBuilderError,
+                >(crate::transaction_type::SolanaTransactionType::Legacy(
+                    test_tx_for_build.clone(),
+                ))
+            });
+
+        let compute_units = 100_000u64;
+        mock_client
+            .expect_get_units_consumed_from_simulation()
+            .times(1)
+            .returning(move |_| Box::pin(async move { Ok(compute_units) }));
+
+        mock_client.expect_send_transaction().times(0);
+        redis_conn.expect_write_gas_cost().times(0);
+
+        let message_id_clone = message_id.clone();
+        let source_chain_clone = source_chain.clone();
+        mock_gmp_api
+            .expect_cannot_execute_message()
+            .withf(move |id, msg_id, src_chain, details, reason| {
+                *id == "test-execute-task-456"
+                    && *msg_id == message_id_clone
+                    && *src_chain == source_chain_clone
+                    && details.contains("Not enough gas")
+                    && matches!(reason, CannotExecuteMessageReason::InsufficientGas)
+            })
+            .times(1)
+            .returning(|_, _, _, _, _| Event::CannotExecuteMessageV2 {
+                common: CommonEventFields {
+                    r#type: "CANNOT_EXECUTE_MESSAGE/V2".to_string(),
+                    event_id: "test-event".to_string(),
+                    meta: None,
+                },
+                message_id: "test".to_string(),
+                source_chain: "test".to_string(),
+                reason: CannotExecuteMessageReason::InsufficientGas,
+                details: "test".to_string(),
+            });
+
+        let includer = SolanaIncluder::new(
+            Arc::new(mock_client),
+            Arc::new(keypair),
+            gateway_address,
+            chain_name,
+            transaction_builder,
+            Arc::new(mock_gmp_api),
+            redis_conn,
+            Arc::new(mock_refunds_model),
+        );
+
+        let result = includer
+            .handle_execute_task(ExecuteTask {
+                common: CommonTaskFields {
+                    id: "test-execute-task-456".to_string(),
+                    chain: "test-chain".to_string(),
+                    timestamp: Utc::now().to_string(),
+                    r#type: "execute".to_string(),
+                    meta: None,
+                },
+                task: ExecuteTaskFields {
+                    message: GatewayV2Message {
+                        message_id: message_id.clone(),
+                        source_chain: source_chain.clone(),
+                        destination_address: destination_address.clone(),
+                        payload_hash: payload_hash.clone(),
+                        source_address: gateway_address.to_string(),
+                    },
+                    payload: "test-payload".to_string(),
+                    available_gas_balance: Amount {
+                        amount: available_gas.to_string(),
+                        token_id: None,
+                    },
+                },
+            })
+            .await;
+
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], Event::CannotExecuteMessageV2 { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_handle_execute_task_executable_success() {
+        let (
+            mock_gmp_api,
+            keypair,
+            gateway_address,
+            chain_name,
+            mut redis_conn,
+            mock_refunds_model,
+            mut mock_client,
+            mut transaction_builder,
+        ) = get_includer_fields();
+
+        let message_id = "test-execute-executable-789".to_string();
+        let source_chain = "polygon".to_string();
+        let destination_address = Pubkey::new_unique().to_string(); // Arbitrary program
+        let available_gas = 10_000_000_000u64;
+        let payload_hash = "c".repeat(32);
+
+        let message_id_clone = message_id.clone();
+
+        // Mock incoming_message_already_executed
+        // The PDA is calculated from the message, so we accept any PDA
+        mock_client
+            .expect_incoming_message_already_executed()
+            .times(1)
+            .returning(|_| Box::pin(async move { Ok(false) }));
+
+        // Mock get_alt_pubkey
+        redis_conn
+            .expect_get_alt_pubkey()
+            .withf(move |id| *id == message_id_clone)
+            .times(1)
+            .returning(|_| Ok(None));
+
+        // Mock build_execute_instruction - executable program, no ALT
+        let executable_program = Pubkey::new_unique();
+        let test_instruction =
+            Instruction::new_with_bytes(executable_program, &[5, 6, 7, 8], vec![]);
+        transaction_builder
+            .expect_build_execute_instruction()
+            .times(1)
+            .returning(move |_, _, _, _| {
+                Ok::<
+                    (Instruction, Option<crate::includer::ALTInfo>),
+                    crate::error::TransactionBuilderError,
+                >((
+                    test_instruction.clone(),
+                    None, // No ALT for executable
+                ))
+            });
+
+        // Mock transaction_builder.build
+        let mut test_tx =
+            solana_sdk::transaction::Transaction::new_with_payer(&[], Some(&keypair.pubkey()));
+        test_tx.sign(&[&keypair], solana_sdk::hash::Hash::default());
+        let test_signature = test_tx.signatures[0];
+        let test_tx_for_build = test_tx.clone();
+        transaction_builder
+            .expect_build()
+            .times(1)
+            .returning(move |_, _| {
+                Ok::<
+                    crate::transaction_type::SolanaTransactionType,
+                    crate::error::TransactionBuilderError,
+                >(crate::transaction_type::SolanaTransactionType::Legacy(
+                    test_tx_for_build.clone(),
+                ))
+            });
+
+        let message_id_clone = message_id.clone();
+
+        // Mock get_units_consumed_from_simulation
+        let compute_units = 100_000u64;
+        mock_client
+            .expect_get_units_consumed_from_simulation()
+            .times(1)
+            .returning(move |_| Box::pin(async move { Ok(compute_units) }));
+
+        // Mock send_transaction
+        mock_client
+            .expect_send_transaction()
+            .times(1)
+            .returning(move |_| Box::pin(async move { Ok((test_signature, Some(5_000u64))) }));
+
+        // Mock write_gas_cost
+        redis_conn
+            .expect_write_gas_cost()
+            .withf(move |id, cost, tx_type| {
+                *id == message_id_clone
+                    && *cost == 5_000u64
+                    && matches!(tx_type, TransactionType::Execute)
+            })
+            .times(1)
+            .returning(|_, _, _| ());
+
+        let includer = SolanaIncluder::new(
+            Arc::new(mock_client),
+            Arc::new(keypair),
+            gateway_address,
+            chain_name,
+            transaction_builder,
+            Arc::new(mock_gmp_api),
+            redis_conn,
+            Arc::new(mock_refunds_model),
+        );
+
+        let result = includer
+            .handle_execute_task(ExecuteTask {
+                common: CommonTaskFields {
+                    id: "test-execute-task-789".to_string(),
+                    chain: "test-chain".to_string(),
+                    timestamp: Utc::now().to_string(),
+                    r#type: "execute".to_string(),
+                    meta: None,
+                },
+                task: ExecuteTaskFields {
+                    message: GatewayV2Message {
+                        message_id: message_id.clone(),
+                        source_chain: source_chain.clone(),
+                        destination_address: destination_address.clone(),
+                        payload_hash: payload_hash.clone(),
+                        source_address: gateway_address.to_string(),
+                    },
+                    payload: "test-payload".to_string(),
+                    available_gas_balance: Amount {
+                        amount: available_gas.to_string(),
+                        token_id: None,
+                    },
+                },
+            })
+            .await;
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), vec![]);
+    }
+
+    #[tokio::test]
+    async fn test_handle_execute_task_executable_insufficient_gas() {
+        let (
+            mut mock_gmp_api,
+            keypair,
+            gateway_address,
+            chain_name,
+            mut redis_conn,
+            mock_refunds_model,
+            mut mock_client,
+            mut transaction_builder,
+        ) = get_includer_fields();
+
+        let message_id = "test-execute-executable-999".to_string();
+        let source_chain = "avalanche".to_string();
+        let destination_address = Pubkey::new_unique().to_string();
+        let available_gas = 1_000u64;
+        let payload_hash = "d".repeat(32);
+
+        // Mock incoming_message_already_executed
+        // The PDA is calculated from the message, so we accept any PDA
+        mock_client
+            .expect_incoming_message_already_executed()
+            .times(1)
+            .returning(|_| Box::pin(async move { Ok(false) }));
+
+        let message_id_clone = message_id.clone();
+
+        // Mock get_alt_pubkey
+        redis_conn
+            .expect_get_alt_pubkey()
+            .withf(move |id| *id == message_id_clone)
+            .times(1)
+            .returning(|_| Ok(None));
+
+        // Mock build_execute_instruction
+        let executable_program = Pubkey::new_unique();
+        let test_instruction =
+            Instruction::new_with_bytes(executable_program, &[9, 10, 11, 12], vec![]);
+        let instruction_for_mock = test_instruction.clone();
+        transaction_builder
+            .expect_build_execute_instruction()
+            .times(1)
+            .returning(move |_, _, _, _| {
+                Ok::<
+                    (Instruction, Option<crate::includer::ALTInfo>),
+                    crate::error::TransactionBuilderError,
+                >((instruction_for_mock.clone(), None))
+            });
+
+        let mut test_tx =
+            solana_sdk::transaction::Transaction::new_with_payer(&[], Some(&keypair.pubkey()));
+        test_tx.sign(&[&keypair], solana_sdk::hash::Hash::default());
+        let test_tx_for_build = test_tx.clone();
+        transaction_builder
+            .expect_build()
+            .times(1)
+            .returning(move |_, _| {
+                Ok::<
+                    crate::transaction_type::SolanaTransactionType,
+                    crate::error::TransactionBuilderError,
+                >(crate::transaction_type::SolanaTransactionType::Legacy(
+                    test_tx_for_build.clone(),
+                ))
+            });
+
+        let compute_units = 100_000u64;
+        mock_client
+            .expect_get_units_consumed_from_simulation()
+            .times(1)
+            .returning(move |_| Box::pin(async move { Ok(compute_units) }));
+
+        // Should not reach send_transaction
+        mock_client.expect_send_transaction().times(0);
+        redis_conn.expect_write_gas_cost().times(0);
+        let message_id_clone = message_id.clone();
+        let source_chain_clone = source_chain.clone();
+
+        // Mock cannot_execute_message
+        mock_gmp_api
+            .expect_cannot_execute_message()
+            .withf(move |id, msg_id, src_chain, details, reason| {
+                *id == "test-execute-task-999"
+                    && *msg_id == message_id_clone
+                    && *src_chain == source_chain_clone
+                    && details.contains("Not enough gas")
+                    && matches!(reason, CannotExecuteMessageReason::InsufficientGas)
+            })
+            .times(1)
+            .returning(|_, _, _, _, _| Event::CannotExecuteMessageV2 {
+                common: CommonEventFields {
+                    r#type: "CANNOT_EXECUTE_MESSAGE/V2".to_string(),
+                    event_id: "test-event".to_string(),
+                    meta: None,
+                },
+                message_id: "test".to_string(),
+                source_chain: "test".to_string(),
+                reason: CannotExecuteMessageReason::InsufficientGas,
+                details: "test".to_string(),
+            });
+
+        let includer = SolanaIncluder::new(
+            Arc::new(mock_client),
+            Arc::new(keypair),
+            gateway_address,
+            chain_name,
+            transaction_builder,
+            Arc::new(mock_gmp_api),
+            redis_conn,
+            Arc::new(mock_refunds_model),
+        );
+
+        let result = includer
+            .handle_execute_task(ExecuteTask {
+                common: CommonTaskFields {
+                    id: "test-execute-task-999".to_string(),
+                    chain: "test-chain".to_string(),
+                    timestamp: Utc::now().to_string(),
+                    r#type: "execute".to_string(),
+                    meta: None,
+                },
+                task: ExecuteTaskFields {
+                    message: GatewayV2Message {
+                        message_id: message_id.clone(),
+                        source_chain: source_chain.clone(),
+                        destination_address: destination_address.clone(),
+                        payload_hash: payload_hash.clone(),
+                        source_address: gateway_address.to_string(),
+                    },
+                    payload: "test-payload".to_string(),
+                    available_gas_balance: Amount {
+                        amount: available_gas.to_string(),
+                        token_id: None,
+                    },
+                },
+            })
+            .await;
+
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], Event::CannotExecuteMessageV2 { .. }));
     }
 }
