@@ -14,7 +14,7 @@ use tracing::warn;
 use crate::{error::IncluderClientError, transaction_type::SolanaTransactionType};
 
 #[async_trait]
-#[cfg_attr(any(test), mockall::automock)]
+#[cfg_attr(test, mockall::automock)]
 pub trait IncluderClientTrait: ThreadSafe {
     fn inner(&self) -> &RpcClient;
     async fn get_latest_blockhash(&self) -> Result<Hash, IncluderClientError>;

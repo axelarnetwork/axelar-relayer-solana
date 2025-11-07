@@ -64,6 +64,7 @@ axelar-solana-operators = { git = "https://github.com/axelarnetwork/axelar-ampli
 bytemuck = "1.24.0"
 bincode = "1"
 reqwest = "0.12.24"
+mockall = "0.13.1"
 
 
 [dev-dependencies]
