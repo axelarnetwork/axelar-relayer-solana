@@ -44,8 +44,6 @@ pub enum GatewayTxError {
 
 #[derive(Error, Debug)]
 pub enum IncluderClientError {
-    #[error("GasExceededError: {0}")]
-    GasExceededError(String),
     #[error("MaxRetriesExceededError: {0}")]
     MaxRetriesExceededError(String),
     #[error("TransactionError: {0}")]

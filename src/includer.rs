@@ -43,7 +43,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, error, info, warn};
 
-pub const MAX_GAS_EXCEEDED_RETRIES: u64 = 3;
 const SOLANA_EXPIRATION_TIME: u64 = 90;
 
 #[derive(Clone)]
@@ -166,11 +165,10 @@ impl<
         ix: Instruction,
         message_id: Option<String>,
         source_chain: Option<String>,
-        gas_exceeded_count: u64,
     ) -> SendToChainResult {
         let tx = match self
             .transaction_builder
-            .build(std::slice::from_ref(&ix), gas_exceeded_count, None)
+            .build(std::slice::from_ref(&ix), None)
             .await
         {
             Ok(tx) => tx,
@@ -199,32 +197,12 @@ impl<
                     gas_cost,
                 }
             }
-            Err(e) => match e {
-                IncluderClientError::GasExceededError(e) => {
-                    if gas_exceeded_count > MAX_GAS_EXCEEDED_RETRIES {
-                        return SendToChainResult {
-                            gas_cost: None,
-                            tx_hash: None,
-                            status: Err(IncluderError::RPCError(e)),
-                            message_id,
-                            source_chain,
-                        };
-                    }
-                    Box::pin(self.send_gateway_tx_to_chain(
-                        ix,
-                        message_id,
-                        source_chain,
-                        gas_exceeded_count + 1,
-                    ))
-                    .await
-                }
-                _ => SendToChainResult {
-                    gas_cost: None,
-                    tx_hash: None,
-                    status: Err(IncluderError::RPCError(e.to_string())),
-                    message_id,
-                    source_chain,
-                },
+            Err(e) => SendToChainResult {
+                gas_cost: None,
+                tx_hash: None,
+                status: Err(IncluderError::RPCError(e.to_string())),
+                message_id,
+                source_chain,
             },
         }
     }
@@ -233,17 +211,12 @@ impl<
         &self,
         instruction: Instruction,
         task: ExecuteTask,
-        gas_exceeded_count: u64,
         alt_info: Option<ALTInfo>,
     ) -> Result<Vec<Event>, IncluderError> {
         let alt_pubkey = alt_info.as_ref().and_then(|a| a.alt_pubkey);
         let transaction = self
             .transaction_builder
-            .build(
-                std::slice::from_ref(&instruction),
-                gas_exceeded_count,
-                alt_info.clone(),
-            )
+            .build(std::slice::from_ref(&instruction), alt_info.clone())
             .await
             .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
@@ -284,11 +257,7 @@ impl<
                 // ALT doesn't exist, create it
                 let alt_tx_build = self
                     .transaction_builder
-                    .build(
-                        &[alt_ix_create.clone(), alt_ix_extend.clone()],
-                        gas_exceeded_count,
-                        None,
-                    )
+                    .build(&[alt_ix_create.clone(), alt_ix_extend.clone()], None)
                     .await
                     .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
@@ -336,44 +305,26 @@ impl<
         let mut alt_actual_gas_cost = 0;
 
         if let Some(alt_tx) = alt_tx {
-            let alt_signature_res = self.client.send_transaction(alt_tx).await;
-            match alt_signature_res {
-                Ok((signature, alt_cost)) => {
-                    alt_actual_gas_cost = alt_cost.unwrap_or(0);
-                    debug!(
-                        "ALT transaction sent successfully: {}",
-                        signature.to_string()
-                    );
-                    // Write ALT pubkey to Redis upon successful ALT transaction
-                    // Use alt_pubkey extracted earlier (line 233) - we only write if we created a new ALT
-                    if let Some(alt_pubkey) = alt_pubkey {
-                        if let Err(e) = self
-                            .redis_conn
-                            .write_alt_pubkey(task.task.message.message_id.clone(), alt_pubkey)
-                            .await
-                        {
-                            error!("Failed to write ALT pubkey to Redis: {}", e);
-                        }
-                    }
+            let (signature, alt_cost) = self
+                .client
+                .send_transaction(alt_tx)
+                .await
+                .map_err(|e| IncluderError::GenericError(e.to_string()))?;
+            alt_actual_gas_cost = alt_cost.unwrap_or(0);
+            debug!(
+                "ALT transaction sent successfully: {}",
+                signature.to_string()
+            );
+            // Write ALT pubkey to Redis upon successful ALT transaction
+            // Use alt_pubkey extracted earlier (line 233) - we only write if we created a new ALT
+            if let Some(alt_pubkey) = alt_pubkey {
+                if let Err(e) = self
+                    .redis_conn
+                    .write_alt_pubkey(task.task.message.message_id.clone(), alt_pubkey)
+                    .await
+                {
+                    error!("Failed to write ALT pubkey to Redis: {}", e);
                 }
-                Err(e) => match e {
-                    IncluderClientError::GasExceededError(e) => {
-                        warn!("Gas exceeded in ALT transaction: {}", e);
-                        if gas_exceeded_count > MAX_GAS_EXCEEDED_RETRIES {
-                            return Err(IncluderError::GenericError(e));
-                        }
-                        // needed because of recursive async functions in rust
-                        return Box::pin(self.build_execute_transaction_and_send(
-                            instruction.clone(),
-                            task.clone(),
-                            gas_exceeded_count + 1,
-                            alt_info,
-                        ))
-                        .await
-                        .map_err(|e| IncluderError::GenericError(e.to_string()));
-                    }
-                    _ => return Err(IncluderError::GenericError(e.to_string())),
-                },
             }
         }
 
@@ -395,20 +346,6 @@ impl<
                 Ok(vec![])
             }
             Err(e) => match e {
-                IncluderClientError::GasExceededError(e) => {
-                    warn!("Gas exceeded in execute transaction: {}", e);
-                    if gas_exceeded_count > MAX_GAS_EXCEEDED_RETRIES {
-                        return Err(IncluderError::GenericError(e));
-                    }
-                    Box::pin(self.build_execute_transaction_and_send(
-                        instruction.clone(),
-                        task.clone(),
-                        gas_exceeded_count + 1,
-                        alt_info,
-                    ))
-                    .await
-                    .map_err(|e| IncluderError::GenericError(e.to_string()))
-                }
                 IncluderClientError::TransactionError(e) => {
                     warn!("Transaction reverted: {}", e);
                     // Include ALT cost if ALT transaction was sent successfully
@@ -541,7 +478,7 @@ impl<
             data: ix_data,
         };
 
-        let send_to_chain_res = self.send_gateway_tx_to_chain(ix, None, None, 0).await;
+        let send_to_chain_res = self.send_gateway_tx_to_chain(ix, None, None).await;
         if let Err(e) = send_to_chain_res.status {
             return get_cannot_execute_events_from_execute_data(
                 &execute_data,
@@ -583,7 +520,7 @@ impl<
                     data: ix_data,
                 };
 
-                self.send_gateway_tx_to_chain(ix, None, None, 0)
+                self.send_gateway_tx_to_chain(ix, None, None)
             })
             .collect::<FuturesUnordered<_>>();
         while let Some(result) = verifier_ver_future_set.next().await {
@@ -634,7 +571,7 @@ impl<
                     accounts: accounts.to_account_metas(None),
                     data: ix_data,
                 };
-                let tx_res = self.send_gateway_tx_to_chain(ix, None, None, 0).await;
+                let tx_res = self.send_gateway_tx_to_chain(ix, None, None).await;
                 match tx_res.status {
                     Ok(_) => {
                         debug!(
@@ -681,7 +618,7 @@ impl<
                             accounts: accounts.to_account_metas(None),
                             data: ix_data,
                         };
-                        self.send_gateway_tx_to_chain(ix, Some(msg_id), Some(chain), 0)
+                        self.send_gateway_tx_to_chain(ix, Some(msg_id), Some(chain))
                     })
                     .collect::<FuturesUnordered<_>>();
 
@@ -787,12 +724,14 @@ impl<
             .await
             .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
-        self.build_execute_transaction_and_send(instruction, task, 0, alt_info)
+        self.build_execute_transaction_and_send(instruction, task, alt_info)
             .await
-            .map_err(|e| IncluderError::GenericError(e.to_string()))
+            .map_err(|e| IncluderError::GenericError(e.to_string()))?;
+
+        Ok(vec![])
     }
 
-    #[tracing::instrument(skip(self))]
+    #[tracing::instrument(skip(self), fields(refund_id))]
     async fn handle_refund_task(&self, task: RefundTask) -> Result<(), IncluderError> {
         let refund_id = task.common.id.clone();
         if self.refund_already_processed(refund_id.clone()).await? {
@@ -837,7 +776,7 @@ impl<
 
         let tx = self
             .transaction_builder
-            .build(&[ix], 0, None)
+            .build(&[ix], None)
             .await
             .map_err(|e| IncluderError::GenericError(e.to_string()))?;
         let compute_units_cost = self
@@ -1017,7 +956,6 @@ mod tests {
                 Box::pin(async move { Ok(Some((signature_str.to_string(), updated_at))) })
             });
 
-        // Mock client.get_signature_status to return Ok(Some(Ok(()))) for successful transaction
         mock_client
             .expect_get_signature_status()
             .withf(move |sig| *sig == signature)
@@ -1059,7 +997,6 @@ mod tests {
         let refund_id = "test-refund-123".to_string();
         let refund_id_clone = refund_id.clone();
 
-        // Mock refunds_model.find to return the signature and updated_at
         mock_refunds_model
             .expect_find()
             .withf(move |id| *id == refund_id_clone)
@@ -1101,7 +1038,6 @@ mod tests {
         let signature = Signature::from_str(signature_str).unwrap();
         let updated_at = Utc::now() - chrono::Duration::seconds(30); // 30 seconds ago
 
-        // Mock refunds_model.find to return the signature and updated_at
         mock_refunds_model
             .expect_find()
             .withf(move |id| *id == refund_id_clone)
@@ -1110,7 +1046,6 @@ mod tests {
                 Box::pin(async move { Ok(Some((signature_str.to_string(), updated_at))) })
             });
 
-        // Mock client.get_signature_status to return Ok(Some(Ok(()))) for successful transaction
         mock_client
             .expect_get_signature_status()
             .withf(move |sig| *sig == signature)
@@ -1168,7 +1103,6 @@ mod tests {
                 Box::pin(async move { Ok(Some((signature_str.to_string(), updated_at))) })
             });
 
-        // Mock client.get_signature_status to return Ok(Some(Ok(()))) for successful transaction
         mock_client
             .expect_get_signature_status()
             .withf(move |sig| *sig == signature)
@@ -1351,7 +1285,7 @@ mod tests {
         transaction_builder
             .expect_build()
             .times(1)
-            .returning(move |_, _, _| {
+            .returning(move |_, _| {
                 Ok::<
                     crate::transaction_type::SolanaTransactionType,
                     crate::error::TransactionBuilderError,
@@ -1375,7 +1309,6 @@ mod tests {
             .times(1)
             .returning(|_, _| Box::pin(async move { Ok(()) }));
 
-        // Mock client.send_transaction to return success
         mock_client
             .expect_send_transaction()
             .times(1)
@@ -1449,13 +1382,13 @@ mod tests {
         mock_refunds_model.expect_upsert().times(0);
 
         // Mock transaction_builder.build to return a transaction with a high compute unit price
-        let high_micro_price = 2_000_000_000_000u64; // Very high price to make cost exceed refund
+        let high_micro_price = 2_000_000_000_000u64;
         let keypair_bytes = keypair.to_bytes();
         let keypair_for_mock = Keypair::try_from(&keypair_bytes[..]).unwrap();
         transaction_builder
             .expect_build()
             .times(1)
-            .returning(move |ixs, _, _| {
+            .returning(move |ixs, _| {
                 // Build a transaction that includes both the refund instruction AND compute budget
                 let mut all_ixs = vec![ComputeBudgetInstruction::set_compute_unit_price(
                     high_micro_price,
@@ -1477,11 +1410,6 @@ mod tests {
             });
 
         // This will result in gas_cost_lamports > refund_amount
-        // With micro_price=2_000_000_000_000 and compute_units=5_000_000:
-        // cost = base_fee + (micro_price * units / 1_000_000)
-        //      = 5_000 + (2_000_000_000_000 * 5_000_000 / 1_000_000)
-        //      = 5_000 + 10_000_000_000_000 = 10_000_000_005_000 lamports
-        // This far exceeds refund_amount of 1_000_000 lamports
         let compute_units = 5_000_000u64;
         mock_client
             .expect_get_units_consumed_from_simulation()

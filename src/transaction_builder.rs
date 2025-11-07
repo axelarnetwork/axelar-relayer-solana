@@ -49,7 +49,6 @@ pub trait TransactionBuilderTrait<IC: IncluderClientTrait>: ThreadSafe {
     async fn build(
         &self,
         ixs: &[Instruction],
-        gas_exceeded_count: u64, // how many times the gas exceeded the limit in previous attempts
         alt_info: Option<ALTInfo>,
     ) -> Result<SolanaTransactionType, TransactionBuilderError>;
 
@@ -87,12 +86,11 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
     async fn build(
         &self,
         ixs: &[Instruction],
-        gas_exceeded_count: u64,
         alt_info: Option<ALTInfo>,
     ) -> Result<SolanaTransactionType, TransactionBuilderError> {
         let compute_unit_price_ix = self
             .gas_calculator
-            .compute_unit_price(ixs, gas_exceeded_count)
+            .compute_unit_price(ixs)
             .await
             .map_err(|e| TransactionBuilderError::ClientError(e.to_string()))?;
 

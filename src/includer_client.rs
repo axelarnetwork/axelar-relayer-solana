@@ -129,9 +129,6 @@ impl IncluderClientTrait for IncluderClient {
                     return Ok((signature, cost));
                 }
                 Err(e) => {
-                    if e.to_string().contains("Computational budget exceeded") {
-                        return Err(IncluderClientError::GasExceededError(e.to_string()));
-                    }
                     if e.get_transaction_error().is_some() {
                         return Err(IncluderClientError::TransactionError(e.to_string()));
                     }

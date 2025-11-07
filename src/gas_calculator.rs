@@ -6,6 +6,7 @@ use crate::error::GasCalculatorError;
 use crate::includer_client::IncluderClientTrait;
 use crate::transaction_type::SolanaTransactionType;
 use async_trait::async_trait;
+use relayer_core::utils::ThreadSafe;
 use solana_sdk::compute_budget::ComputeBudgetInstruction;
 use solana_sdk::hash::Hash;
 use solana_sdk::instruction::Instruction;
@@ -31,7 +32,7 @@ impl<IC: IncluderClientTrait> GasCalculator<IC> {
 
 #[cfg_attr(test, mockall::automock)]
 #[async_trait]
-pub trait GasCalculatorTrait {
+pub trait GasCalculatorTrait: ThreadSafe {
     async fn compute_budget(
         &self,
         ixs: &[Instruction],
@@ -39,7 +40,6 @@ pub trait GasCalculatorTrait {
     async fn compute_unit_price(
         &self,
         ixs: &[Instruction],
-        gas_exceeded_count: u64,
     ) -> Result<Instruction, GasCalculatorError>;
 }
 
@@ -83,7 +83,6 @@ impl<IC: IncluderClientTrait> GasCalculatorTrait for GasCalculator<IC> {
     async fn compute_unit_price(
         &self,
         ixs: &[Instruction],
-        gas_exceeded_count: u64,
     ) -> Result<Instruction, GasCalculatorError> {
         const MAX_ACCOUNTS: usize = 128;
         const N_SLOTS_TO_CHECK: usize = 10;
@@ -114,12 +113,6 @@ impl<IC: IncluderClientTrait> GasCalculatorTrait for GasCalculator<IC> {
             0
         };
 
-        let retry_multiplier = gas_exceeded_count.saturating_mul(10); // 0, 10, 20, 30
-        let retry_adjustment = average.saturating_mul(retry_multiplier).saturating_div(100);
-        let adjusted_unit_price = average.saturating_add(retry_adjustment);
-
-        Ok(ComputeBudgetInstruction::set_compute_unit_price(
-            adjusted_unit_price,
-        ))
+        Ok(ComputeBudgetInstruction::set_compute_unit_price(average))
     }
 }
