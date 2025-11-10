@@ -15,8 +15,6 @@ use crate::utils::{
 };
 use anchor_lang::{InstructionData, ToAccountMetas};
 use async_trait::async_trait;
-use axelar_solana_gas_service_v2;
-use axelar_solana_gateway_v2::{state::incoming_message::Message, CrossChainId};
 use base64::Engine as _;
 use borsh::BorshDeserialize;
 use chrono::Utc;
@@ -29,6 +27,8 @@ use relayer_core::{
     database::Database, gmp_api::GmpApiTrait, includer::Includer, includer_worker::IncluderWorker,
     payload_cache::PayloadCache, queue::Queue,
 };
+use solana_axelar_gas_service;
+use solana_axelar_gateway::{state::incoming_message::Message, CrossChainId};
 use solana_sdk::instruction::Instruction;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Signature;
@@ -432,7 +432,7 @@ impl<
             &execute_data.signing_verifier_set_merkle_root,
         );
 
-        let ix_data = axelar_solana_gateway_v2::instruction::InitializePayloadVerificationSession {
+        let ix_data = solana_axelar_gateway::instruction::InitializePayloadVerificationSession {
             merkle_root: execute_data.payload_merkle_root,
         }
         .data();
@@ -442,7 +442,7 @@ impl<
 
         let (gateway_root_pda, _) = get_gateway_root_config_internal();
 
-        let accounts = axelar_solana_gateway_v2::accounts::InitializePayloadVerificationSession {
+        let accounts = solana_axelar_gateway::accounts::InitializePayloadVerificationSession {
             payer: self.keypair.pubkey(),
             gateway_root_pda,
             verification_session_account: verification_session_tracker_pda,
@@ -451,7 +451,7 @@ impl<
         };
 
         let ix = Instruction {
-            program_id: axelar_solana_gateway_v2::ID,
+            program_id: solana_axelar_gateway::ID,
             accounts: accounts.to_account_metas(None),
             data: ix_data,
         };
@@ -481,19 +481,19 @@ impl<
         let mut verifier_ver_future_set = signing_verifier_set_leaves
             .into_iter()
             .map(|verifier_info| {
-                let ix_data = axelar_solana_gateway_v2::instruction::VerifySignature {
+                let ix_data = solana_axelar_gateway::instruction::VerifySignature {
                     payload_merkle_root: execute_data.payload_merkle_root,
                     verifier_info,
                 }
                 .data();
 
-                let accounts = axelar_solana_gateway_v2::accounts::VerifySignature {
+                let accounts = solana_axelar_gateway::accounts::VerifySignature {
                     gateway_root_pda,
                     verification_session_account: verification_session_tracker_pda,
                     verifier_set_tracker_pda,
                 };
                 let ix = Instruction {
-                    program_id: axelar_solana_gateway_v2::ID,
+                    program_id: solana_axelar_gateway::ID,
                     accounts: accounts.to_account_metas(None),
                     data: ix_data,
                 };
@@ -529,13 +529,13 @@ impl<
             } => {
                 let (new_verifier_set_tracker_pda, _) =
                     get_verifier_set_tracker_pda(&execute_data.signing_verifier_set_merkle_root);
-                let ix_data = axelar_solana_gateway_v2::instruction::RotateSigners {
+                let ix_data = solana_axelar_gateway::instruction::RotateSigners {
                     new_verifier_set_merkle_root,
                 }
                 .data();
-                let accounts = axelar_solana_gateway_v2::accounts::RotateSigners {
+                let accounts = solana_axelar_gateway::accounts::RotateSigners {
                     payer: self.keypair.pubkey(),
-                    program: axelar_solana_gateway_v2::ID,
+                    program: solana_axelar_gateway::ID,
                     system_program: solana_program::system_program::id(),
                     gateway_root_pda,
                     verifier_set_tracker_pda,
@@ -545,7 +545,7 @@ impl<
                     event_authority,
                 };
                 let ix = Instruction {
-                    program_id: axelar_solana_gateway_v2::ID,
+                    program_id: solana_axelar_gateway::ID,
                     accounts: accounts.to_account_metas(None),
                     data: ix_data,
                 };
@@ -577,22 +577,22 @@ impl<
                         let msg_id = merklized_message.leaf.message.cc_id.id.clone();
                         let chain = merklized_message.leaf.message.cc_id.chain.clone();
 
-                        let ix_data = axelar_solana_gateway_v2::instruction::ApproveMessage {
+                        let ix_data = solana_axelar_gateway::instruction::ApproveMessage {
                             merklized_message,
                             payload_merkle_root: execute_data.payload_merkle_root,
                         }
                         .data();
-                        let accounts = axelar_solana_gateway_v2::accounts::ApproveMessage {
+                        let accounts = solana_axelar_gateway::accounts::ApproveMessage {
                             funder: self.keypair.pubkey(),
                             incoming_message_pda: pda,
-                            program: axelar_solana_gateway_v2::ID,
+                            program: solana_axelar_gateway::ID,
                             system_program: solana_program::system_program::id(),
                             gateway_root_pda,
                             verification_session_account: verification_session_tracker_pda,
                             event_authority,
                         };
                         let ix = Instruction {
-                            program_id: axelar_solana_gateway_v2::ID,
+                            program_id: solana_axelar_gateway::ID,
                             accounts: accounts.to_account_metas(None),
                             data: ix_data,
                         };
@@ -728,24 +728,24 @@ impl<
             .parse::<u64>()
             .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
-        let accounts = axelar_solana_gas_service_v2::accounts::RefundFees {
+        let accounts = solana_axelar_gas_service::accounts::RefundFees {
             operator: self.keypair.pubkey(),
             operator_pda,
             receiver,
             treasury,
             event_authority,
-            program: axelar_solana_gas_service_v2::ID,
+            program: solana_axelar_gas_service::ID,
         }
         .to_account_metas(None);
 
-        let data = axelar_solana_gas_service_v2::instruction::RefundFees {
+        let data = solana_axelar_gas_service::instruction::RefundFees {
             message_id: task.task.message.message_id.clone(),
             amount: refund_amount,
         }
         .data();
 
         let ix = Instruction {
-            program_id: axelar_solana_gas_service_v2::ID,
+            program_id: solana_axelar_gas_service::ID,
             accounts,
             data,
         };
@@ -835,11 +835,11 @@ mod tests {
     use crate::redis::MockRedisConnectionTrait;
     use crate::transaction_builder::MockTransactionBuilderTrait;
     use crate::transaction_type::SolanaTransactionType;
-    use axelar_solana_gateway_v2::{
-        MerkleisedMessage, MessageLeaf, PublicKey, SigningVerifierSetInfo, VerifierSetLeaf,
-    };
     use borsh::BorshSerialize;
     use relayer_core::gmp_api::MockGmpApiTrait;
+    use solana_axelar_gateway::{
+        MerklizedMessage, MessageLeaf, PublicKey, SigningVerifierSetInfo, VerifierSetLeaf,
+    };
     use solana_sdk::address_lookup_table::AddressLookupTableAccount;
     use solana_sdk::compute_budget::ComputeBudgetInstruction;
     use solana_sdk::hash::Hash;
@@ -1468,7 +1468,7 @@ mod tests {
         let message_id = "test-execute-governance-123".to_string();
         let message_id_clone = message_id.clone();
         let source_chain = "ethereum".to_string();
-        let destination_address = axelar_solana_governance_v2::ID.to_string();
+        let destination_address = solana_axelar_governance::ID.to_string();
         let available_gas = 5000u64; // enough lamports to cover a 0 prio fee + 1 signature cost
         let payload_hash = "a".repeat(32);
 
@@ -1484,7 +1484,7 @@ mod tests {
             .returning(|_| Ok(None));
 
         let test_instruction =
-            Instruction::new_with_bytes(axelar_solana_governance_v2::ID, &[1, 2, 3, 4], vec![]);
+            Instruction::new_with_bytes(solana_axelar_governance::ID, &[1, 2, 3, 4], vec![]);
         let instruction_for_mock = test_instruction.clone();
         transaction_builder
             .expect_build_execute_instruction()
@@ -1591,7 +1591,7 @@ mod tests {
         let message_id = "test-execute-governance-456".to_string();
         let message_id_clone = message_id.clone();
         let source_chain = "ethereum".to_string();
-        let destination_address = axelar_solana_governance_v2::ID.to_string();
+        let destination_address = solana_axelar_governance::ID.to_string();
         let available_gas = 1_000u64;
         let payload_hash = "b".repeat(32);
 
@@ -1607,7 +1607,7 @@ mod tests {
             .returning(|_| Ok(None));
 
         let test_instruction =
-            Instruction::new_with_bytes(axelar_solana_governance_v2::ID, &[1, 2, 3, 4], vec![]);
+            Instruction::new_with_bytes(solana_axelar_governance::ID, &[1, 2, 3, 4], vec![]);
         let instruction_for_mock = test_instruction.clone();
         transaction_builder
             .expect_build_execute_instruction()
@@ -1988,7 +1988,7 @@ mod tests {
         let alt_addresses_for_builder = alt_addresses.clone();
 
         let exec_ix = Instruction::new_with_bytes(
-            axelar_solana_its_v2::ID,
+            solana_axelar_its::ID,
             &[],
             vec![AccountMeta::new(keypair.pubkey(), true)],
         );
@@ -2123,7 +2123,7 @@ mod tests {
                 message: GatewayV2Message {
                     message_id: message_id.clone(),
                     source_chain: "ethereum".to_string(),
-                    destination_address: axelar_solana_its_v2::ID.to_string(),
+                    destination_address: solana_axelar_its::ID.to_string(),
                     payload_hash: "f".repeat(32),
                     source_address: "test-source-address".to_string(),
                 },
@@ -2172,7 +2172,7 @@ mod tests {
         let alt_addresses_for_builder = alt_addresses.clone();
 
         let exec_ix = Instruction::new_with_bytes(
-            axelar_solana_its_v2::ID,
+            solana_axelar_its::ID,
             &[21, 22, 23, 24],
             vec![
                 AccountMeta::new(keypair.pubkey(), true),
@@ -2305,7 +2305,7 @@ mod tests {
                 message: GatewayV2Message {
                     message_id: message_id.clone(),
                     source_chain: "ethereum".to_string(),
-                    destination_address: axelar_solana_its_v2::ID.to_string(),
+                    destination_address: solana_axelar_its::ID.to_string(),
                     payload_hash: "f".repeat(32),
                     source_address: gateway_address.to_string(),
                 },
@@ -2357,7 +2357,7 @@ mod tests {
         let alt_addresses_for_builder = alt_addresses.clone();
 
         let exec_ix = Instruction::new_with_bytes(
-            axelar_solana_its_v2::ID,
+            solana_axelar_its::ID,
             &[31, 32, 33, 34],
             vec![
                 AccountMeta::new(keypair.pubkey(), true),
@@ -2520,7 +2520,7 @@ mod tests {
                 message: GatewayV2Message {
                     message_id: message_id.clone(),
                     source_chain: "ethereum".to_string(),
-                    destination_address: axelar_solana_its_v2::ID.to_string(),
+                    destination_address: solana_axelar_its::ID.to_string(),
                     payload_hash: "g".repeat(32),
                     source_address: gateway_address.to_string(),
                 },
@@ -2574,7 +2574,7 @@ mod tests {
         let alt_addresses_for_builder = alt_addresses.clone();
 
         let exec_ix = Instruction::new_with_bytes(
-            axelar_solana_its_v2::ID,
+            solana_axelar_its::ID,
             &[42],
             vec![AccountMeta::new(keypair.pubkey(), true)],
         );
@@ -2669,7 +2669,7 @@ mod tests {
                 message: GatewayV2Message {
                     message_id: message_id.clone(),
                     source_chain: "ethereum".to_string(),
-                    destination_address: axelar_solana_its_v2::ID.to_string(),
+                    destination_address: solana_axelar_its::ID.to_string(),
                     payload_hash: "f".repeat(32),
                     source_address: "test-source-address".to_string(),
                 },
@@ -2702,7 +2702,7 @@ mod tests {
         ) = get_includer_fields();
 
         let instruction = Instruction::new_with_bytes(
-            axelar_solana_gateway_v2::ID,
+            solana_axelar_gateway::ID,
             &[0xAA],
             vec![AccountMeta::new(keypair.pubkey(), true)],
         );
@@ -2913,7 +2913,7 @@ mod tests {
             signing_verifier_set_merkle_root,
             signing_verifier_set_leaves: vec![verifier_info],
             payload_items: MerkleisedPayload::NewMessages {
-                messages: vec![MerkleisedMessage {
+                messages: vec![MerklizedMessage {
                     leaf: MessageLeaf {
                         message: Message {
                             cc_id: CrossChainId {
@@ -3067,7 +3067,7 @@ mod tests {
         let msg_id_1 = "test-message-id-1".to_string();
         let msg_id_2 = "test-message-id-2".to_string();
 
-        let merkle_msg_1 = MerkleisedMessage {
+        let merkle_msg_1 = MerklizedMessage {
             leaf: MessageLeaf {
                 message: Message {
                     cc_id: CrossChainId {
@@ -3086,7 +3086,7 @@ mod tests {
             proof: vec![0x01],
         };
 
-        let merkle_msg_2 = MerkleisedMessage {
+        let merkle_msg_2 = MerklizedMessage {
             leaf: MessageLeaf {
                 message: Message {
                     cc_id: CrossChainId {
@@ -3276,7 +3276,7 @@ mod tests {
         let msg_id_1 = "test-message-id-1".to_string();
         let msg_id_2 = "test-message-id-2".to_string();
 
-        let merkle_msg_1 = MerkleisedMessage {
+        let merkle_msg_1 = MerklizedMessage {
             leaf: MessageLeaf {
                 message: Message {
                     cc_id: CrossChainId {
@@ -3295,7 +3295,7 @@ mod tests {
             proof: vec![0x01],
         };
 
-        let merkle_msg_2 = MerkleisedMessage {
+        let merkle_msg_2 = MerklizedMessage {
             leaf: MessageLeaf {
                 message: Message {
                     cc_id: CrossChainId {
@@ -3501,7 +3501,7 @@ mod tests {
         let msg_id_2 = "verify-fail-msg-2".to_string();
         let msg_id_3 = "verify-fail-msg-3".to_string();
 
-        let merkle_msg_1 = MerkleisedMessage {
+        let merkle_msg_1 = MerklizedMessage {
             leaf: MessageLeaf {
                 message: Message {
                     cc_id: CrossChainId {
@@ -3520,7 +3520,7 @@ mod tests {
             proof: vec![0x01],
         };
 
-        let merkle_msg_2 = MerkleisedMessage {
+        let merkle_msg_2 = MerklizedMessage {
             leaf: MessageLeaf {
                 message: Message {
                     cc_id: CrossChainId {
@@ -3539,7 +3539,7 @@ mod tests {
             proof: vec![0x02],
         };
 
-        let merkle_msg_3 = MerkleisedMessage {
+        let merkle_msg_3 = MerklizedMessage {
             leaf: MessageLeaf {
                 message: Message {
                     cc_id: CrossChainId {

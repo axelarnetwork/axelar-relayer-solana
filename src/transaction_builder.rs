@@ -16,15 +16,15 @@ use anchor_lang::InstructionData;
 use anchor_lang::ToAccountMetas;
 use anchor_spl::{associated_token::spl_associated_token_account, token_2022::spl_token_2022};
 use async_trait::async_trait;
-use axelar_solana_gateway_v2::{executable::ExecutablePayload, state::incoming_message::Message};
-use axelar_solana_its_v2::instructions::{
-    execute_deploy_interchain_token_extra_accounts, execute_interchain_transfer_extra_accounts,
-    execute_link_token_extra_accounts,
-};
 use base64::Engine;
 use interchain_token_transfer_gmp::GMPPayload;
 use mpl_token_metadata;
 use relayer_core::utils::ThreadSafe;
+use solana_axelar_gateway::{executable::ExecutablePayload, state::incoming_message::Message};
+use solana_axelar_its::instructions::{
+    execute_deploy_interchain_token_extra_accounts, execute_interchain_transfer_extra_accounts,
+    execute_link_token_extra_accounts,
+};
 use solana_sdk::address_lookup_table::instruction::{create_lookup_table, extend_lookup_table};
 use solana_sdk::address_lookup_table::state::AddressLookupTable;
 use solana_sdk::instruction::{AccountMeta, Instruction};
@@ -164,7 +164,7 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
         let (incoming_message_pda, _) = get_incoming_message_pda(&message.command_id());
 
         match destination_address {
-            x if x == axelar_solana_its_v2::ID => {
+            x if x == solana_axelar_its::ID => {
                 let gmp_decoded_payload = GMPPayload::decode(payload)
                     .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
 
@@ -174,15 +174,15 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
 
                 let (signing_pda, _) = get_validate_message_signing_pda(
                     &message.command_id(),
-                    &axelar_solana_gateway_v2::ID,
+                    &solana_axelar_gateway::ID,
                 );
                 let (event_authority, _) = get_gateway_event_authority_pda();
                 let (gateway_root_pda, _) = get_gateway_root_config_internal();
 
-                let executable = axelar_solana_its_v2::accounts::AxelarExecuteAccounts {
+                let executable = solana_axelar_its::accounts::AxelarExecuteAccounts {
                     incoming_message_pda,
                     signing_pda,
-                    axelar_gateway_program: axelar_solana_gateway_v2::ID,
+                    axelar_gateway_program: solana_axelar_gateway::ID,
                     event_authority,
                     gateway_root_pda,
                 };
@@ -192,7 +192,7 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
                 let (token_mint, _) = get_token_mint_pda(&its_root_pda, &token_id);
                 let (token_manager_ata, _) = get_token_manager_ata(&token_manager_pda, &token_mint);
 
-                let mut accounts = axelar_solana_its_v2::accounts::Execute {
+                let mut accounts = solana_axelar_its::accounts::Execute {
                     executable,
                     payer: self.keypair.pubkey(),
                     system_program: solana_program::system_program::id(),
@@ -203,7 +203,7 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
                     token_manager_ata,
                     token_program: spl_token_2022::ID,
                     associated_token_program: spl_associated_token_account::ID,
-                    program: axelar_solana_its_v2::ID,
+                    program: solana_axelar_its::ID,
                 }
                 .to_account_metas(None);
 
@@ -268,7 +268,7 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
                     _ => {}
                 }
 
-                let data = axelar_solana_its_v2::instruction::Execute {
+                let data = solana_axelar_its::instruction::Execute {
                     message: message.clone(),
                     payload: payload.to_vec(),
                 }
@@ -304,24 +304,24 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
 
                 Ok((
                     Instruction {
-                        program_id: axelar_solana_its_v2::ID,
+                        program_id: solana_axelar_its::ID,
                         accounts,
                         data,
                     },
                     alt_info,
                 ))
             }
-            x if x == axelar_solana_governance_v2::ID => {
+            x if x == solana_axelar_governance::ID => {
                 let (signing_pda, _) = get_validate_message_signing_pda(
                     &message.command_id(),
-                    &axelar_solana_gateway_v2::ID,
+                    &solana_axelar_gateway::ID,
                 );
                 let (event_authority, _) = get_gateway_event_authority_pda();
                 let (gateway_root_pda, _) = get_gateway_root_config_internal();
-                let executable = axelar_solana_governance_v2::accounts::AxelarExecuteAccounts {
+                let executable = solana_axelar_governance::accounts::AxelarExecuteAccounts {
                     incoming_message_pda,
                     signing_pda,
-                    axelar_gateway_program: axelar_solana_gateway_v2::ID,
+                    axelar_gateway_program: solana_axelar_gateway::ID,
                     event_authority,
                     gateway_root_pda,
                 };
@@ -331,19 +331,19 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
                 let (proposal_pda, _) = get_proposal_pda(&message.command_id());
                 let (operator_proposal_pda, _) = get_operator_proposal_pda(&message.command_id());
 
-                let accounts = axelar_solana_governance_v2::accounts::ProcessGmp {
+                let accounts = solana_axelar_governance::accounts::ProcessGmp {
                     executable,
                     payer: self.keypair.pubkey(),
                     governance_config,
                     proposal_pda,
                     operator_proposal_pda,
                     governance_event_authority,
-                    axelar_governance_program: axelar_solana_governance_v2::ID,
+                    axelar_governance_program: solana_axelar_governance::ID,
                     system_program: solana_program::system_program::id(),
                 }
                 .to_account_metas(None);
 
-                let data = axelar_solana_governance_v2::instruction::ProcessGmp {
+                let data = solana_axelar_governance::instruction::ProcessGmp {
                     message: message.clone(),
                     payload: payload.to_vec(),
                 }
@@ -351,7 +351,7 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
 
                 Ok((
                     Instruction {
-                        program_id: axelar_solana_governance_v2::ID,
+                        program_id: solana_axelar_governance::ID,
                         accounts,
                         data,
                     },
@@ -378,10 +378,10 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
                 let (gateway_root_pda, _) = get_gateway_root_config_internal();
 
                 let mut accounts =
-                    axelar_solana_gateway_v2::executable::helpers::AxelarExecuteAccounts {
+                    solana_axelar_gateway::executable::helpers::AxelarExecuteAccounts {
                         incoming_message_pda,
                         signing_pda,
-                        axelar_gateway_program: axelar_solana_gateway_v2::ID,
+                        axelar_gateway_program: solana_axelar_gateway::ID,
                         event_authority,
                         gateway_root_pda,
                     }
@@ -389,15 +389,12 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
 
                 accounts.extend(user_provided_accounts);
 
-                let data =
-                    axelar_solana_gateway_v2::executable::helpers::AxelarExecuteInstruction {
-                        message: message.clone(),
-                        payload_without_accounts: decoded_payload
-                            .payload_without_accounts()
-                            .to_vec(),
-                        encoding_scheme: decoded_payload.encoding_scheme(),
-                    }
-                    .data();
+                let data = solana_axelar_gateway::executable::helpers::AxelarExecuteInstruction {
+                    message: message.clone(),
+                    payload_without_accounts: decoded_payload.payload_without_accounts().to_vec(),
+                    encoding_scheme: decoded_payload.encoding_scheme(),
+                }
+                .data();
 
                 Ok((
                     Instruction {
@@ -428,5 +425,146 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
             alt_accounts,
         );
         Ok((ix_alt_create, ix_alt_extend, alt_pubkey))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use crate::gas_calculator::MockGasCalculatorTrait;
+    use crate::includer::ALTInfo;
+    use crate::includer_client::MockIncluderClientTrait;
+    use crate::transaction_builder::{TransactionBuilder, TransactionBuilderTrait};
+    use crate::transaction_type::SolanaTransactionType;
+    use anchor_lang::prelude::AccountMeta;
+    use solana_sdk::hash::Hash;
+    use solana_sdk::instruction::Instruction;
+    use solana_sdk::message::VersionedMessage;
+    use solana_sdk::pubkey::Pubkey;
+    use solana_sdk::signature::Keypair;
+    use solana_sdk::signer::Signer;
+
+    #[tokio::test]
+    async fn test_transaction_builder_build_with_alt_produces_versioned_tx() {
+        let keypair = Arc::new(Keypair::new());
+        let mut mock_gas = MockGasCalculatorTrait::new();
+        let mock_client = Arc::new(MockIncluderClientTrait::new());
+
+        let alt_pubkey = Pubkey::new_unique();
+        let alt_account_1 = Pubkey::new_unique();
+        let alt_account_2 = Pubkey::new_unique();
+        let alt_addresses = vec![alt_account_1, alt_account_2];
+
+        let user_program = Pubkey::new_unique();
+        let user_ix = Instruction::new_with_bytes(
+            user_program,
+            &[1, 2, 3],
+            vec![
+                AccountMeta::new(keypair.pubkey(), true),
+                AccountMeta::new_readonly(alt_account_1, false),
+            ],
+        );
+
+        let compute_unit_price_ix = Instruction::new_with_bytes(Pubkey::new_unique(), &[9], vec![]);
+        let compute_budget_ix = Instruction::new_with_bytes(Pubkey::new_unique(), &[8], vec![]);
+        let recent_blockhash = Hash::new_unique();
+
+        let cup_ix_clone = compute_unit_price_ix.clone();
+        mock_gas
+            .expect_compute_unit_price()
+            .times(1)
+            .returning(move |_| {
+                let ix = cup_ix_clone.clone();
+                Ok(ix)
+            });
+
+        let cb_ix_clone = compute_budget_ix.clone();
+        mock_gas
+            .expect_compute_budget()
+            .times(1)
+            .returning(move |_| {
+                let ix = cb_ix_clone.clone();
+                let hash = recent_blockhash;
+                Ok((ix, hash))
+            });
+
+        let alt_info = ALTInfo::new(None, None, Some(alt_pubkey)).with_addresses(alt_addresses);
+
+        let builder = TransactionBuilder::new(Arc::clone(&keypair), mock_gas, mock_client);
+
+        let result = builder
+            .build(std::slice::from_ref(&user_ix), Some(alt_info))
+            .await
+            .expect("build with ALT should succeed");
+
+        match result {
+            SolanaTransactionType::Versioned(versioned_tx) => match versioned_tx.message {
+                VersionedMessage::V0(msg) => {
+                    assert_eq!(msg.instructions.len(), 3);
+
+                    assert_eq!(msg.address_table_lookups.len(), 1);
+                    assert_eq!(msg.address_table_lookups[0].account_key, alt_pubkey);
+
+                    assert_eq!(versioned_tx.signatures.len(), 1);
+                }
+                _ => panic!("expected v0 message for ALT-backed build"),
+            },
+            _ => panic!("expected Versioned transaction when ALTInfo is provided"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_transaction_builder_build_without_alt_produces_legacy_tx() {
+        let keypair = Arc::new(Keypair::new());
+        let mut mock_gas = MockGasCalculatorTrait::new();
+        let mock_client = Arc::new(MockIncluderClientTrait::new());
+
+        let user_program = Pubkey::new_unique();
+        let user_ix = Instruction::new_with_bytes(
+            user_program,
+            &[4, 5, 6],
+            vec![AccountMeta::new(keypair.pubkey(), true)],
+        );
+
+        let compute_unit_price_ix = Instruction::new_with_bytes(Pubkey::new_unique(), &[7], vec![]);
+        let compute_budget_ix = Instruction::new_with_bytes(Pubkey::new_unique(), &[8], vec![]);
+        let recent_blockhash = Hash::new_unique();
+
+        let cup_ix_clone = compute_unit_price_ix.clone();
+        mock_gas
+            .expect_compute_unit_price()
+            .times(1)
+            .returning(move |_| {
+                let ix = cup_ix_clone.clone();
+                Ok(ix)
+            });
+
+        let cb_ix_clone = compute_budget_ix.clone();
+        mock_gas
+            .expect_compute_budget()
+            .times(1)
+            .returning(move |_| {
+                let ix = cb_ix_clone.clone();
+                let hash = recent_blockhash;
+                Ok((ix, hash))
+            });
+
+        let builder = TransactionBuilder::new(Arc::clone(&keypair), mock_gas, mock_client);
+
+        let result = builder
+            .build(std::slice::from_ref(&user_ix), None)
+            .await
+            .expect("build without ALT should succeed");
+
+        match result {
+            SolanaTransactionType::Legacy(tx) => {
+                assert_eq!(tx.message.instructions.len(), 3);
+                assert_eq!(tx.message.account_keys[0], keypair.pubkey());
+                assert_eq!(tx.message.recent_blockhash, recent_blockhash);
+                assert_eq!(tx.signatures.len(), 1);
+            }
+            _ => panic!("expected Legacy transaction when no ALTInfo is provided"),
+        }
     }
 }

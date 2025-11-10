@@ -15,7 +15,7 @@ use solana_transaction_parser::gmp_types::{CannotExecuteMessageReason, Event};
 use std::str::FromStr;
 use tracing::{debug, error};
 
-use axelar_solana_gateway_v2::{seed_prefixes, ID};
+use solana_axelar_gateway::{seed_prefixes, VerifierSetHash, ID};
 use solana_rpc_client_api::response::RpcConfirmedTransactionStatusWithSignature;
 use solana_sdk::{
     commitment_config::{CommitmentConfig, CommitmentLevel},
@@ -163,41 +163,41 @@ pub fn get_incoming_message_pda(command_id: &[u8]) -> (Pubkey, u8) {
     Pubkey::find_program_address(&[seed_prefixes::INCOMING_MESSAGE_SEED, command_id], &ID)
 }
 pub fn get_gateway_event_authority_pda() -> (Pubkey, u8) {
-    Pubkey::find_program_address(&[b"__event_authority"], &axelar_solana_gateway_v2::ID)
+    Pubkey::find_program_address(&[b"__event_authority"], &solana_axelar_gateway::ID)
 }
 
 pub fn get_governance_config_pda() -> (Pubkey, u8) {
     Pubkey::find_program_address(
-        &[axelar_solana_governance_v2::GovernanceConfig::SEED_PREFIX],
-        &axelar_solana_governance_v2::ID,
+        &[solana_axelar_governance::GovernanceConfig::SEED_PREFIX],
+        &solana_axelar_governance::ID,
     )
 }
 
 pub fn get_governance_event_authority_pda() -> (Pubkey, u8) {
-    Pubkey::find_program_address(&[b"__event_authority"], &axelar_solana_governance_v2::ID)
+    Pubkey::find_program_address(&[b"__event_authority"], &solana_axelar_governance::ID)
 }
 
 pub fn get_proposal_pda(command_id: &[u8]) -> (Pubkey, u8) {
     Pubkey::find_program_address(
         &[
-            axelar_solana_governance_v2::seed_prefixes::PROPOSAL_PDA,
+            solana_axelar_governance::seed_prefixes::PROPOSAL_PDA,
             command_id,
         ],
-        &axelar_solana_governance_v2::ID,
+        &solana_axelar_governance::ID,
     )
 }
 
 pub fn get_operator_proposal_pda(command_id: &[u8]) -> (Pubkey, u8) {
     Pubkey::find_program_address(
         &[b"operator_proposal", command_id],
-        &axelar_solana_governance_v2::ID,
+        &solana_axelar_governance::ID,
     )
 }
 
 pub fn get_validate_message_signing_pda(command_id: &[u8], program_id: &Pubkey) -> (Pubkey, u8) {
     Pubkey::find_program_address(
         &[
-            axelar_solana_gateway_v2::seed_prefixes::VALIDATE_MESSAGE_SIGNING_SEED,
+            solana_axelar_gateway::seed_prefixes::VALIDATE_MESSAGE_SIGNING_SEED,
             command_id,
         ],
         program_id,
@@ -206,37 +206,37 @@ pub fn get_validate_message_signing_pda(command_id: &[u8], program_id: &Pubkey) 
 
 pub fn get_gateway_root_config_internal() -> (Pubkey, u8) {
     Pubkey::find_program_address(
-        &[axelar_solana_gateway_v2::seed_prefixes::GATEWAY_SEED],
-        &axelar_solana_gateway_v2::ID,
+        &[solana_axelar_gateway::seed_prefixes::GATEWAY_SEED],
+        &solana_axelar_gateway::ID,
     )
 }
 
 pub fn get_its_root_pda() -> (Pubkey, u8) {
     Pubkey::find_program_address(
-        &[axelar_solana_its_v2::seed_prefixes::ITS_SEED],
-        &axelar_solana_its_v2::ID,
+        &[solana_axelar_its::seed_prefixes::ITS_SEED],
+        &solana_axelar_its::ID,
     )
 }
 
 pub fn get_token_manager_pda(its_root_pda: &Pubkey, token_id: &[u8]) -> (Pubkey, u8) {
     Pubkey::find_program_address(
         &[
-            axelar_solana_its_v2::seed_prefixes::TOKEN_MANAGER_SEED,
+            solana_axelar_its::seed_prefixes::TOKEN_MANAGER_SEED,
             its_root_pda.as_ref(),
             token_id,
         ],
-        &axelar_solana_its_v2::ID,
+        &solana_axelar_its::ID,
     )
 }
 
 pub fn get_token_mint_pda(its_root_pda: &Pubkey, token_id: &[u8]) -> (Pubkey, u8) {
     Pubkey::find_program_address(
         &[
-            axelar_solana_its_v2::seed_prefixes::INTERCHAIN_TOKEN_SEED,
+            solana_axelar_its::seed_prefixes::INTERCHAIN_TOKEN_SEED,
             its_root_pda.as_ref(),
             token_id,
         ],
-        &axelar_solana_its_v2::ID,
+        &solana_axelar_its::ID,
     )
 }
 
@@ -276,33 +276,33 @@ pub fn get_mpl_token_metadata_account(token_mint_pda: &Pubkey) -> (Pubkey, u8) {
 pub fn get_minter_roles_pda(token_manager_pda: &Pubkey, minter: &Pubkey) -> (Pubkey, u8) {
     Pubkey::find_program_address(
         &[
-            axelar_solana_its_v2::state::UserRoles::SEED_PREFIX,
+            solana_axelar_its::state::UserRoles::SEED_PREFIX,
             token_manager_pda.as_ref(),
             minter.as_ref(),
         ],
-        &axelar_solana_its_v2::ID,
+        &solana_axelar_its::ID,
     )
 }
 
 pub fn get_operator_pda(operator: &Pubkey) -> (Pubkey, u8) {
     Pubkey::find_program_address(
         &[
-            axelar_solana_operators::OperatorAccount::SEED_PREFIX,
+            solana_axelar_operators::OperatorAccount::SEED_PREFIX,
             operator.key().as_ref(),
         ],
-        &axelar_solana_operators::ID,
+        &solana_axelar_operators::ID,
     )
 }
 
 pub fn get_treasury_pda() -> (Pubkey, u8) {
     Pubkey::find_program_address(
-        &[axelar_solana_gas_service_v2::state::Treasury::SEED_PREFIX],
-        &axelar_solana_gas_service_v2::ID,
+        &[solana_axelar_gas_service::state::Treasury::SEED_PREFIX],
+        &solana_axelar_gas_service::ID,
     )
 }
 
 pub fn get_gas_service_event_authority_pda() -> (Pubkey, u8) {
-    Pubkey::find_program_address(&[b"__event_authority"], &axelar_solana_gas_service_v2::ID)
+    Pubkey::find_program_address(&[b"__event_authority"], &solana_axelar_gas_service::ID)
 }
 
 pub fn get_destination_ata(destination_pubkey: &Pubkey, token_mint_pda: &Pubkey) -> (Pubkey, u8) {

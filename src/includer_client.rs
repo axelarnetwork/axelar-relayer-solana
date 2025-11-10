@@ -1,8 +1,8 @@
 use anchor_lang::AccountDeserialize;
 use async_trait::async_trait;
 
-use axelar_solana_gateway_v2::IncomingMessage;
 use relayer_core::{error::ClientError, utils::ThreadSafe};
+use solana_axelar_gateway::IncomingMessage;
 use solana_client::rpc_response::RpcPrioritizationFee;
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{
