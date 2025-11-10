@@ -835,6 +835,10 @@ mod tests {
     use crate::redis::MockRedisConnectionTrait;
     use crate::transaction_builder::MockTransactionBuilderTrait;
     use crate::transaction_type::SolanaTransactionType;
+    use axelar_solana_gateway_v2::{
+        MerkleisedMessage, MessageLeaf, PublicKey, SigningVerifierSetInfo, VerifierSetLeaf,
+    };
+    use borsh::BorshSerialize;
     use relayer_core::gmp_api::MockGmpApiTrait;
     use solana_sdk::address_lookup_table::AddressLookupTableAccount;
     use solana_sdk::compute_budget::ComputeBudgetInstruction;
@@ -843,11 +847,11 @@ mod tests {
     use solana_sdk::message::{v0, VersionedMessage};
     use solana_sdk::pubkey::Pubkey;
     use solana_sdk::transaction::{Transaction, VersionedTransaction};
-    use solana_transaction_parser::gmp_types::RefundTaskFields;
     use solana_transaction_parser::gmp_types::{
         Amount, CannotExecuteMessageReason, CommonEventFields, CommonTaskFields, Event,
         ExecuteTask, ExecuteTaskFields, GatewayV2Message, RefundTask,
     };
+    use solana_transaction_parser::gmp_types::{GatewayTxTaskFields, RefundTaskFields};
     use std::str::FromStr;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
@@ -2682,5 +2686,546 @@ mod tests {
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), vec![]);
+    }
+
+    #[tokio::test]
+    async fn send_gateway_tx_to_chain_happy_path() {
+        let (
+            mock_gmp_api,
+            keypair,
+            gateway_address,
+            chain_name,
+            redis_conn,
+            mock_refunds_model,
+            mut mock_client,
+            mut transaction_builder,
+        ) = get_includer_fields();
+
+        let instruction = Instruction::new_with_bytes(
+            axelar_solana_gateway_v2::ID,
+            &[0xAA],
+            vec![AccountMeta::new(keypair.pubkey(), true)],
+        );
+
+        let mut legacy_tx = Transaction::new_with_payer(
+            std::slice::from_ref(&instruction),
+            Some(&keypair.pubkey()),
+        );
+        legacy_tx.sign(&[&keypair], Hash::default());
+        let expected_signature = legacy_tx.signatures[0];
+
+        let tx_for_builder = legacy_tx.clone();
+        let instruction_program = instruction.program_id;
+        let instruction_accounts = instruction.accounts.clone();
+        let instruction_data = instruction.data.clone();
+
+        transaction_builder
+            .expect_build()
+            .times(1)
+            .returning(move |ixs, alt| {
+                assert!(alt.is_none());
+                assert_eq!(ixs.len(), 1);
+                assert_eq!(ixs[0].program_id, instruction_program);
+                assert_eq!(ixs[0].accounts, instruction_accounts);
+                assert_eq!(ixs[0].data, instruction_data);
+                Ok(SolanaTransactionType::Legacy(tx_for_builder.clone()))
+            });
+
+        mock_client
+            .expect_send_transaction()
+            .times(1)
+            .returning(move |_| Box::pin(async move { Ok((expected_signature, Some(5_000u64))) }));
+
+        let includer = SolanaIncluder::new(
+            Arc::new(mock_client),
+            Arc::new(keypair),
+            gateway_address,
+            chain_name,
+            transaction_builder,
+            Arc::new(mock_gmp_api),
+            redis_conn,
+            Arc::new(mock_refunds_model),
+        );
+
+        let message_id = Some("test-gateway-message-123".to_string());
+        let source_chain = Some("ethereum".to_string());
+
+        let send_result = includer
+            .send_gateway_tx_to_chain(instruction, message_id.clone(), source_chain.clone())
+            .await;
+
+        assert!(send_result.status.is_ok());
+        assert_eq!(send_result.tx_hash, Some(expected_signature.to_string()));
+        assert_eq!(send_result.gas_cost, Some(5_000u64));
+        assert_eq!(send_result.message_id, message_id);
+        assert_eq!(send_result.source_chain, source_chain);
+    }
+
+    #[tokio::test]
+    async fn test_handle_gateway_tx_task_rotate_signers_with_one_signature_success() {
+        let (
+            mock_gmp_api,
+            keypair,
+            gateway_address,
+            chain_name,
+            redis_conn,
+            mock_refunds_model,
+            mut mock_client,
+            mut transaction_builder,
+        ) = get_includer_fields();
+
+        let payload_merkle_root = [1u8; 32];
+        let signing_verifier_set_merkle_root = [2u8; 32];
+        let new_verifier_set_merkle_root = [3u8; 32];
+
+        let verifier_info = SigningVerifierSetInfo {
+            leaf: VerifierSetLeaf {
+                nonce: 0,
+                quorum: 0,
+                signer_pubkey: PublicKey::Secp256k1([0; 33]),
+                signer_weight: 0,
+                position: 0,
+                set_size: 0,
+                domain_separator: [0; 32],
+            },
+            merkle_proof: vec![0xDD, 0xEE, 0xFF],
+            signature: [0; 65],
+        };
+
+        let execute_data = ExecuteData {
+            payload_merkle_root,
+            signing_verifier_set_merkle_root,
+            signing_verifier_set_leaves: vec![verifier_info],
+            payload_items: MerkleisedPayload::VerifierSetRotation {
+                new_verifier_set_merkle_root,
+            },
+        };
+
+        let execute_data_b64 =
+            base64::prelude::BASE64_STANDARD.encode(execute_data.try_to_vec().unwrap());
+
+        let task = GatewayTxTask {
+            common: CommonTaskFields {
+                id: "rotate-signer-happy".into(),
+                chain: "test-chain".into(),
+                timestamp: Utc::now().to_string(),
+                r#type: "gateway_tx".into(),
+                meta: None,
+            },
+            task: GatewayTxTaskFields {
+                execute_data: execute_data_b64,
+            },
+        };
+
+        let mut init_tx = Transaction::new_with_payer(&[], Some(&keypair.pubkey()));
+        init_tx.sign(&[&keypair], Hash::default());
+        let init_sig = init_tx.signatures[0];
+
+        let mut verify_tx = Transaction::new_with_payer(&[], Some(&keypair.pubkey()));
+        verify_tx.sign(&[&keypair], Hash::default());
+        let verify_sig = verify_tx.signatures[0];
+
+        let mut rotate_tx = Transaction::new_with_payer(&[], Some(&keypair.pubkey()));
+        rotate_tx.sign(&[&keypair], Hash::default());
+        let rotate_sig = rotate_tx.signatures[0];
+
+        let init_tx_clone = init_tx.clone();
+        let verify_tx_clone = verify_tx.clone();
+        let rotate_tx_clone = rotate_tx.clone();
+
+        let build_calls = Arc::new(AtomicUsize::new(0));
+        let build_calls_clone = Arc::clone(&build_calls);
+
+        transaction_builder
+            .expect_build()
+            .times(3)
+            .returning(move |_, _| {
+                let idx = build_calls_clone.fetch_add(1, Ordering::SeqCst);
+                match idx {
+                    0 => Ok(SolanaTransactionType::Legacy(init_tx_clone.clone())),
+                    1 => Ok(SolanaTransactionType::Legacy(verify_tx_clone.clone())),
+                    _ => Ok(SolanaTransactionType::Legacy(rotate_tx_clone.clone())),
+                }
+            });
+
+        let send_calls = Arc::new(AtomicUsize::new(0));
+        let send_calls_clone = Arc::clone(&send_calls);
+        let send_responses = [(init_sig, 10u64), (verify_sig, 20u64), (rotate_sig, 30u64)];
+
+        mock_client
+            .expect_send_transaction()
+            .times(3)
+            .returning(move |_| {
+                let idx = send_calls_clone.fetch_add(1, Ordering::SeqCst);
+                let (signature, cost) = send_responses[idx];
+                Box::pin(async move { Ok((signature, Some(cost))) })
+            });
+
+        let includer = SolanaIncluder::new(
+            Arc::new(mock_client),
+            Arc::new(keypair),
+            gateway_address,
+            chain_name,
+            transaction_builder,
+            Arc::new(mock_gmp_api),
+            redis_conn,
+            Arc::new(mock_refunds_model),
+        );
+
+        let result = includer.handle_gateway_tx_task(task).await;
+
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_handle_gateway_tx_task_approve_message_one_message_one_signature_success() {
+        let (
+            mock_gmp_api,
+            keypair,
+            gateway_address,
+            chain_name,
+            mut redis_conn,
+            mock_refunds_model,
+            mut mock_client,
+            mut transaction_builder,
+        ) = get_includer_fields();
+
+        let payload_merkle_root = [1u8; 32];
+        let signing_verifier_set_merkle_root = [2u8; 32];
+
+        let verifier_info = SigningVerifierSetInfo {
+            leaf: VerifierSetLeaf {
+                nonce: 0,
+                quorum: 0,
+                signer_pubkey: PublicKey::Secp256k1([0; 33]),
+                signer_weight: 0,
+                position: 0,
+                set_size: 0,
+                domain_separator: [0; 32],
+            },
+            merkle_proof: vec![0xDD, 0xEE, 0xFF],
+            signature: [0; 65],
+        };
+
+        let execute_data = ExecuteData {
+            payload_merkle_root,
+            signing_verifier_set_merkle_root,
+            signing_verifier_set_leaves: vec![verifier_info],
+            payload_items: MerkleisedPayload::NewMessages {
+                messages: vec![MerkleisedMessage {
+                    leaf: MessageLeaf {
+                        message: Message {
+                            cc_id: CrossChainId {
+                                chain: "test-chain".to_string(),
+                                id: "test-message-id".to_string(),
+                            },
+                            source_address: "test-source-address".to_string(),
+                            destination_chain: "test-destination-chain".to_string(),
+                            destination_address: "test-destination-address".to_string(),
+                            payload_hash: [0; 32],
+                        },
+                        position: 0,
+                        set_size: 0,
+                        domain_separator: [0; 32],
+                    },
+                    proof: vec![0xDD, 0xEE, 0xFF],
+                }],
+            },
+        };
+
+        let execute_data_b64 =
+            base64::prelude::BASE64_STANDARD.encode(execute_data.try_to_vec().unwrap());
+
+        let task = GatewayTxTask {
+            common: CommonTaskFields {
+                id: "approve-message-happy".into(),
+                chain: "test-chain".into(),
+                timestamp: Utc::now().to_string(),
+                r#type: "gateway_tx".into(),
+                meta: None,
+            },
+            task: GatewayTxTaskFields {
+                execute_data: execute_data_b64,
+            },
+        };
+
+        let mut init_tx = Transaction::new_with_payer(&[], Some(&keypair.pubkey()));
+        init_tx.sign(&[&keypair], Hash::default());
+        let init_sig = init_tx.signatures[0];
+
+        let mut verify_tx = Transaction::new_with_payer(&[], Some(&keypair.pubkey()));
+        verify_tx.sign(&[&keypair], Hash::default());
+        let verify_sig = verify_tx.signatures[0];
+
+        let mut approve_tx = Transaction::new_with_payer(&[], Some(&keypair.pubkey()));
+        approve_tx.sign(&[&keypair], Hash::default());
+        let approve_sig = approve_tx.signatures[0];
+
+        let init_tx_clone = init_tx.clone();
+        let verify_tx_clone = verify_tx.clone();
+        let approve_tx_clone = approve_tx.clone();
+
+        let build_calls = Arc::new(AtomicUsize::new(0));
+        let build_calls_clone = Arc::clone(&build_calls);
+
+        transaction_builder
+            .expect_build()
+            .times(3)
+            .returning(move |_, _| {
+                let idx = build_calls_clone.fetch_add(1, Ordering::SeqCst);
+                match idx {
+                    0 => Ok(SolanaTransactionType::Legacy(init_tx_clone.clone())),
+                    1 => Ok(SolanaTransactionType::Legacy(verify_tx_clone.clone())),
+                    _ => Ok(SolanaTransactionType::Legacy(approve_tx_clone.clone())),
+                }
+            });
+
+        // costs: init(10) + verify(20) + approve(30)
+        let send_calls = Arc::new(AtomicUsize::new(0));
+        let send_calls_clone = Arc::clone(&send_calls);
+        let send_responses = [(init_sig, 10u64), (verify_sig, 20u64), (approve_sig, 30u64)];
+
+        mock_client
+            .expect_send_transaction()
+            .times(3)
+            .returning(move |_| {
+                let idx = send_calls_clone.fetch_add(1, Ordering::SeqCst);
+                let (signature, cost) = send_responses[idx];
+                Box::pin(async move { Ok((signature, Some(cost))) })
+            });
+
+        redis_conn
+            .expect_write_gas_cost()
+            .times(1)
+            .withf(move |_, cost, tx_type| {
+                *cost == 60 && matches!(tx_type, TransactionType::Approve)
+            })
+            .returning(|_, _, _| ());
+
+        let includer = SolanaIncluder::new(
+            Arc::new(mock_client),
+            Arc::new(keypair),
+            gateway_address,
+            chain_name,
+            transaction_builder,
+            Arc::new(mock_gmp_api),
+            redis_conn,
+            Arc::new(mock_refunds_model),
+        );
+
+        let result = includer.handle_gateway_tx_task(task).await;
+
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_handle_gateway_tx_task_approve_message_two_messages_two_signatures_success() {
+        let (
+            mock_gmp_api,
+            keypair,
+            gateway_address,
+            chain_name,
+            mut redis_conn,
+            mock_refunds_model,
+            mut mock_client,
+            mut transaction_builder,
+        ) = get_includer_fields();
+
+        let payload_merkle_root = [1u8; 32];
+        let signing_verifier_set_merkle_root = [2u8; 32];
+
+        let verifier_info_1 = SigningVerifierSetInfo {
+            leaf: VerifierSetLeaf {
+                nonce: 0,
+                quorum: 0,
+                signer_pubkey: PublicKey::Secp256k1([1; 33]),
+                signer_weight: 0,
+                position: 0,
+                set_size: 0,
+                domain_separator: [0; 32],
+            },
+            merkle_proof: vec![0xAA],
+            signature: [1; 65],
+        };
+
+        let verifier_info_2 = SigningVerifierSetInfo {
+            leaf: VerifierSetLeaf {
+                nonce: 1,
+                quorum: 0,
+                signer_pubkey: PublicKey::Secp256k1([2; 33]),
+                signer_weight: 0,
+                position: 1,
+                set_size: 0,
+                domain_separator: [0; 32],
+            },
+            merkle_proof: vec![0xBB],
+            signature: [2; 65],
+        };
+
+        let msg_id_1 = "test-message-id-1".to_string();
+        let msg_id_2 = "test-message-id-2".to_string();
+
+        let merkle_msg_1 = MerkleisedMessage {
+            leaf: MessageLeaf {
+                message: Message {
+                    cc_id: CrossChainId {
+                        chain: "test-chain".to_string(),
+                        id: msg_id_1.clone(),
+                    },
+                    source_address: "test-source-address-1".to_string(),
+                    destination_chain: "test-destination-chain-1".to_string(),
+                    destination_address: "test-destination-address-1".to_string(),
+                    payload_hash: [11; 32],
+                },
+                position: 0,
+                set_size: 2,
+                domain_separator: [0; 32],
+            },
+            proof: vec![0x01],
+        };
+
+        let merkle_msg_2 = MerkleisedMessage {
+            leaf: MessageLeaf {
+                message: Message {
+                    cc_id: CrossChainId {
+                        chain: "test-chain".to_string(),
+                        id: msg_id_2.clone(),
+                    },
+                    source_address: "test-source-address-2".to_string(),
+                    destination_chain: "test-destination-chain-2".to_string(),
+                    destination_address: "test-destination-address-2".to_string(),
+                    payload_hash: [22; 32],
+                },
+                position: 1,
+                set_size: 2,
+                domain_separator: [0; 32],
+            },
+            proof: vec![0x02],
+        };
+
+        let execute_data = ExecuteData {
+            payload_merkle_root,
+            signing_verifier_set_merkle_root,
+            signing_verifier_set_leaves: vec![verifier_info_1, verifier_info_2],
+            payload_items: MerkleisedPayload::NewMessages {
+                messages: vec![merkle_msg_1, merkle_msg_2],
+            },
+        };
+
+        let execute_data_b64 =
+            base64::prelude::BASE64_STANDARD.encode(execute_data.try_to_vec().unwrap());
+
+        let task = GatewayTxTask {
+            common: CommonTaskFields {
+                id: "approve-message-two-msgs-two-sigs".into(),
+                chain: "test-chain".into(),
+                timestamp: Utc::now().to_string(),
+                r#type: "gateway_tx".into(),
+                meta: None,
+            },
+            task: GatewayTxTaskFields {
+                execute_data: execute_data_b64,
+            },
+        };
+
+        let mut init_tx = Transaction::new_with_payer(&[], Some(&keypair.pubkey()));
+        init_tx.sign(&[&keypair], Hash::default());
+        let init_sig = init_tx.signatures[0];
+
+        let mut verify_tx_1 = Transaction::new_with_payer(&[], Some(&keypair.pubkey()));
+        verify_tx_1.sign(&[&keypair], Hash::default());
+        let verify_sig_1 = verify_tx_1.signatures[0];
+
+        let mut verify_tx_2 = Transaction::new_with_payer(&[], Some(&keypair.pubkey()));
+        verify_tx_2.sign(&[&keypair], Hash::default());
+        let verify_sig_2 = verify_tx_2.signatures[0];
+
+        let mut approve_tx_1 = Transaction::new_with_payer(&[], Some(&keypair.pubkey()));
+        approve_tx_1.sign(&[&keypair], Hash::default());
+        let approve_sig_1 = approve_tx_1.signatures[0];
+
+        let mut approve_tx_2 = Transaction::new_with_payer(&[], Some(&keypair.pubkey()));
+        approve_tx_2.sign(&[&keypair], Hash::default());
+        let approve_sig_2 = approve_tx_2.signatures[0];
+
+        let init_tx_clone = init_tx.clone();
+        let verify_tx_1_clone = verify_tx_1.clone();
+        let verify_tx_2_clone = verify_tx_2.clone();
+        let approve_tx_1_clone = approve_tx_1.clone();
+        let approve_tx_2_clone = approve_tx_2.clone();
+
+        let build_calls = Arc::new(AtomicUsize::new(0));
+        let build_calls_clone = Arc::clone(&build_calls);
+        transaction_builder
+            .expect_build()
+            .times(5)
+            .returning(move |_, _| {
+                let idx = build_calls_clone.fetch_add(1, Ordering::SeqCst);
+                match idx {
+                    0 => Ok(SolanaTransactionType::Legacy(init_tx_clone.clone())),
+                    1 => Ok(SolanaTransactionType::Legacy(verify_tx_1_clone.clone())),
+                    2 => Ok(SolanaTransactionType::Legacy(verify_tx_2_clone.clone())),
+                    3 => Ok(SolanaTransactionType::Legacy(approve_tx_1_clone.clone())),
+                    4 => Ok(SolanaTransactionType::Legacy(approve_tx_2_clone.clone())),
+                    _ => panic!("unexpected build call"),
+                }
+            });
+
+        // total_overhead = 10 + 20 + 20 = 50
+        // per-message overhead = 50 / 2 = 25
+        // msg1_cost = 30 + 25 = 55
+        // msg2_cost = 40 + 25 = 65
+        let send_calls = Arc::new(AtomicUsize::new(0));
+        let send_calls_clone = Arc::clone(&send_calls);
+        let send_responses = [
+            (init_sig, 10u64),
+            (verify_sig_1, 20u64),
+            (verify_sig_2, 20u64),
+            (approve_sig_1, 30u64),
+            (approve_sig_2, 40u64),
+        ];
+
+        mock_client
+            .expect_send_transaction()
+            .times(5)
+            .returning(move |_| {
+                let idx = send_calls_clone.fetch_add(1, Ordering::SeqCst);
+                let (sig, cost) = send_responses[idx];
+                Box::pin(async move { Ok((sig, Some(cost))) })
+            });
+
+        let expected_id_1 = msg_id_1.clone();
+        let expected_id_2 = msg_id_2.clone();
+        redis_conn
+            .expect_write_gas_cost()
+            .times(2)
+            .withf(move |msg_id, cost, tx_type| {
+                if msg_id == &expected_id_1 {
+                    *cost == 55 && matches!(tx_type, TransactionType::Approve)
+                } else if msg_id == &expected_id_2 {
+                    *cost == 65 && matches!(tx_type, TransactionType::Approve)
+                } else {
+                    false
+                }
+            })
+            .returning(|_, _, _| ());
+
+        let includer = SolanaIncluder::new(
+            Arc::new(mock_client),
+            Arc::new(keypair),
+            gateway_address,
+            chain_name,
+            transaction_builder,
+            Arc::new(mock_gmp_api),
+            redis_conn,
+            Arc::new(mock_refunds_model),
+        );
+
+        let result = includer.handle_gateway_tx_task(task).await;
+
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
     }
 }
