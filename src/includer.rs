@@ -1478,24 +1478,20 @@ mod tests {
         let message_id_clone = message_id.clone();
         let source_chain = "ethereum".to_string();
         let destination_address = axelar_solana_governance_v2::ID.to_string();
-        let available_gas = 10_000_000_000u64; // 10 billion lamports
+        let available_gas = 5000u64; // enough lamports to cover a 0 prio fee + 1 signature cost
         let payload_hash = "a".repeat(32);
 
-        // Mock incoming_message_already_executed to return false
-        // The PDA is calculated from the message, so we accept any PDA
         mock_client
             .expect_incoming_message_already_executed()
             .times(1)
             .returning(|_| Box::pin(async move { Ok(false) }));
 
-        // Mock get_alt_pubkey to return None (no ALT exists)
         redis_conn
             .expect_get_alt_pubkey()
             .withf(move |id| *id == message_id_clone)
             .times(1)
             .returning(|_| Ok(None));
 
-        // Mock build_execute_instruction to return instruction and None ALT info (governance doesn't use ALTs)
         let test_instruction =
             Instruction::new_with_bytes(axelar_solana_governance_v2::ID, &[1, 2, 3, 4], vec![]);
         let instruction_for_mock = test_instruction.clone();
@@ -1503,16 +1499,12 @@ mod tests {
             .expect_build_execute_instruction()
             .times(1)
             .returning(move |_, _, _, _| {
-                Ok::<
-                    (Instruction, Option<crate::includer::ALTInfo>),
-                    crate::error::TransactionBuilderError,
-                >((
+                Ok((
                     instruction_for_mock.clone(),
                     None, // No ALT for governance
                 ))
             });
 
-        // Mock transaction_builder.build
         let mut test_tx =
             solana_sdk::transaction::Transaction::new_with_payer(&[], Some(&keypair.pubkey()));
         test_tx.sign(&[&keypair], solana_sdk::hash::Hash::default());
@@ -1522,30 +1514,25 @@ mod tests {
             .expect_build()
             .times(1)
             .returning(move |_, _| {
-                Ok::<
-                    crate::transaction_type::SolanaTransactionType,
-                    crate::error::TransactionBuilderError,
-                >(crate::transaction_type::SolanaTransactionType::Legacy(
+                Ok(crate::transaction_type::SolanaTransactionType::Legacy(
                     test_tx_for_build.clone(),
                 ))
             });
 
         let message_id_clone = message_id.clone();
 
-        // Mock get_units_consumed_from_simulation - low compute units so cost < available gas
+        // cost < available gas
         let compute_units = 100_000u64;
         mock_client
             .expect_get_units_consumed_from_simulation()
             .times(1)
             .returning(move |_| Box::pin(async move { Ok(compute_units) }));
 
-        // Mock send_transaction to succeed
         mock_client
             .expect_send_transaction()
             .times(1)
             .returning(move |_| Box::pin(async move { Ok((test_signature, Some(5_000u64))) }));
 
-        // Mock write_gas_cost to Redis
         redis_conn
             .expect_write_gas_cost()
             .withf(move |id, cost, tx_type| {
@@ -1634,12 +1621,7 @@ mod tests {
         transaction_builder
             .expect_build_execute_instruction()
             .times(1)
-            .returning(move |_, _, _, _| {
-                Ok::<
-                    (Instruction, Option<crate::includer::ALTInfo>),
-                    crate::error::TransactionBuilderError,
-                >((instruction_for_mock.clone(), None))
-            });
+            .returning(move |_, _, _, _| Ok((instruction_for_mock.clone(), None)));
 
         let mut test_tx =
             solana_sdk::transaction::Transaction::new_with_payer(&[], Some(&keypair.pubkey()));
@@ -1649,10 +1631,7 @@ mod tests {
             .expect_build()
             .times(1)
             .returning(move |_, _| {
-                Ok::<
-                    crate::transaction_type::SolanaTransactionType,
-                    crate::error::TransactionBuilderError,
-                >(crate::transaction_type::SolanaTransactionType::Legacy(
+                Ok(crate::transaction_type::SolanaTransactionType::Legacy(
                     test_tx_for_build.clone(),
                 ))
             });
@@ -1754,21 +1733,17 @@ mod tests {
 
         let message_id_clone = message_id.clone();
 
-        // Mock incoming_message_already_executed
-        // The PDA is calculated from the message, so we accept any PDA
         mock_client
             .expect_incoming_message_already_executed()
             .times(1)
             .returning(|_| Box::pin(async move { Ok(false) }));
 
-        // Mock get_alt_pubkey
         redis_conn
             .expect_get_alt_pubkey()
             .withf(move |id| *id == message_id_clone)
             .times(1)
             .returning(|_| Ok(None));
 
-        // Mock build_execute_instruction - executable program, no ALT
         let executable_program = Pubkey::new_unique();
         let test_instruction =
             Instruction::new_with_bytes(executable_program, &[5, 6, 7, 8], vec![]);
@@ -1776,16 +1751,12 @@ mod tests {
             .expect_build_execute_instruction()
             .times(1)
             .returning(move |_, _, _, _| {
-                Ok::<
-                    (Instruction, Option<crate::includer::ALTInfo>),
-                    crate::error::TransactionBuilderError,
-                >((
+                Ok((
                     test_instruction.clone(),
                     None, // No ALT for executable
                 ))
             });
 
-        // Mock transaction_builder.build
         let mut test_tx =
             solana_sdk::transaction::Transaction::new_with_payer(&[], Some(&keypair.pubkey()));
         test_tx.sign(&[&keypair], solana_sdk::hash::Hash::default());
@@ -1795,30 +1766,24 @@ mod tests {
             .expect_build()
             .times(1)
             .returning(move |_, _| {
-                Ok::<
-                    crate::transaction_type::SolanaTransactionType,
-                    crate::error::TransactionBuilderError,
-                >(crate::transaction_type::SolanaTransactionType::Legacy(
+                Ok(crate::transaction_type::SolanaTransactionType::Legacy(
                     test_tx_for_build.clone(),
                 ))
             });
 
         let message_id_clone = message_id.clone();
 
-        // Mock get_units_consumed_from_simulation
         let compute_units = 100_000u64;
         mock_client
             .expect_get_units_consumed_from_simulation()
             .times(1)
             .returning(move |_| Box::pin(async move { Ok(compute_units) }));
 
-        // Mock send_transaction
         mock_client
             .expect_send_transaction()
             .times(1)
             .returning(move |_| Box::pin(async move { Ok((test_signature, Some(5_000u64))) }));
 
-        // Mock write_gas_cost
         redis_conn
             .expect_write_gas_cost()
             .withf(move |id, cost, tx_type| {
@@ -1889,8 +1854,6 @@ mod tests {
         let available_gas = 1_000u64;
         let payload_hash = "d".repeat(32);
 
-        // Mock incoming_message_already_executed
-        // The PDA is calculated from the message, so we accept any PDA
         mock_client
             .expect_incoming_message_already_executed()
             .times(1)
@@ -1898,14 +1861,12 @@ mod tests {
 
         let message_id_clone = message_id.clone();
 
-        // Mock get_alt_pubkey
         redis_conn
             .expect_get_alt_pubkey()
             .withf(move |id| *id == message_id_clone)
             .times(1)
             .returning(|_| Ok(None));
 
-        // Mock build_execute_instruction
         let executable_program = Pubkey::new_unique();
         let test_instruction =
             Instruction::new_with_bytes(executable_program, &[9, 10, 11, 12], vec![]);
@@ -1913,12 +1874,7 @@ mod tests {
         transaction_builder
             .expect_build_execute_instruction()
             .times(1)
-            .returning(move |_, _, _, _| {
-                Ok::<
-                    (Instruction, Option<crate::includer::ALTInfo>),
-                    crate::error::TransactionBuilderError,
-                >((instruction_for_mock.clone(), None))
-            });
+            .returning(move |_, _, _, _| Ok((instruction_for_mock.clone(), None)));
 
         let mut test_tx =
             solana_sdk::transaction::Transaction::new_with_payer(&[], Some(&keypair.pubkey()));
@@ -1928,10 +1884,7 @@ mod tests {
             .expect_build()
             .times(1)
             .returning(move |_, _| {
-                Ok::<
-                    crate::transaction_type::SolanaTransactionType,
-                    crate::error::TransactionBuilderError,
-                >(crate::transaction_type::SolanaTransactionType::Legacy(
+                Ok(crate::transaction_type::SolanaTransactionType::Legacy(
                     test_tx_for_build.clone(),
                 ))
             });
@@ -1948,7 +1901,6 @@ mod tests {
         let message_id_clone = message_id.clone();
         let source_chain_clone = source_chain.clone();
 
-        // Mock cannot_execute_message
         mock_gmp_api
             .expect_cannot_execute_message()
             .withf(move |id, msg_id, src_chain, details, reason| {
