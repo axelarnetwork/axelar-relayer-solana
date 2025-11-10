@@ -3,6 +3,7 @@
 // Read about prioritization fees in the corresponding section in the guide
 
 use crate::error::GasCalculatorError;
+use crate::fees_client::FeesClientTrait;
 use crate::includer_client::IncluderClientTrait;
 use crate::transaction_type::SolanaTransactionType;
 use async_trait::async_trait;
@@ -14,18 +15,21 @@ use solana_sdk::signer::keypair::Keypair;
 use solana_sdk::signer::Signer;
 use solana_sdk::transaction::Transaction;
 use std::sync::Arc;
+use tracing::debug;
 
 #[derive(Clone)]
-pub struct GasCalculator<IC: IncluderClientTrait> {
+pub struct GasCalculator<IC: IncluderClientTrait, FC: FeesClientTrait> {
     includer_client: IC,
     solana_keypair: Arc<Keypair>,
+    fees_client: FC,
 }
 
-impl<IC: IncluderClientTrait> GasCalculator<IC> {
-    pub fn new(includer_client: IC, solana_keypair: Arc<Keypair>) -> Self {
+impl<IC: IncluderClientTrait, FC: FeesClientTrait> GasCalculator<IC, FC> {
+    pub fn new(includer_client: IC, solana_keypair: Arc<Keypair>, fees_client: FC) -> Self {
         Self {
             includer_client,
             solana_keypair,
+            fees_client,
         }
     }
 }
@@ -44,7 +48,7 @@ pub trait GasCalculatorTrait: ThreadSafe {
 }
 
 #[async_trait]
-impl<IC: IncluderClientTrait> GasCalculatorTrait for GasCalculator<IC> {
+impl<IC: IncluderClientTrait, FC: FeesClientTrait> GasCalculatorTrait for GasCalculator<IC, FC> {
     async fn compute_budget(
         &self,
         ixs: &[Instruction],
@@ -85,7 +89,7 @@ impl<IC: IncluderClientTrait> GasCalculatorTrait for GasCalculator<IC> {
         ixs: &[Instruction],
     ) -> Result<Instruction, GasCalculatorError> {
         const MAX_ACCOUNTS: usize = 128;
-        const N_SLOTS_TO_CHECK: usize = 10;
+        // const N_SLOTS_TO_CHECK: usize = 10;
 
         let all_touched_accounts = ixs
             .iter()
@@ -93,26 +97,34 @@ impl<IC: IncluderClientTrait> GasCalculatorTrait for GasCalculator<IC> {
             .take(MAX_ACCOUNTS)
             .map(|x| x.pubkey)
             .collect::<Vec<_>>();
+        // let fees = self
+        //     .includer_client
+        //     .get_recent_prioritization_fees(&all_touched_accounts)
+        //     .await
+        //     .map_err(|e| GasCalculatorError::Generic(e.to_string()))?;
+        // let (sum, count) = fees
+        //     .into_iter()
+        //     .rev()
+        //     .take(N_SLOTS_TO_CHECK)
+        //     .map(|x| x.prioritization_fee)
+        //     // Simple rolling average of the last `N_SLOTS_TO_CHECK` items.
+        //     .fold((0_u64, 0_u64), |(sum, count), fee| {
+        //         (sum.saturating_add(fee), count.saturating_add(1))
+        //     });
+        // let average = if count > 0 {
+        //     sum.saturating_div(count)
+        // } else {
+        //     0
+        // };
+
         let fees = self
-            .includer_client
+            .fees_client
             .get_recent_prioritization_fees(&all_touched_accounts)
             .await
             .map_err(|e| GasCalculatorError::Generic(e.to_string()))?;
-        let (sum, count) = fees
-            .into_iter()
-            .rev()
-            .take(N_SLOTS_TO_CHECK)
-            .map(|x| x.prioritization_fee)
-            // Simple rolling average of the last `N_SLOTS_TO_CHECK` items.
-            .fold((0_u64, 0_u64), |(sum, count), fee| {
-                (sum.saturating_add(fee), count.saturating_add(1))
-            });
-        let average = if count > 0 {
-            sum.saturating_div(count)
-        } else {
-            0
-        };
 
-        Ok(ComputeBudgetInstruction::set_compute_unit_price(average))
+        debug!("Got prioritization fees: {}", fees);
+
+        Ok(ComputeBudgetInstruction::set_compute_unit_price(fees))
     }
 }

@@ -1,5 +1,6 @@
 use crate::config::SolanaConfig;
 use crate::error::IncluderClientError;
+use crate::fees_client::FeesClient;
 use crate::gas_calculator::GasCalculator;
 use crate::includer_client::{IncluderClient, IncluderClientTrait};
 use crate::models::refunds::RefundsModel;
@@ -91,10 +92,7 @@ impl<
         }
     }
 
-    pub async fn create_includer<
-        DB: Database + ThreadSafe + Clone,
-        GMP: GmpApiTrait + ThreadSafe + Clone,
-    >(
+    pub async fn create_includer<DB: Database + ThreadSafe + Clone, GMP: GmpApiTrait + Clone>(
         config: SolanaConfig,
         gmp_api: Arc<GMP>,
         redis_conn: R,
@@ -112,13 +110,20 @@ impl<
                 R,
                 RF,
                 IncluderClient,
-                TransactionBuilder<GasCalculator<IncluderClient>, IncluderClient>,
+                TransactionBuilder<GasCalculator<IncluderClient, FeesClient>, IncluderClient>,
             >,
         >,
         IncluderError,
     > {
         let solana_rpc = config.solana_poll_rpc.clone();
         let solana_commitment = config.solana_commitment;
+
+        let fees_client_url = config.fees_client_url.clone();
+
+        let fees_client = Arc::new(
+            FeesClient::new(&fees_client_url)
+                .map_err(|e| error_stack::report!(IncluderError::GenericError(e.to_string())))?,
+        );
 
         let client = Arc::new(
             IncluderClient::new(&solana_rpc, solana_commitment, 3)
@@ -127,7 +132,11 @@ impl<
 
         let keypair = Arc::new(config.signing_keypair());
 
-        let gas_calculator = GasCalculator::new(client.as_ref().clone(), Arc::clone(&keypair));
+        let gas_calculator = GasCalculator::new(
+            client.as_ref().clone(),
+            Arc::clone(&keypair),
+            fees_client.as_ref().clone(),
+        );
 
         let transaction_builder =
             TransactionBuilder::new(Arc::clone(&keypair), gas_calculator, Arc::clone(&client));

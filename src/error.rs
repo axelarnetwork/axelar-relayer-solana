@@ -79,3 +79,9 @@ pub enum RedisInterfaceError {
     #[error("GenericError: {0}")]
     GenericError(String),
 }
+
+#[derive(Error, Debug)]
+pub enum FeesClientError {
+    #[error("GenericError: {0}")]
+    GenericError(String),
+}

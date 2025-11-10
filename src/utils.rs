@@ -59,6 +59,26 @@ pub fn get_tx_batch_command(
     serde_json::to_string(&batch).unwrap_or_else(|_| "[]".to_string())
 }
 
+pub fn get_recent_prioritization_fees_command(addresses: Vec<Pubkey>) -> String {
+    let account_keys: Vec<String> = addresses.iter().map(|pk| pk.to_string()).collect();
+
+    let request = json!({
+        "jsonrpc": "2.0",
+        "id": "1",
+        "method": "getPriorityFeeEstimate",
+        "params": [
+            {
+                "accountKeys": account_keys,
+                "options": {
+                    "includeAllPriorityFeeLevels": true
+                }
+            }
+        ]
+    });
+
+    serde_json::to_string(&request).unwrap_or_else(|_| "{}".to_string())
+}
+
 pub async fn post_request(url: &str, body_json: &str) -> anyhow::Result<String> {
     let client = reqwest::Client::new();
     debug!("Executing request: POST {} with body {}", url, body_json);
