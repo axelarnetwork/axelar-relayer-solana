@@ -3483,7 +3483,6 @@ mod tests {
         let payload_merkle_root = [9u8; 32];
         let signing_verifier_set_merkle_root = [8u8; 32];
 
-        // Single verifier; its tx will fail
         let verifier_info = SigningVerifierSetInfo {
             leaf: VerifierSetLeaf {
                 nonce: 0,
@@ -3586,8 +3585,6 @@ mod tests {
             },
         };
 
-        // --- Mock txs: init ok, verify fails, no approves ---
-
         let mut init_tx = Transaction::new_with_payer(&[], Some(&keypair.pubkey()));
         init_tx.sign(&[&keypair], Hash::default());
         let init_sig = init_tx.signatures[0];
@@ -3631,10 +3628,8 @@ mod tests {
                 }
             });
 
-        // No gas cost writes should happen
         redis_conn.expect_write_gas_cost().times(0);
 
-        // We expect 3 cannot_execute_message events, one per message id.
         let expected_ids = [msg_id_1.clone(), msg_id_2.clone(), msg_id_3.clone()];
         mock_gmp_api
             .expect_cannot_execute_message()
