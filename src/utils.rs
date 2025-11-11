@@ -70,7 +70,7 @@ pub fn get_recent_prioritization_fees_command(addresses: Vec<Pubkey>) -> String 
             {
                 "accountKeys": account_keys,
                 "options": {
-                    "includeAllPriorityFeeLevels": true
+                    "includeAllPriorityFeeLevels": false
                 }
             }
         ]

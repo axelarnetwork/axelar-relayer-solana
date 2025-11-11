@@ -44,16 +44,27 @@ impl FeesClientTrait for FeesClient {
         let parsed: serde_json::Value =
             serde_json::from_str(&raw).map_err(|e| FeesClientError::GenericError(e.to_string()))?;
 
-        parsed
-            .get("result")
-            .and_then(|result| result.get("priorityFeeEstimate"))
+        let result = parsed.get("result").ok_or(FeesClientError::GenericError(
+            "result field not found in response".to_string(),
+        ))?;
+
+        let value = result
+            .get("priorityFeeEstimate")
             .ok_or(FeesClientError::GenericError(
                 "priorityFeeEstimate not found in response".to_string(),
-            ))?
-            .as_u64()
-            .ok_or(FeesClientError::GenericError(
-                "priorityFeeEstimate is not a u64".to_string(),
-            ))
+            ))?;
+
+        let value = value.as_f64().ok_or(FeesClientError::GenericError(
+            "priorityFeeEstimate is not a floating point number".to_string(),
+        ))?;
+
+        if !value.is_finite() || value < 0.0 {
+            return Err(FeesClientError::GenericError(
+                "priorityFeeEstimate is not a valid number".to_string(),
+            ));
+        }
+
+        Ok(value.ceil() as u64)
     }
 }
 
@@ -66,12 +77,9 @@ mod tests {
     use std::path::PathBuf;
     use std::str::FromStr;
 
-    /// Integration test: check that get_recent_prioritization_fees returns a valid number
-    /// Run manually:
-    ///     NETWORK=devnet cargo test -- --nocapture --ignored test_get_recent_prioritization_fees_real
     #[tokio::test]
-    #[ignore]
     async fn test_get_recent_prioritization_fees_real() {
+        dotenv::dotenv().ok();
         let network = std::env::var("NETWORK").expect("NETWORK must be set");
         let config = load_local_config(&network);
 
@@ -80,7 +88,6 @@ mod tests {
 
         let client = FeesClient::new(url).expect("failed to create FeesClient");
 
-        // Example public key from docs (any valid address works)
         let addr = Pubkey::from_str("483jTxdFmFGRnzgx9nBoQM2Zao5mZxKvFgHzTb4Ytn1L")
             .expect("invalid pubkey in test");
 
@@ -93,12 +100,9 @@ mod tests {
         assert!(fee > 0, "Fee estimate should be positive");
     }
 
-    /// Integration test: print and inspect the raw RPC JSON response
-    /// Run manually:
-    ///     NETWORK=devnet cargo test -- --nocapture --ignored test_raw_priority_fee_response
     #[tokio::test]
-    #[ignore]
     async fn test_raw_priority_fee_response() {
+        dotenv::dotenv().ok();
         let network = std::env::var("NETWORK").expect("NETWORK must be set");
         let config = load_local_config(&network);
 
@@ -118,25 +122,21 @@ mod tests {
         let v: serde_json::Value =
             serde_json::from_str(&raw).expect("Response should be valid JSON");
 
-        // Assert the RPC envelope
         assert_eq!(v.get("jsonrpc").and_then(|j| j.as_str()), Some("2.0"));
         assert!(v.get("id").is_some(), "id field should be present");
         assert!(v.get("result").is_some(), "result field should be present");
 
-        // Print or assert the fee value
-        if let Some(fee) = v
+        let fee = v
             .get("result")
             .and_then(|r| r.get("priorityFeeEstimate"))
-            .and_then(|f| f.as_u64())
-        {
-            println!("Parsed priorityFeeEstimate = {}", fee);
-            assert!(fee > 0);
-        } else {
-            println!(
-                "priorityFeeEstimate not found; full result: {}",
-                v.get("result").unwrap_or(&serde_json::json!({}))
-            );
-        }
+            .expect("priorityFeeEstimate should be present");
+        let fee = fee
+            .as_f64()
+            .map(|f| f.ceil() as u64)
+            .expect("priorityFeeEstimate should be a floating point number");
+
+        println!("Parsed priorityFeeEstimate = {}", fee);
+        assert!(fee > 0);
     }
 
     fn load_local_config(network: &str) -> SolanaConfig {
