@@ -736,13 +736,11 @@ impl<
             source_address: task.task.message.source_address.clone(),
             destination_chain: self.chain_name.clone(),
             destination_address: task.task.message.destination_address.clone(),
-            payload_hash: task
-                .task
-                .message
-                .payload_hash
-                .clone()
-                .into_bytes()
-                .as_slice()
+            payload_hash: base64::prelude::BASE64_STANDARD
+                .decode(task.task.message.payload_hash.clone())
+                .map_err(|e| {
+                    IncluderError::GenericError(format!("Failed to decode payload hash: {}", e))
+                })?
                 .try_into()
                 .map_err(|_| {
                     IncluderError::GenericError(
