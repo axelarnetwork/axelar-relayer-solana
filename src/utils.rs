@@ -15,7 +15,7 @@ use solana_transaction_parser::gmp_types::{CannotExecuteMessageReason, Event};
 use std::str::FromStr;
 use tracing::{debug, error};
 
-use axelar_solana_gateway_v2::{seed_prefixes, VerifierSetHash, ID};
+use axelar_solana_gateway_v2::{seed_prefixes, ID};
 use solana_rpc_client_api::response::RpcConfirmedTransactionStatusWithSignature;
 use solana_sdk::{
     commitment_config::{CommitmentConfig, CommitmentLevel},
@@ -134,20 +134,27 @@ pub async fn upsert_and_publish<SM: SolanaTransactionModel>(
     Ok(inserted)
 }
 
-pub fn get_signature_verification_pda(payload_merkle_root: &[u8; 32]) -> (Pubkey, u8) {
+pub fn get_signature_verification_pda(
+    payload_merkle_root: &[u8; 32],
+    signing_verifier_set_merkle_root: &[u8; 32],
+) -> (Pubkey, u8) {
     let (pubkey, bump) = Pubkey::find_program_address(
         &[
             seed_prefixes::SIGNATURE_VERIFICATION_SEED,
             payload_merkle_root,
+            signing_verifier_set_merkle_root,
         ],
         &ID,
     );
     (pubkey, bump)
 }
 
-pub fn get_verifier_set_tracker_pda(hash: VerifierSetHash) -> (Pubkey, u8) {
+pub fn get_verifier_set_tracker_pda(signing_verifier_set_merkle_root: &[u8; 32]) -> (Pubkey, u8) {
     Pubkey::find_program_address(
-        &[seed_prefixes::VERIFIER_SET_TRACKER_SEED, hash.as_slice()],
+        &[
+            seed_prefixes::VERIFIER_SET_TRACKER_SEED,
+            signing_verifier_set_merkle_root,
+        ],
         &ID,
     )
 }

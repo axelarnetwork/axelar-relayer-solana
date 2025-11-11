@@ -1,3 +1,4 @@
+use anchor_lang::AccountDeserialize;
 use async_trait::async_trait;
 
 use axelar_solana_gateway_v2::IncomingMessage;
@@ -240,7 +241,7 @@ impl IncluderClientTrait for IncluderClient {
     }
 }
 
-fn read(data: &[u8]) -> Option<&IncomingMessage> {
-    let result: &IncomingMessage = bytemuck::try_from_bytes(data).ok()?;
+fn read(mut data: &[u8]) -> Option<IncomingMessage> {
+    let result = IncomingMessage::try_deserialize(&mut data).ok()?;
     Some(result)
 }

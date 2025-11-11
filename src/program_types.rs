@@ -1,5 +1,5 @@
 use anchor_lang::{AnchorDeserialize, AnchorSerialize};
-use axelar_solana_gateway_v2::{MerkleisedMessage, SigningVerifierSetInfo};
+use axelar_solana_gateway_v2::{MerklizedMessage, SigningVerifierSetInfo};
 pub type Signature = [u8; 65];
 
 #[derive(Debug, Eq, PartialEq, Clone, AnchorSerialize, AnchorDeserialize)]
@@ -16,6 +16,6 @@ pub enum MerkleisedPayload {
         new_verifier_set_merkle_root: [u8; 32],
     },
     NewMessages {
-        messages: Vec<MerkleisedMessage>,
+        messages: Vec<MerklizedMessage>,
     },
 }

@@ -246,16 +246,6 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
                     token_manager_ata,
                     token_program: spl_token_2022::ID,
                     associated_token_program: spl_associated_token_account::ID,
-                    deployer_ata: Some(deployer_ata),
-                    minter,
-                    minter_roles_pda,
-                    mpl_token_metadata_account: Some(mpl_token_metadata_account),
-                    mpl_token_metadata_program: Some(mpl_token_metadata::ID),
-                    sysvar_instructions: Some(solana_program::sysvar::instructions::ID),
-                    deployer: Some(self.keypair.pubkey()),
-                    authority,
-                    destination: destination_address,
-                    destination_ata,
                     program: axelar_solana_its_v2::ID,
                 }
                 .to_account_metas(None);

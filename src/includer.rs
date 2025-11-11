@@ -9,9 +9,9 @@ use crate::refund_manager::SolanaRefundManager;
 use crate::transaction_builder::{TransactionBuilder, TransactionBuilderTrait};
 use crate::utils::{
     calculate_total_cost_lamports, get_cannot_execute_events_from_execute_data,
-    get_gas_service_event_authority_pda, get_gateway_event_authority_pda, get_incoming_message_pda,
-    get_operator_pda, get_signature_verification_pda, get_treasury_pda,
-    get_verifier_set_tracker_pda,
+    get_gas_service_event_authority_pda, get_gateway_event_authority_pda,
+    get_gateway_root_config_internal, get_incoming_message_pda, get_operator_pda,
+    get_signature_verification_pda, get_treasury_pda, get_verifier_set_tracker_pda,
 };
 use anchor_lang::{InstructionData, ToAccountMetas};
 use async_trait::async_trait;
@@ -511,8 +511,10 @@ impl<
         let execute_data = ExecuteData::try_from_slice(&execute_data_bytes)
             .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
-        let (verification_session_tracker_pda, _) =
-            get_signature_verification_pda(&execute_data.payload_merkle_root);
+        let (verification_session_tracker_pda, _) = get_signature_verification_pda(
+            &execute_data.payload_merkle_root,
+            &execute_data.signing_verifier_set_merkle_root,
+        );
 
         let ix_data = axelar_solana_gateway_v2::instruction::InitializePayloadVerificationSession {
             merkle_root: execute_data.payload_merkle_root,
@@ -520,13 +522,15 @@ impl<
         .data();
 
         let (verifier_set_tracker_pda, _) =
-            get_verifier_set_tracker_pda(execute_data.signing_verifier_set_merkle_root);
+            get_verifier_set_tracker_pda(&execute_data.signing_verifier_set_merkle_root);
+
+        let (gateway_root_pda, _) = get_gateway_root_config_internal();
 
         let accounts = axelar_solana_gateway_v2::accounts::InitializePayloadVerificationSession {
-            verifier_set_tracker_pda,
             payer: self.keypair.pubkey(),
-            gateway_root_pda: self.gateway_address,
+            gateway_root_pda,
             verification_session_account: verification_session_tracker_pda,
+            verifier_set_tracker_pda,
             system_program: solana_program::system_program::id(),
         };
 
@@ -568,7 +572,7 @@ impl<
                 .data();
 
                 let accounts = axelar_solana_gateway_v2::accounts::VerifySignature {
-                    gateway_root_pda: self.gateway_address,
+                    gateway_root_pda,
                     verification_session_account: verification_session_tracker_pda,
                     verifier_set_tracker_pda,
                 };
@@ -608,7 +612,7 @@ impl<
                 new_verifier_set_merkle_root,
             } => {
                 let (new_verifier_set_tracker_pda, _) =
-                    get_verifier_set_tracker_pda(new_verifier_set_merkle_root);
+                    get_verifier_set_tracker_pda(&execute_data.signing_verifier_set_merkle_root);
                 let ix_data = axelar_solana_gateway_v2::instruction::RotateSigners {
                     new_verifier_set_merkle_root,
                 }
@@ -617,7 +621,7 @@ impl<
                     payer: self.keypair.pubkey(),
                     program: axelar_solana_gateway_v2::ID,
                     system_program: solana_program::system_program::id(),
-                    gateway_root_pda: self.gateway_address,
+                    gateway_root_pda,
                     verifier_set_tracker_pda,
                     operator: Some(self.keypair.pubkey()),
                     new_verifier_set_tracker: new_verifier_set_tracker_pda,
@@ -650,15 +654,15 @@ impl<
                 let number_of_messages = messages.len();
                 let mut merkelised_message_futures = messages
                     .into_iter()
-                    .map(|merkleised_message| {
-                        let command_id = merkleised_message.leaf.message.command_id();
+                    .map(|merklized_message| {
+                        let command_id = merklized_message.leaf.message.command_id();
                         let (pda, _) = get_incoming_message_pda(&command_id);
 
-                        let msg_id = merkleised_message.leaf.message.cc_id.id.clone();
-                        let chain = merkleised_message.leaf.message.cc_id.chain.clone();
+                        let msg_id = merklized_message.leaf.message.cc_id.id.clone();
+                        let chain = merklized_message.leaf.message.cc_id.chain.clone();
 
                         let ix_data = axelar_solana_gateway_v2::instruction::ApproveMessage {
-                            merkleised_message,
+                            merklized_message,
                             payload_merkle_root: execute_data.payload_merkle_root,
                         }
                         .data();
@@ -667,7 +671,7 @@ impl<
                             incoming_message_pda: pda,
                             program: axelar_solana_gateway_v2::ID,
                             system_program: solana_program::system_program::id(),
-                            gateway_root_pda: self.gateway_address,
+                            gateway_root_pda,
                             verification_session_account: verification_session_tracker_pda,
                             event_authority,
                         };
