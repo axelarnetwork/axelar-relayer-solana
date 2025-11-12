@@ -17,6 +17,7 @@ use anchor_lang::ToAccountMetas;
 use anchor_spl::{associated_token::spl_associated_token_account, token_2022::spl_token_2022};
 use async_trait::async_trait;
 use axelar_solana_gateway_v2::{executable::ExecutablePayload, state::incoming_message::Message};
+use base64::Engine;
 use interchain_token_transfer_gmp::GMPPayload;
 use mpl_token_metadata;
 use relayer_core::utils::ThreadSafe;
@@ -341,15 +342,13 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
                 ))
             }
             _ => {
-                let decoded_payload = ExecutablePayload::decode(payload)
+                let b64_decoded = base64::prelude::BASE64_STANDARD.decode(payload).unwrap();
+                let decoded_payload = ExecutablePayload::decode(&b64_decoded)
                     .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
                 let user_provided_accounts = decoded_payload.account_meta();
 
-                let (signing_pda, _) = get_validate_message_signing_pda(
-                    &message.command_id(),
-                    // TODO: Is this gateway or dst program?
-                    &axelar_solana_gateway_v2::ID,
-                );
+                let (signing_pda, _) =
+                    get_validate_message_signing_pda(&message.command_id(), &destination_address);
                 let (event_authority, _) = get_gateway_event_authority_pda();
                 let (gateway_root_pda, _) = get_gateway_root_config_internal();
 
@@ -377,7 +376,7 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
 
                 Ok((
                     Instruction {
-                        program_id: axelar_solana_gateway_v2::ID,
+                        program_id: destination_address,
                         accounts,
                         data,
                     },
