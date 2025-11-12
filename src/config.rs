@@ -8,7 +8,6 @@ pub struct SolanaConfig {
     pub common_config: Config,
 
     pub refund_manager_addresses: String,
-    pub includer_secrets: String,
     pub solana_poll_rpc: String,
     pub solana_stream_rpc: String,
     pub solana_faucet_url: String,

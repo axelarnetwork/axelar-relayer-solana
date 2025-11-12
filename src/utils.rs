@@ -1,8 +1,9 @@
 use crate::{
     program_types::{ExecuteData, MerkleisedPayload},
+    transaction_type::SolanaTransactionType,
     types::SolanaTransaction,
-    versioned_transaction::SolanaTransactionType,
 };
+use anchor_lang::Key;
 use anchor_spl::{associated_token::spl_associated_token_account, token_2022::spl_token_2022};
 use anyhow::anyhow;
 use relayer_core::{
@@ -14,7 +15,7 @@ use solana_transaction_parser::gmp_types::{CannotExecuteMessageReason, Event};
 use std::str::FromStr;
 use tracing::{debug, error};
 
-use axelar_solana_gateway_v2::{seed_prefixes, VerifierSetHash, ID};
+use axelar_solana_gateway_v2::{seed_prefixes, ID};
 use solana_rpc_client_api::response::RpcConfirmedTransactionStatusWithSignature;
 use solana_sdk::{
     commitment_config::{CommitmentConfig, CommitmentLevel},
@@ -133,20 +134,27 @@ pub async fn upsert_and_publish<SM: SolanaTransactionModel>(
     Ok(inserted)
 }
 
-pub fn get_signature_verification_pda(payload_merkle_root: &[u8; 32]) -> (Pubkey, u8) {
+pub fn get_signature_verification_pda(
+    payload_merkle_root: &[u8; 32],
+    signing_verifier_set_merkle_root: &[u8; 32],
+) -> (Pubkey, u8) {
     let (pubkey, bump) = Pubkey::find_program_address(
         &[
             seed_prefixes::SIGNATURE_VERIFICATION_SEED,
             payload_merkle_root,
+            signing_verifier_set_merkle_root,
         ],
         &ID,
     );
     (pubkey, bump)
 }
 
-pub fn get_verifier_set_tracker_pda(hash: VerifierSetHash) -> (Pubkey, u8) {
+pub fn get_verifier_set_tracker_pda(signing_verifier_set_merkle_root: &[u8; 32]) -> (Pubkey, u8) {
     Pubkey::find_program_address(
-        &[seed_prefixes::VERIFIER_SET_TRACKER_SEED, hash.as_slice()],
+        &[
+            seed_prefixes::VERIFIER_SET_TRACKER_SEED,
+            signing_verifier_set_merkle_root,
+        ],
         &ID,
     )
 }
@@ -273,6 +281,38 @@ pub fn get_minter_roles_pda(token_manager_pda: &Pubkey, minter: &Pubkey) -> (Pub
             minter.as_ref(),
         ],
         &axelar_solana_its_v2::ID,
+    )
+}
+
+pub fn get_operator_pda(operator: &Pubkey) -> (Pubkey, u8) {
+    Pubkey::find_program_address(
+        &[
+            axelar_solana_operators::OperatorAccount::SEED_PREFIX,
+            operator.key().as_ref(),
+        ],
+        &axelar_solana_operators::ID,
+    )
+}
+
+pub fn get_treasury_pda() -> (Pubkey, u8) {
+    Pubkey::find_program_address(
+        &[axelar_solana_gas_service_v2::state::Treasury::SEED_PREFIX],
+        &axelar_solana_gas_service_v2::ID,
+    )
+}
+
+pub fn get_gas_service_event_authority_pda() -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[b"__event_authority"], &axelar_solana_gas_service_v2::ID)
+}
+
+pub fn get_destination_ata(destination_pubkey: &Pubkey, token_mint_pda: &Pubkey) -> (Pubkey, u8) {
+    Pubkey::find_program_address(
+        &[
+            destination_pubkey.as_ref(),
+            spl_token_2022::id().as_ref(),
+            token_mint_pda.as_ref(),
+        ],
+        &spl_associated_token_account::id(),
     )
 }
 

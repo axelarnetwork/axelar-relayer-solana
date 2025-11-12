@@ -6,6 +6,7 @@ use relayer_core::utils::setup_heartbeat;
 use relayer_core::{database::PostgresDB, gmp_api, payload_cache::PayloadCache, queue::Queue};
 use solana::config::SolanaConfig;
 use solana::includer::SolanaIncluder;
+use solana::models::solana_subscriber_cursor::PostgresDB as SolanaPostgresDB;
 use solana::redis::RedisConnection;
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -44,6 +45,9 @@ async fn main() -> anyhow::Result<()> {
     let pg_pool = PgPool::connect(&config.common_config.postgres_url).await?;
     let gmp_api = gmp_api::construct_gmp_api(pg_pool.clone(), &config.common_config, true)?;
 
+    let solana_postgres = SolanaPostgresDB::new(&config.common_config.postgres_url).await?;
+    let refunds_model = Arc::new(solana_postgres);
+
     let solana_includer = SolanaIncluder::<
         relayer_core::gmp_api::GmpApiDbAuditDecorator<
             relayer_core::gmp_api::GmpApi,
@@ -51,12 +55,15 @@ async fn main() -> anyhow::Result<()> {
             relayer_core::models::gmp_events::PgGMPEvents,
         >,
         RedisConnection,
+        SolanaPostgresDB,
+        solana::includer_client::IncluderClient,
     >::create_includer(
         config,
         gmp_api,
         redis_conn.clone(),
         payload_cache_for_includer,
         Arc::clone(&construct_proof_queue),
+        refunds_model,
     )
     .await
     .map_err(|e| anyhow::anyhow!("Failed to create includer: {}", e))?;

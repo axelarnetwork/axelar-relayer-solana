@@ -1,6 +1,6 @@
+use crate::error::RedisInterfaceError;
 use async_trait::async_trait;
 use redis::{AsyncTypedCommands, SetExpiry, SetOptions};
-use relayer_core::error::IncluderError;
 use relayer_core::utils::ThreadSafe;
 use serde::{Deserialize, Serialize};
 use solana_sdk::pubkey::Pubkey;
@@ -29,37 +29,37 @@ fn default_true() -> bool {
 #[async_trait]
 pub trait RedisConnectionTrait: ThreadSafe {
     fn inner(&self) -> &ConnectionManager;
-    async fn write_gas_cost_to_redis(
+    async fn write_gas_cost(
         &self,
         message_id: String,
         gas_cost: u64,
         transaction_type: TransactionType,
     );
-    async fn write_alt_pubkey_to_redis(
+    async fn write_alt_pubkey(
         &self,
         message_id: String,
         alt_pubkey: Pubkey,
-    ) -> Result<(), IncluderError>;
-    async fn get_alt_pubkey_from_redis(
+    ) -> Result<(), RedisInterfaceError>;
+    async fn get_alt_pubkey(
         &self,
         message_id: String,
-    ) -> Result<Option<Pubkey>, IncluderError>;
+    ) -> Result<Option<Pubkey>, RedisInterfaceError>;
     #[allow(clippy::type_complexity)]
     async fn get_all_alt_keys(
         &self,
-    ) -> Result<Vec<(String, Pubkey, i64, u32, bool)>, IncluderError>;
-    async fn remove_alt_key_from_redis(&self, message_id: String) -> Result<(), IncluderError>;
+    ) -> Result<Vec<(String, Pubkey, i64, u32, bool)>, RedisInterfaceError>;
+    async fn remove_alt_key(&self, message_id: String) -> Result<(), RedisInterfaceError>;
     async fn update_alt_retry_count(
         &self,
         message_id: String,
         retry_count: u32,
-    ) -> Result<(), IncluderError>;
-    async fn set_alt_inactive(&self, message_id: String) -> Result<(), IncluderError>;
-    async fn write_failed_alt_to_redis(
+    ) -> Result<(), RedisInterfaceError>;
+    async fn set_alt_inactive(&self, message_id: String) -> Result<(), RedisInterfaceError>;
+    async fn remove_and_set_failed_alt_key(
         &self,
         message_id: String,
         alt_pubkey: Pubkey,
-    ) -> Result<(), IncluderError>;
+    ) -> Result<(), RedisInterfaceError>;
 }
 
 #[derive(Clone)]
@@ -79,7 +79,7 @@ impl RedisConnectionTrait for RedisConnection {
         &self.conn
     }
 
-    async fn write_gas_cost_to_redis(
+    async fn write_gas_cost(
         &self,
         message_id: String,
         gas_cost: u64,
@@ -106,17 +106,16 @@ impl RedisConnectionTrait for RedisConnection {
         }
     }
 
-    async fn write_alt_pubkey_to_redis(
+    async fn write_alt_pubkey(
         &self,
         message_id: String,
         alt_pubkey: Pubkey,
-    ) -> Result<(), IncluderError> {
+    ) -> Result<(), RedisInterfaceError> {
         debug!("Writing ALT pubkey to Redis");
         let mut redis_conn = self.conn.clone();
         let set_opts = SetOptions::default().with_expiration(SetExpiry::EX(GAS_COST_EXPIRATION));
         let key = format!("ALT:{}", message_id);
 
-        // Store pubkey with timestamp
         let created_at = chrono::Utc::now().timestamp();
         let entry = AltEntry {
             pubkey: alt_pubkey.to_string(),
@@ -126,14 +125,20 @@ impl RedisConnectionTrait for RedisConnection {
         };
 
         let entry_json = serde_json::to_string(&entry).map_err(|e| {
-            IncluderError::GenericError(format!("Failed to serialize ALT entry: {}", e))
+            RedisInterfaceError::WriteAltPubkeyError(format!(
+                "Failed to serialize ALT entry: {}",
+                e
+            ))
         })?;
 
         redis_conn
             .set_options(key.clone(), entry_json.clone(), set_opts)
             .await
             .map_err(|e| {
-                IncluderError::GenericError(format!("Failed to write ALT pubkey to Redis: {}", e))
+                RedisInterfaceError::WriteAltPubkeyError(format!(
+                    "Failed to write ALT pubkey to Redis: {}",
+                    e
+                ))
             })?;
 
         debug!(
@@ -144,10 +149,10 @@ impl RedisConnectionTrait for RedisConnection {
         Ok(())
     }
 
-    async fn get_alt_pubkey_from_redis(
+    async fn get_alt_pubkey(
         &self,
         message_id: String,
-    ) -> Result<Option<Pubkey>, IncluderError> {
+    ) -> Result<Option<Pubkey>, RedisInterfaceError> {
         let mut redis_conn = self.conn.clone();
         let key = format!("ALT:{}", message_id);
         let result: Result<Option<String>, redis::RedisError> = redis_conn.get(key.clone()).await;
@@ -158,7 +163,10 @@ impl RedisConnectionTrait for RedisConnection {
 
                 let entry = serde_json::from_str::<AltEntry>(&value_str).map_err(|e| {
                     warn!("Failed to deserialize ALT entry: {}", e);
-                    IncluderError::GenericError(format!("Failed to deserialize ALT entry: {}", e))
+                    RedisInterfaceError::GetAltPubkeyError(format!(
+                        "Failed to deserialize ALT entry: {}",
+                        e
+                    ))
                 })?;
 
                 match entry.pubkey.parse::<Pubkey>() {
@@ -185,7 +193,7 @@ impl RedisConnectionTrait for RedisConnection {
 
     async fn get_all_alt_keys(
         &self,
-    ) -> Result<Vec<(String, Pubkey, i64, u32, bool)>, IncluderError> {
+    ) -> Result<Vec<(String, Pubkey, i64, u32, bool)>, RedisInterfaceError> {
         let mut redis_conn = self.conn.clone();
         let mut all_keys = Vec::new();
 
@@ -197,11 +205,11 @@ impl RedisConnectionTrait for RedisConnection {
                 .arg("MATCH")
                 .arg("ALT:*")
                 .arg("COUNT")
-                .arg(100)
+                .arg(1000)
                 .query_async(&mut redis_conn)
                 .await
                 .map_err(|e| {
-                    IncluderError::GenericError(format!(
+                    RedisInterfaceError::GenericError(format!(
                         "Failed to scan ALT keys from Redis: {}",
                         e
                     ))
@@ -220,20 +228,15 @@ impl RedisConnectionTrait for RedisConnection {
                 if let Ok(Some(value_str)) =
                     redis::AsyncCommands::get::<_, Option<String>>(&mut redis_conn, &key).await
                 {
-                    match serde_json::from_str::<AltEntry>(&value_str) {
-                        Ok(entry) => {
-                            if let Ok(pubkey) = entry.pubkey.parse::<Pubkey>() {
-                                all_keys.push((
-                                    message_id.to_string(),
-                                    pubkey,
-                                    entry.created_at,
-                                    entry.retry_count,
-                                    entry.active,
-                                ));
-                            }
-                        }
-                        Err(_) => {
-                            // Skip invalid entries
+                    if let Ok(entry) = serde_json::from_str::<AltEntry>(&value_str) {
+                        if let Ok(pubkey) = entry.pubkey.parse::<Pubkey>() {
+                            all_keys.push((
+                                message_id.to_string(),
+                                pubkey,
+                                entry.created_at,
+                                entry.retry_count,
+                                entry.active,
+                            ));
                         }
                     }
                 }
@@ -243,14 +246,17 @@ impl RedisConnectionTrait for RedisConnection {
         Ok(all_keys)
     }
 
-    async fn remove_alt_key_from_redis(&self, message_id: String) -> Result<(), IncluderError> {
+    async fn remove_alt_key(&self, message_id: String) -> Result<(), RedisInterfaceError> {
         let mut redis_conn = self.conn.clone();
         let key = format!("ALT:{}", message_id);
 
         redis::AsyncCommands::del::<_, ()>(&mut redis_conn, key.clone())
             .await
             .map_err(|e| {
-                IncluderError::GenericError(format!("Failed to remove ALT key from Redis: {}", e))
+                RedisInterfaceError::RemoveAltKeyError(format!(
+                    "Failed to remove ALT key from Redis: {}",
+                    e
+                ))
             })?;
 
         debug!("Removed ALT key from Redis: {}", key);
@@ -261,7 +267,7 @@ impl RedisConnectionTrait for RedisConnection {
         &self,
         message_id: String,
         retry_count: u32,
-    ) -> Result<(), IncluderError> {
+    ) -> Result<(), RedisInterfaceError> {
         let mut redis_conn = self.conn.clone();
         let key = format!("ALT:{}", message_id);
         let set_opts = SetOptions::default().with_expiration(SetExpiry::EX(GAS_COST_EXPIRATION));
@@ -269,25 +275,34 @@ impl RedisConnectionTrait for RedisConnection {
         let existing_value: Option<String> = redis::AsyncCommands::get(&mut redis_conn, &key)
             .await
             .map_err(|e| {
-                IncluderError::GenericError(format!("Failed to get ALT entry from Redis: {}", e))
+                RedisInterfaceError::UpdateAltRetryCountError(format!(
+                    "Failed to get ALT entry from Redis: {}",
+                    e
+                ))
             })?;
 
         if let Some(value_str) = existing_value {
             let mut entry: AltEntry = serde_json::from_str(&value_str).map_err(|e| {
-                IncluderError::GenericError(format!("Failed to deserialize ALT entry: {}", e))
+                RedisInterfaceError::UpdateAltRetryCountError(format!(
+                    "Failed to deserialize ALT entry: {}",
+                    e
+                ))
             })?;
 
             entry.retry_count = retry_count;
 
             let entry_json = serde_json::to_string(&entry).map_err(|e| {
-                IncluderError::GenericError(format!("Failed to serialize ALT entry: {}", e))
+                RedisInterfaceError::UpdateAltRetryCountError(format!(
+                    "Failed to serialize ALT entry: {}",
+                    e
+                ))
             })?;
 
             redis_conn
                 .set_options(key.clone(), entry_json.clone(), set_opts)
                 .await
                 .map_err(|e| {
-                    IncluderError::GenericError(format!(
+                    RedisInterfaceError::UpdateAltRetryCountError(format!(
                         "Failed to update ALT retry count in Redis: {}",
                         e
                     ))
@@ -298,7 +313,7 @@ impl RedisConnectionTrait for RedisConnection {
                 key, retry_count
             );
         } else {
-            return Err(IncluderError::GenericError(format!(
+            return Err(RedisInterfaceError::UpdateAltRetryCountError(format!(
                 "ALT entry not found for message_id: {}",
                 message_id
             )));
@@ -307,7 +322,7 @@ impl RedisConnectionTrait for RedisConnection {
         Ok(())
     }
 
-    async fn set_alt_inactive(&self, message_id: String) -> Result<(), IncluderError> {
+    async fn set_alt_inactive(&self, message_id: String) -> Result<(), RedisInterfaceError> {
         let mut redis_conn = self.conn.clone();
         let key = format!("ALT:{}", message_id);
         let set_opts = SetOptions::default().with_expiration(SetExpiry::EX(GAS_COST_EXPIRATION));
@@ -315,27 +330,35 @@ impl RedisConnectionTrait for RedisConnection {
         let existing_value: Option<String> = redis::AsyncCommands::get(&mut redis_conn, &key)
             .await
             .map_err(|e| {
-                IncluderError::GenericError(format!("Failed to get ALT entry from Redis: {}", e))
+                RedisInterfaceError::SetAltInactiveError(format!(
+                    "Failed to get ALT entry from Redis: {}",
+                    e
+                ))
             })?;
 
         if let Some(value_str) = existing_value {
             let mut entry: AltEntry = serde_json::from_str(&value_str).map_err(|e| {
-                IncluderError::GenericError(format!("Failed to deserialize ALT entry: {}", e))
+                RedisInterfaceError::SetAltInactiveError(format!(
+                    "Failed to deserialize ALT entry: {}",
+                    e
+                ))
             })?;
 
-            // Set active to false and update timestamp to now
             entry.active = false;
             entry.created_at = chrono::Utc::now().timestamp();
 
             let entry_json = serde_json::to_string(&entry).map_err(|e| {
-                IncluderError::GenericError(format!("Failed to serialize ALT entry: {}", e))
+                RedisInterfaceError::SetAltInactiveError(format!(
+                    "Failed to serialize ALT entry: {}",
+                    e
+                ))
             })?;
 
             redis_conn
                 .set_options(key.clone(), entry_json.clone(), set_opts)
                 .await
                 .map_err(|e| {
-                    IncluderError::GenericError(format!(
+                    RedisInterfaceError::SetAltInactiveError(format!(
                         "Failed to set ALT as inactive in Redis: {}",
                         e
                     ))
@@ -344,30 +367,52 @@ impl RedisConnectionTrait for RedisConnection {
             debug!("Set ALT as inactive in Redis: {}", key);
             Ok(())
         } else {
-            Err(IncluderError::GenericError(format!(
+            Err(RedisInterfaceError::SetAltInactiveError(format!(
                 "ALT entry not found for message_id: {}",
                 message_id
             )))
         }
     }
 
-    async fn write_failed_alt_to_redis(
+    async fn remove_and_set_failed_alt_key(
         &self,
         message_id: String,
         alt_pubkey: Pubkey,
-    ) -> Result<(), IncluderError> {
+    ) -> Result<(), RedisInterfaceError> {
         let mut redis_conn = self.conn.clone();
-        let key = format!("FAILED:ALT:{}", message_id);
+        let alt_key = format!("ALT:{}", message_id);
+        let failed_key = format!("FAILED:ALT:{}", message_id);
 
         let pubkey_str = alt_pubkey.to_string();
 
-        redis::AsyncCommands::set::<_, _, ()>(&mut redis_conn, key.clone(), pubkey_str.clone())
+        // Set as failed first
+        redis::AsyncCommands::set::<_, _, ()>(
+            &mut redis_conn,
+            failed_key.clone(),
+            pubkey_str.clone(),
+        )
+        .await
+        .map_err(|e| {
+            RedisInterfaceError::SetAltFailedError(format!(
+                "Failed to set failed ALT in Redis: {}",
+                e
+            ))
+        })?;
+
+        // Then remove from ALT keys
+        redis::AsyncCommands::del::<_, ()>(&mut redis_conn, alt_key.clone())
             .await
             .map_err(|e| {
-                IncluderError::GenericError(format!("Failed to write failed ALT to Redis: {}", e))
+                RedisInterfaceError::RemoveAltKeyError(format!(
+                    "Failed to remove ALT key from Redis: {}",
+                    e
+                ))
             })?;
 
-        debug!("Written failed ALT to Redis: {} -> {}", key, pubkey_str);
+        debug!(
+            "Set failed ALT and removed from Redis: {} -> {} (removed key: {})",
+            failed_key, pubkey_str, alt_key
+        );
         Ok(())
     }
 }
@@ -386,32 +431,53 @@ mod tests {
         testcontainers::ContainerAsync<GenericImage>,
         RedisConnection,
     ) {
-        let container = GenericImage::new("redis", "7.2.4")
-            .with_exposed_port(6379.tcp())
-            .with_wait_for(WaitFor::message_on_stdout("Ready to accept connections"))
-            .start()
-            .await
-            .unwrap();
+        // Retry container creation to handle transient Docker/testcontainers issues in CI
+        let mut retries = 0;
+        let max_retries = 3;
+        let mut delay = Duration::from_millis(500);
 
-        let host = container.get_host().await.unwrap();
-        let host_port = container.get_host_port_ipv4(6379).await.unwrap();
+        loop {
+            match GenericImage::new("redis", "7.2.4")
+                .with_exposed_port(6379.tcp())
+                .with_wait_for(WaitFor::message_on_stdout("Ready to accept connections"))
+                .start()
+                .await
+            {
+                Ok(container) => {
+                    let host = container.get_host().await.unwrap();
+                    let host_port = container.get_host_port_ipv4(6379).await.unwrap();
 
-        let url = format!("redis://{host}:{host_port}");
-        let client = Client::open(url.as_ref()).unwrap();
+                    let url = format!("redis://{host}:{host_port}");
+                    let client = Client::open(url.as_ref()).unwrap();
 
-        let conn = relayer_core::redis::connection_manager(
-            client,
-            Some(Duration::from_millis(100)),
-            Some(Duration::from_millis(100)),
-            Some(2),
-            Some(500),
-        )
-        .await
-        .unwrap();
+                    let conn = relayer_core::redis::connection_manager(
+                        client,
+                        Some(Duration::from_millis(100)),
+                        Some(Duration::from_millis(100)),
+                        Some(2),
+                        Some(500),
+                    )
+                    .await
+                    .unwrap();
 
-        let redis_conn = RedisConnection::new(conn);
+                    let redis_conn = RedisConnection::new(conn);
 
-        (container, redis_conn)
+                    return (container, redis_conn);
+                }
+                Err(e) => {
+                    if retries >= max_retries {
+                        panic!(
+                            "Failed to create Redis container after {} retries: {:?}",
+                            max_retries, e
+                        );
+                    }
+                    eprintln!("Failed to create Redis container (attempt {}/{}): {:?}. Retrying in {:?}...", retries + 1, max_retries + 1, e, delay);
+                    tokio::time::sleep(delay).await;
+                    retries += 1;
+                    delay = delay.mul_f32(2.0);
+                }
+            }
+        }
     }
 
     #[tokio::test]
@@ -422,10 +488,9 @@ mod tests {
         let gas_cost = 50000u64;
 
         redis_conn
-            .write_gas_cost_to_redis(message_id.clone(), gas_cost, TransactionType::Execute)
+            .write_gas_cost(message_id.clone(), gas_cost, TransactionType::Execute)
             .await;
 
-        // Verify it was written by reading directly from Redis
         let mut conn = redis_conn.inner().clone();
         let key = format!("cost:{}:{}", TransactionType::Execute, message_id);
         let stored_value: Option<String> = redis::AsyncCommands::get(&mut conn, key).await.unwrap();
@@ -441,10 +506,9 @@ mod tests {
         let gas_cost = 30000u64;
 
         redis_conn
-            .write_gas_cost_to_redis(message_id.clone(), gas_cost, TransactionType::Approve)
+            .write_gas_cost(message_id.clone(), gas_cost, TransactionType::Approve)
             .await;
 
-        // Verify it was written by reading directly from Redis
         let mut conn = redis_conn.inner().clone();
         let key = format!("cost:{}:{}", TransactionType::Approve, message_id);
         let stored_value: Option<String> = redis::AsyncCommands::get(&mut conn, key).await.unwrap();
@@ -461,21 +525,16 @@ mod tests {
         let before_timestamp = chrono::Utc::now().timestamp();
 
         redis_conn
-            .write_alt_pubkey_to_redis(message_id.clone(), alt_pubkey)
+            .write_alt_pubkey(message_id.clone(), alt_pubkey)
             .await
             .unwrap();
 
         let after_timestamp = chrono::Utc::now().timestamp();
 
-        // Read it back
-        let result = redis_conn
-            .get_alt_pubkey_from_redis(message_id.clone())
-            .await
-            .unwrap();
+        let result = redis_conn.get_alt_pubkey(message_id.clone()).await.unwrap();
 
         assert_eq!(result, Some(alt_pubkey));
 
-        // Verify it was written in JSON format with timestamp
         let mut conn = redis_conn.inner().clone();
         let key = format!("ALT:{}", message_id);
         let stored_value: Option<String> = redis::AsyncCommands::get(&mut conn, key).await.unwrap();
@@ -493,10 +552,7 @@ mod tests {
 
         let message_id = "non-existent-message".to_string();
 
-        let result = redis_conn
-            .get_alt_pubkey_from_redis(message_id)
-            .await
-            .unwrap();
+        let result = redis_conn.get_alt_pubkey(message_id).await.unwrap();
 
         assert_eq!(result, None);
     }
@@ -508,15 +564,13 @@ mod tests {
         let message_id = "test-message-invalid".to_string();
         let invalid_json = "not-a-valid-json";
 
-        // Write invalid JSON directly to Redis
         let mut conn = redis_conn.inner().clone();
         let key = format!("ALT:{}", message_id);
         let _: () = redis::AsyncCommands::set(&mut conn, key, invalid_json)
             .await
             .unwrap();
 
-        // Try to read it back - should return error due to deserialize error
-        let result = redis_conn.get_alt_pubkey_from_redis(message_id).await;
+        let result = redis_conn.get_alt_pubkey(message_id).await;
 
         assert!(result.is_err());
     }
@@ -533,22 +587,20 @@ mod tests {
         let before_timestamp = chrono::Utc::now().timestamp();
 
         redis_conn
-            .write_alt_pubkey_to_redis(message_id_1.clone(), alt_pubkey_1)
+            .write_alt_pubkey(message_id_1.clone(), alt_pubkey_1)
             .await
             .unwrap();
         redis_conn
-            .write_alt_pubkey_to_redis(message_id_2.clone(), alt_pubkey_2)
+            .write_alt_pubkey(message_id_2.clone(), alt_pubkey_2)
             .await
             .unwrap();
 
         let after_timestamp = chrono::Utc::now().timestamp();
 
-        // Get all ALT keys
         let result = redis_conn.get_all_alt_keys().await.unwrap();
 
         assert_eq!(result.len(), 2);
 
-        // Verify both entries are present with correct format
         let mut found_1 = false;
         let mut found_2 = false;
 
@@ -574,7 +626,6 @@ mod tests {
     async fn test_get_all_alt_keys_with_many_keys() {
         let (_container, redis_conn) = create_redis_connection().await;
 
-        // Create more than 100 keys to test SCAN pagination (COUNT=100)
         let mut message_ids = Vec::new();
         let mut alt_pubkeys = Vec::new();
         for i in 0..150 {
@@ -583,17 +634,15 @@ mod tests {
             message_ids.push(message_id.clone());
             alt_pubkeys.push(alt_pubkey);
             redis_conn
-                .write_alt_pubkey_to_redis(message_id, alt_pubkey)
+                .write_alt_pubkey(message_id, alt_pubkey)
                 .await
                 .unwrap();
         }
 
-        // Get all ALT keys using SCAN (should handle pagination correctly)
         let result = redis_conn.get_all_alt_keys().await.unwrap();
 
         assert_eq!(result.len(), 150);
 
-        // Verify all entries are present
         let mut found_count = 0;
         for (msg_id, pubkey, _timestamp, _retry_count, _active) in result {
             if let Some(idx) = message_ids.iter().position(|m| m == &msg_id) {
@@ -613,33 +662,19 @@ mod tests {
         let message_id = "test-message-remove".to_string();
         let alt_pubkey = Pubkey::new_unique();
 
-        // Write ALT pubkey to Redis
         redis_conn
-            .write_alt_pubkey_to_redis(message_id.clone(), alt_pubkey)
+            .write_alt_pubkey(message_id.clone(), alt_pubkey)
             .await
             .unwrap();
 
-        // Verify it exists
-        let result = redis_conn
-            .get_alt_pubkey_from_redis(message_id.clone())
-            .await
-            .unwrap();
+        let result = redis_conn.get_alt_pubkey(message_id.clone()).await.unwrap();
         assert_eq!(result, Some(alt_pubkey));
 
-        // Remove it
-        redis_conn
-            .remove_alt_key_from_redis(message_id.clone())
-            .await
-            .unwrap();
+        redis_conn.remove_alt_key(message_id.clone()).await.unwrap();
 
-        // Verify it's gone
-        let result = redis_conn
-            .get_alt_pubkey_from_redis(message_id.clone())
-            .await
-            .unwrap();
+        let result = redis_conn.get_alt_pubkey(message_id.clone()).await.unwrap();
         assert_eq!(result, None);
 
-        // Verify it's also gone from get_all_alt_keys
         let all_keys = redis_conn.get_all_alt_keys().await.unwrap();
         assert!(!all_keys
             .iter()
@@ -652,10 +687,7 @@ mod tests {
 
         let message_id = "non-existent-message".to_string();
 
-        // Removing a non-existent key should succeed (Redis DEL returns 0, but doesn't error)
-        let result = redis_conn
-            .remove_alt_key_from_redis(message_id.clone())
-            .await;
+        let result = redis_conn.remove_alt_key(message_id.clone()).await;
 
         assert!(result.is_ok());
     }
@@ -671,41 +703,36 @@ mod tests {
         let alt_pubkey_2 = Pubkey::new_unique();
         let alt_pubkey_3 = Pubkey::new_unique();
 
-        // Write multiple ALT pubkeys
         redis_conn
-            .write_alt_pubkey_to_redis(message_id_1.clone(), alt_pubkey_1)
+            .write_alt_pubkey(message_id_1.clone(), alt_pubkey_1)
             .await
             .unwrap();
         redis_conn
-            .write_alt_pubkey_to_redis(message_id_2.clone(), alt_pubkey_2)
+            .write_alt_pubkey(message_id_2.clone(), alt_pubkey_2)
             .await
             .unwrap();
         redis_conn
-            .write_alt_pubkey_to_redis(message_id_3.clone(), alt_pubkey_3)
+            .write_alt_pubkey(message_id_3.clone(), alt_pubkey_3)
             .await
             .unwrap();
 
-        // Verify all exist
         let all_keys = redis_conn.get_all_alt_keys().await.unwrap();
         assert_eq!(all_keys.len(), 3);
 
-        // Remove one
         redis_conn
-            .remove_alt_key_from_redis(message_id_2.clone())
+            .remove_alt_key(message_id_2.clone())
             .await
             .unwrap();
-
-        // Verify only the removed one is gone
         let result_1 = redis_conn
-            .get_alt_pubkey_from_redis(message_id_1.clone())
+            .get_alt_pubkey(message_id_1.clone())
             .await
             .unwrap();
         let result_2 = redis_conn
-            .get_alt_pubkey_from_redis(message_id_2.clone())
+            .get_alt_pubkey(message_id_2.clone())
             .await
             .unwrap();
         let result_3 = redis_conn
-            .get_alt_pubkey_from_redis(message_id_3.clone())
+            .get_alt_pubkey(message_id_3.clone())
             .await
             .unwrap();
 
@@ -713,7 +740,6 @@ mod tests {
         assert_eq!(result_2, None);
         assert_eq!(result_3, Some(alt_pubkey_3));
 
-        // Verify get_all_alt_keys reflects the change
         let all_keys = redis_conn.get_all_alt_keys().await.unwrap();
         assert_eq!(all_keys.len(), 2);
         assert!(all_keys
@@ -735,28 +761,19 @@ mod tests {
         let alt_pubkey = Pubkey::new_unique();
 
         redis_conn
-            .write_alt_pubkey_to_redis(message_id.clone(), alt_pubkey)
+            .write_alt_pubkey(message_id.clone(), alt_pubkey)
             .await
             .unwrap();
 
-        // Verify it exists
-        let result = redis_conn
-            .get_alt_pubkey_from_redis(message_id.clone())
-            .await
-            .unwrap();
+        let result = redis_conn.get_alt_pubkey(message_id.clone()).await.unwrap();
         assert_eq!(result, Some(alt_pubkey));
 
-        // Verify TTL is set (should be approximately GAS_COST_EXPIRATION)
         let mut conn = redis_conn.inner().clone();
         let key = format!("ALT:{}", message_id);
         let ttl: i64 = redis::AsyncCommands::ttl(&mut conn, key).await.unwrap();
 
-        // TTL should be close to GAS_COST_EXPIRATION (604800 seconds)
-        // Allow some margin for test execution time
-        // Redis returns -1 if key exists but has no TTL, -2 if key doesn't exist
         assert!(ttl > 0, "TTL should be positive");
         assert!(ttl <= GAS_COST_EXPIRATION as i64);
-        // Allow some margin for test execution time
         assert!(ttl > (GAS_COST_EXPIRATION as i64 - 10));
     }
 
@@ -768,19 +785,15 @@ mod tests {
         let gas_cost = 75000u64;
 
         redis_conn
-            .write_gas_cost_to_redis(message_id.clone(), gas_cost, TransactionType::Execute)
+            .write_gas_cost(message_id.clone(), gas_cost, TransactionType::Execute)
             .await;
 
-        // Verify TTL is set
         let mut conn = redis_conn.inner().clone();
         let key = format!("cost:{}:{}", TransactionType::Execute, message_id);
         let ttl: i64 = redis::AsyncCommands::ttl(&mut conn, key).await.unwrap();
 
-        // TTL should be close to GAS_COST_EXPIRATION (604800 seconds)
-        // Redis returns -1 if key exists but has no TTL, -2 if key doesn't exist
         assert!(ttl > 0, "TTL should be positive");
         assert!(ttl <= GAS_COST_EXPIRATION as i64);
-        // Allow some margin for test execution time
         assert!(ttl > (GAS_COST_EXPIRATION as i64 - 10));
     }
 
@@ -793,13 +806,12 @@ mod tests {
         let approve_cost = 30000u64;
 
         redis_conn
-            .write_gas_cost_to_redis(message_id.clone(), execute_cost, TransactionType::Execute)
+            .write_gas_cost(message_id.clone(), execute_cost, TransactionType::Execute)
             .await;
         redis_conn
-            .write_gas_cost_to_redis(message_id.clone(), approve_cost, TransactionType::Approve)
+            .write_gas_cost(message_id.clone(), approve_cost, TransactionType::Approve)
             .await;
 
-        // Verify both are stored with different keys
         let mut conn = redis_conn.inner().clone();
         let execute_key = format!("cost:{}:{}", TransactionType::Execute, message_id);
         let approve_key = format!("cost:{}:{}", TransactionType::Approve, message_id);
@@ -825,21 +837,20 @@ mod tests {
         let alt_pubkey_2 = Pubkey::new_unique();
 
         redis_conn
-            .write_alt_pubkey_to_redis(message_id_1.clone(), alt_pubkey_1)
+            .write_alt_pubkey(message_id_1.clone(), alt_pubkey_1)
             .await
             .unwrap();
         redis_conn
-            .write_alt_pubkey_to_redis(message_id_2.clone(), alt_pubkey_2)
+            .write_alt_pubkey(message_id_2.clone(), alt_pubkey_2)
             .await
             .unwrap();
 
-        // Verify both are stored and retrieved correctly
         let result_1 = redis_conn
-            .get_alt_pubkey_from_redis(message_id_1.clone())
+            .get_alt_pubkey(message_id_1.clone())
             .await
             .unwrap();
         let result_2 = redis_conn
-            .get_alt_pubkey_from_redis(message_id_2.clone())
+            .get_alt_pubkey(message_id_2.clone())
             .await
             .unwrap();
 
@@ -857,21 +868,16 @@ mod tests {
         let alt_pubkey_2 = Pubkey::new_unique();
 
         redis_conn
-            .write_alt_pubkey_to_redis(message_id.clone(), alt_pubkey_1)
+            .write_alt_pubkey(message_id.clone(), alt_pubkey_1)
             .await
             .unwrap();
 
-        // Overwrite with new pubkey
         redis_conn
-            .write_alt_pubkey_to_redis(message_id.clone(), alt_pubkey_2)
+            .write_alt_pubkey(message_id.clone(), alt_pubkey_2)
             .await
             .unwrap();
 
-        // Verify new pubkey is stored
-        let result = redis_conn
-            .get_alt_pubkey_from_redis(message_id)
-            .await
-            .unwrap();
+        let result = redis_conn.get_alt_pubkey(message_id).await.unwrap();
 
         assert_eq!(result, Some(alt_pubkey_2));
     }
@@ -883,18 +889,15 @@ mod tests {
         let message_id = "test-message-failure".to_string();
         let alt_pubkey = Pubkey::new_unique();
 
-        // Write should succeed
         redis_conn
-            .write_alt_pubkey_to_redis(message_id.clone(), alt_pubkey)
+            .write_alt_pubkey(message_id.clone(), alt_pubkey)
             .await
             .unwrap();
 
-        // Stop Redis container
         container.stop_with_timeout(Some(1)).await.unwrap();
 
-        // Write should fail gracefully (returns error, doesn't panic)
         let write_result = redis_conn
-            .write_alt_pubkey_to_redis(message_id.clone(), alt_pubkey)
+            .write_alt_pubkey(message_id.clone(), alt_pubkey)
             .await;
 
         assert!(
@@ -902,11 +905,7 @@ mod tests {
             "Write should fail when Redis is unavailable"
         );
 
-        // Read should return None gracefully
-        let result = redis_conn
-            .get_alt_pubkey_from_redis(message_id.clone())
-            .await
-            .unwrap();
+        let result = redis_conn.get_alt_pubkey(message_id.clone()).await.unwrap();
 
         assert_eq!(result, None);
     }
@@ -918,13 +917,11 @@ mod tests {
         let message_id = "test-message-inactive".to_string();
         let alt_pubkey = Pubkey::new_unique();
 
-        // Write an active ALT
         redis_conn
-            .write_alt_pubkey_to_redis(message_id.clone(), alt_pubkey)
+            .write_alt_pubkey(message_id.clone(), alt_pubkey)
             .await
             .unwrap();
 
-        // Verify it's active and capture original timestamp
         let all_keys = redis_conn.get_all_alt_keys().await.unwrap();
         let entry = all_keys
             .iter()
@@ -933,16 +930,13 @@ mod tests {
         assert!(entry.4, "ALT should be active by default");
         let original_timestamp = entry.2;
 
-        // Wait a bit to ensure timestamp will change
         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
-        // Set it to inactive
         redis_conn
             .set_alt_inactive(message_id.clone())
             .await
             .unwrap();
 
-        // Verify it's now inactive
         let all_keys = redis_conn.get_all_alt_keys().await.unwrap();
         let entry = all_keys
             .iter()
@@ -950,17 +944,12 @@ mod tests {
             .unwrap();
         assert!(!entry.4, "ALT should be inactive after set_alt_inactive");
 
-        // Verify the timestamp was updated
         assert!(
             entry.2 > original_timestamp,
             "Timestamp should be updated when setting to inactive"
         );
 
-        // Verify we can still get the pubkey
-        let result = redis_conn
-            .get_alt_pubkey_from_redis(message_id.clone())
-            .await
-            .unwrap();
+        let result = redis_conn.get_alt_pubkey(message_id.clone()).await.unwrap();
         assert_eq!(result, Some(alt_pubkey));
     }
 
@@ -970,7 +959,6 @@ mod tests {
 
         let message_id = "non-existent-message".to_string();
 
-        // Setting a non-existent ALT to inactive should fail
         let result = redis_conn.set_alt_inactive(message_id).await;
 
         assert!(
@@ -980,35 +968,41 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_write_failed_alt_to_redis() {
+    async fn test_remove_and_set_failed_alt_key() {
         let (_container, redis_conn) = create_redis_connection().await;
 
         let message_id = "test-message-failed".to_string();
         let alt_pubkey = Pubkey::new_unique();
 
-        // Write failed ALT
+        // First create an ALT entry
         redis_conn
-            .write_failed_alt_to_redis(message_id.clone(), alt_pubkey)
+            .write_alt_pubkey(message_id.clone(), alt_pubkey)
             .await
             .unwrap();
 
-        // Verify it exists in FAILED:ALT prefix
+        // Verify it exists
+        let result = redis_conn.get_alt_pubkey(message_id.clone()).await.unwrap();
+        assert_eq!(result, Some(alt_pubkey));
+
+        // Now remove and set as failed
+        redis_conn
+            .remove_and_set_failed_alt_key(message_id.clone(), alt_pubkey)
+            .await
+            .unwrap();
+
+        // Verify it's in FAILED:ALT
         let mut conn = redis_conn.inner().clone();
         let key = format!("FAILED:ALT:{}", message_id);
         let value: String = redis::AsyncCommands::get(&mut conn, &key).await.unwrap();
         assert_eq!(value, alt_pubkey.to_string());
 
-        // Verify it's NOT in the regular ALT: keys
+        // Verify it's removed from ALT keys
         let all_keys = redis_conn.get_all_alt_keys().await.unwrap();
         assert!(!all_keys
             .iter()
             .any(|(msg_id, _, _, _, _)| msg_id == &message_id));
 
-        // Verify get_alt_pubkey_from_redis returns None (it only searches ALT: prefix)
-        let result = redis_conn
-            .get_alt_pubkey_from_redis(message_id.clone())
-            .await
-            .unwrap();
+        let result = redis_conn.get_alt_pubkey(message_id.clone()).await.unwrap();
         assert_eq!(result, None);
     }
 
@@ -1021,17 +1015,25 @@ mod tests {
         let alt_pubkey_1 = Pubkey::new_unique();
         let alt_pubkey_2 = Pubkey::new_unique();
 
-        // Write multiple failed ALTs
+        // Create ALT entries first
         redis_conn
-            .write_failed_alt_to_redis(message_id_1.clone(), alt_pubkey_1)
+            .write_alt_pubkey(message_id_1.clone(), alt_pubkey_1)
             .await
             .unwrap();
         redis_conn
-            .write_failed_alt_to_redis(message_id_2.clone(), alt_pubkey_2)
+            .write_alt_pubkey(message_id_2.clone(), alt_pubkey_2)
             .await
             .unwrap();
 
-        // Verify both exist
+        redis_conn
+            .remove_and_set_failed_alt_key(message_id_1.clone(), alt_pubkey_1)
+            .await
+            .unwrap();
+        redis_conn
+            .remove_and_set_failed_alt_key(message_id_2.clone(), alt_pubkey_2)
+            .await
+            .unwrap();
+
         let mut conn = redis_conn.inner().clone();
         let key_1 = format!("FAILED:ALT:{}", message_id_1);
         let key_2 = format!("FAILED:ALT:{}", message_id_2);

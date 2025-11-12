@@ -2,21 +2,22 @@ use crate::gas_calculator::GasCalculatorTrait;
 use crate::includer::ALTInfo;
 use crate::includer_client::IncluderClientTrait;
 use crate::utils::{
-    get_deployer_ata, get_gateway_root_config_internal, get_governance_config_pda,
-    get_governance_event_authority_pda, get_incoming_message_pda, get_its_root_pda,
-    get_minter_roles_pda, get_mpl_token_metadata_account, get_operator_proposal_pda,
-    get_proposal_pda, get_token_manager_ata, get_token_manager_pda, get_token_mint_pda,
-    get_validate_message_signing_pda,
+    get_deployer_ata, get_destination_ata, get_gateway_root_config_internal,
+    get_governance_config_pda, get_governance_event_authority_pda, get_incoming_message_pda,
+    get_its_root_pda, get_minter_roles_pda, get_mpl_token_metadata_account,
+    get_operator_proposal_pda, get_proposal_pda, get_token_manager_ata, get_token_manager_pda,
+    get_token_mint_pda, get_validate_message_signing_pda,
 };
 use crate::{
-    error::TransactionBuilderError, utils::get_gateway_event_authority_pda,
-    versioned_transaction::SolanaTransactionType,
+    error::TransactionBuilderError, transaction_type::SolanaTransactionType,
+    utils::get_gateway_event_authority_pda,
 };
 use anchor_lang::InstructionData;
 use anchor_lang::ToAccountMetas;
 use anchor_spl::{associated_token::spl_associated_token_account, token_2022::spl_token_2022};
 use async_trait::async_trait;
 use axelar_solana_gateway_v2::{executable::ExecutablePayload, state::incoming_message::Message};
+use base64::Engine;
 use interchain_token_transfer_gmp::GMPPayload;
 use mpl_token_metadata;
 use relayer_core::utils::ThreadSafe;
@@ -47,7 +48,7 @@ pub trait TransactionBuilderTrait<IC: IncluderClientTrait + ThreadSafe> {
         &self,
         ixs: &[Instruction],
         gas_exceeded_count: u64, // how many times the gas exceeded the limit in previous attempts
-        alt_pubkey: Option<Pubkey>,
+        alt_info: Option<ALTInfo>,
     ) -> Result<SolanaTransactionType, TransactionBuilderError>;
 
     async fn build_execute_instruction(
@@ -85,36 +86,50 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
         &self,
         ixs: &[Instruction],
         gas_exceeded_count: u64,
-        alt_pubkey: Option<Pubkey>,
+        alt_info: Option<ALTInfo>,
     ) -> Result<SolanaTransactionType, TransactionBuilderError> {
         let compute_unit_price_ix = self
             .gas_calculator
-            .compute_unit_price(ixs)
+            .compute_unit_price(ixs, gas_exceeded_count)
             .await
             .map_err(|e| TransactionBuilderError::ClientError(e.to_string()))?;
 
         // Since simulation gets the latest blockhash we can directly use it for the tx construction
         let (compute_budget_ix, hash) = self
             .gas_calculator
-            .compute_budget(ixs, gas_exceeded_count)
+            .compute_budget(ixs)
             .await
             .map_err(|e| TransactionBuilderError::ClientError(e.to_string()))?;
 
         let mut instructions = vec![compute_unit_price_ix, compute_budget_ix];
         instructions.extend_from_slice(ixs);
 
-        match alt_pubkey {
-            Some(alt_pubkey) => {
-                let alt_account_data = self
-                    .includer_client
-                    .get_account_data(&alt_pubkey)
-                    .await
-                    .map_err(|e| TransactionBuilderError::ClientError(e.to_string()))?;
-                let alt_state = AddressLookupTable::deserialize(&alt_account_data)
-                    .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+        match alt_info {
+            Some(alt_info) => {
+                let alt_pubkey = alt_info.alt_pubkey.ok_or_else(|| {
+                    TransactionBuilderError::GenericError(
+                        "ALTInfo provided without pubkey".to_string(),
+                    )
+                })?;
+
+                let addresses = if let Some(addresses) = alt_info.alt_addresses {
+                    addresses
+                } else {
+                    // In case ALT exists already (retries): fetch from chain
+                    debug!("Fetching ALT addresses from chain");
+                    let alt_account_data = self
+                        .includer_client
+                        .get_account_data(&alt_pubkey)
+                        .await
+                        .map_err(|e| TransactionBuilderError::ClientError(e.to_string()))?;
+                    let alt_state = AddressLookupTable::deserialize(&alt_account_data)
+                        .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+                    alt_state.addresses.to_vec()
+                };
+
                 let alt_ref = AddressLookupTableAccount {
                     key: alt_pubkey,
-                    addresses: alt_state.addresses.to_vec(),
+                    addresses,
                 };
                 let v0_msg = v0::Message::try_compile(
                     &self.keypair.pubkey(),
@@ -158,13 +173,31 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
                     .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
 
                 let minter = match gmp_decoded_payload {
-                    GMPPayload::DeployInterchainToken(deploy) if !deploy.minter.is_empty() => {
+                    GMPPayload::DeployInterchainToken(ref deploy) if !deploy.minter.is_empty() => {
                         Some(Pubkey::try_from(deploy.minter.as_ref()).map_err(|e| {
                             TransactionBuilderError::GenericError(format!(
                                 "Invalid minter pubkey: {}",
                                 e
                             ))
                         })?)
+                    }
+                    _ => None,
+                };
+
+                let destination_address = match gmp_decoded_payload {
+                    GMPPayload::InterchainTransfer(ref transfer)
+                        if !transfer.destination_address.is_empty() =>
+                    {
+                        Some(
+                            Pubkey::try_from(transfer.destination_address.as_ref()).map_err(
+                                |e| {
+                                    TransactionBuilderError::GenericError(format!(
+                                        "Invalid destination address: {}",
+                                        e
+                                    ))
+                                },
+                            )?,
+                        )
                     }
                     _ => None,
                 };
@@ -188,13 +221,20 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
                 let (token_manager_pda, _) = get_token_manager_pda(&its_root_pda, &token_id);
                 let (token_mint, _) = get_token_mint_pda(&its_root_pda, &token_id);
                 let (token_manager_ata, _) = get_token_manager_ata(&token_manager_pda, &token_mint);
-
                 let (deployer_ata, _) = get_deployer_ata(&self.keypair.pubkey(), &token_mint);
-
                 let (mpl_token_metadata_account, _) = get_mpl_token_metadata_account(&token_mint);
 
                 let minter_roles_pda =
                     minter.map(|minter| get_minter_roles_pda(&token_manager_pda, &minter).0);
+
+                let destination_ata = destination_address.map(|destination_address| {
+                    get_destination_ata(&destination_address, &token_mint).0
+                });
+
+                let authority = match gmp_decoded_payload {
+                    GMPPayload::InterchainTransfer(_) => Some(self.keypair.pubkey()),
+                    _ => None,
+                };
 
                 let accounts = axelar_solana_its_v2::accounts::Execute {
                     executable,
@@ -207,18 +247,6 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
                     token_manager_ata,
                     token_program: spl_token_2022::ID,
                     associated_token_program: spl_associated_token_account::ID,
-                    rent: solana_program::sysvar::rent::id(),
-                    deployer_ata: Some(deployer_ata),
-                    minter,
-                    minter_roles_pda,
-                    mpl_token_metadata_account: Some(mpl_token_metadata_account),
-                    mpl_token_metadata_program: Some(mpl_token_metadata::ID),
-                    sysvar_instructions: Some(solana_program::sysvar::instructions::ID),
-                    // TODO: Is this right?
-                    deployer: Some(self.keypair.pubkey()),
-                    authority: None,
-                    destination: None,
-                    destination_ata: None,
                     program: axelar_solana_its_v2::ID,
                 }
                 .to_account_metas(None);
@@ -231,6 +259,7 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
 
                 let alt_info = if let Some(existing_alt_pubkey) = existing_alt_pubkey {
                     // Use existing ALT pubkey, no need to create new ALT transaction
+                    // Addresses will be fetched from chain in build() method
                     debug!(
                         "Using existing ALT pubkey from Redis: {}",
                         existing_alt_pubkey
@@ -244,15 +273,16 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
                         .await
                         .map_err(|e| TransactionBuilderError::ClientError(e.to_string()))?;
 
+                    let alt_accounts: Vec<Pubkey> = accounts.iter().map(|acc| acc.pubkey).collect();
+
                     let (alt_ix_create, alt_ix_extend, alt_pubkey) = self
                         .build_lookup_table_instructions(recent_slot, &accounts)
                         .await
                         .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
-                    Some(ALTInfo::new(
-                        Some(alt_ix_create),
-                        Some(alt_ix_extend),
-                        Some(alt_pubkey),
-                    ))
+                    Some(
+                        ALTInfo::new(Some(alt_ix_create), Some(alt_ix_extend), Some(alt_pubkey))
+                            .with_addresses(alt_accounts),
+                    )
                 };
 
                 Ok((
@@ -312,15 +342,21 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
                 ))
             }
             _ => {
-                let decoded_payload = ExecutablePayload::decode(payload)
+                let b64_decoded =
+                    base64::prelude::BASE64_STANDARD
+                        .decode(payload)
+                        .map_err(|e| {
+                            TransactionBuilderError::GenericError(format!(
+                                "Failed to decode payload: {}",
+                                e
+                            ))
+                        })?;
+                let decoded_payload = ExecutablePayload::decode(&b64_decoded)
                     .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
                 let user_provided_accounts = decoded_payload.account_meta();
 
-                let (signing_pda, _) = get_validate_message_signing_pda(
-                    &message.command_id(),
-                    // TODO: Is this gateway or dst program?
-                    &axelar_solana_gateway_v2::ID,
-                );
+                let (signing_pda, _) =
+                    get_validate_message_signing_pda(&message.command_id(), &destination_address);
                 let (event_authority, _) = get_gateway_event_authority_pda();
                 let (gateway_root_pda, _) = get_gateway_root_config_internal();
 
@@ -348,7 +384,7 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
 
                 Ok((
                     Instruction {
-                        program_id: axelar_solana_gateway_v2::ID,
+                        program_id: destination_address,
                         accounts,
                         data,
                     },

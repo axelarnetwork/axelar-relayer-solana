@@ -41,6 +41,10 @@ impl PostgresDB {
         let pool = PgPool::connect(url).await?;
         Ok(Self { pool })
     }
+
+    pub fn inner(&self) -> &PgPool {
+        &self.pool
+    }
 }
 
 #[async_trait]
@@ -58,7 +62,7 @@ impl SubscriberCursor for PostgresDB {
             .bind(context)
             .bind(signature)
             .bind(account_type)
-            .execute(&self.pool)
+            .execute(self.inner())
             .await?;
         Ok(())
     }
@@ -73,7 +77,7 @@ impl SubscriberCursor for PostgresDB {
         let signature = sqlx::query_scalar(query)
             .bind(context)
             .bind(account_type)
-            .fetch_optional(&self.pool)
+            .fetch_optional(self.inner())
             .await?;
         Ok(signature)
     }
