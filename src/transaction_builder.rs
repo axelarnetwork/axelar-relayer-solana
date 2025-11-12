@@ -417,7 +417,7 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
         let (ix_alt_create, alt_pubkey) =
             create_lookup_table(self.keypair.pubkey(), self.keypair.pubkey(), recent_slot);
 
-        let alt_accounts: Vec<Pubkey> = execute_accounts.iter().map(|acc| acc.pubkey).collect();
+        let alt_accounts = execute_accounts.iter().map(|acc| acc.pubkey).collect();
 
         let ix_alt_extend = extend_lookup_table(
             alt_pubkey,
