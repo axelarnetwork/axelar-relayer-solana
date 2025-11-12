@@ -1,5 +1,5 @@
 use crate::config::SolanaConfig;
-use crate::error::IncluderClientError;
+use crate::error::{IncluderClientError, TransactionBuilderError};
 use crate::fees_client::FeesClient;
 use crate::gas_calculator::GasCalculator;
 use crate::includer_client::{IncluderClient, IncluderClientTrait};
@@ -686,12 +686,19 @@ impl<
             return Ok(vec![]);
         }
 
-        let destination_address = task
-            .task
-            .message
-            .destination_address
-            .parse::<Pubkey>()
-            .map_err(|e| IncluderError::GenericError(e.to_string()))?;
+        let destination_address = match task.task.message.destination_address.parse::<Pubkey>() {
+            Ok(pubkey) => pubkey,
+            Err(e) => {
+                let event = self.gmp_api.cannot_execute_message(
+                    task.common.id.clone(),
+                    task.task.message.message_id.clone(),
+                    task.task.message.source_chain.clone(),
+                    e.to_string(),
+                    CannotExecuteMessageReason::Error,
+                );
+                return Ok(vec![event]);
+            }
+        };
 
         // Check if ALT already exists in Redis for this message_id
         let existing_alt_pubkey = self
@@ -700,7 +707,7 @@ impl<
             .await
             .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
-        let (instruction, alt_info) = self
+        let (instruction, alt_info) = match self
             .transaction_builder
             .build_execute_instruction(
                 &message,
@@ -709,7 +716,24 @@ impl<
                 existing_alt_pubkey,
             )
             .await
-            .map_err(|e| IncluderError::GenericError(e.to_string()))?;
+        {
+            Ok((instruction, alt_info)) => (instruction, alt_info),
+            Err(e) => match e {
+                TransactionBuilderError::PayloadDecodeError(e) => {
+                    let event = self.gmp_api.cannot_execute_message(
+                        task.common.id.clone(),
+                        task.task.message.message_id.clone(),
+                        task.task.message.source_chain.clone(),
+                        e,
+                        CannotExecuteMessageReason::Error,
+                    );
+                    return Ok(vec![event]);
+                }
+                _ => {
+                    return Err(IncluderError::GenericError(e.to_string()));
+                }
+            },
+        };
 
         self.build_execute_transaction_and_send(instruction, task, alt_info)
             .await
@@ -844,6 +868,7 @@ mod tests {
     use crate::redis::MockRedisConnectionTrait;
     use crate::transaction_builder::MockTransactionBuilderTrait;
     use crate::transaction_type::SolanaTransactionType;
+    use base64::prelude::BASE64_STANDARD;
     use borsh::BorshSerialize;
     use relayer_core::gmp_api::MockGmpApiTrait;
     use solana_axelar_gateway::{
@@ -893,7 +918,6 @@ mod tests {
     fn get_includer_fields() -> (
         MockGmpApiTrait,
         Keypair,
-        Pubkey,
         String,
         MockRedisConnectionTrait,
         MockRefundsModel,
@@ -903,7 +927,6 @@ mod tests {
         use crate::transaction_builder::MockTransactionBuilderTrait;
 
         let keypair = Keypair::new();
-        let gateway_address = Pubkey::new_unique();
         let chain_name = "test-chain".to_string();
 
         let mock_client = MockIncluderClientTrait::new();
@@ -917,7 +940,6 @@ mod tests {
         (
             mock_gmp_api,
             keypair,
-            gateway_address,
             chain_name,
             redis_conn,
             mock_refunds_model,
@@ -931,7 +953,6 @@ mod tests {
         let (
             mock_gmp_api,
             keypair,
-            gateway_address,
             chain_name,
             redis_conn,
             mut mock_refunds_model,
@@ -963,7 +984,6 @@ mod tests {
         let includer = SolanaIncluder::new(
             Arc::new(mock_client),
             Arc::new(keypair),
-            gateway_address,
             chain_name,
             transaction_builder,
             Arc::new(mock_gmp_api),
@@ -984,7 +1004,6 @@ mod tests {
         let (
             mock_gmp_api,
             keypair,
-            gateway_address,
             chain_name,
             redis_conn,
             mut mock_refunds_model,
@@ -1003,7 +1022,6 @@ mod tests {
         let includer = SolanaIncluder::new(
             Arc::new(mock_client),
             Arc::new(keypair),
-            gateway_address,
             chain_name,
             transaction_builder,
             Arc::new(mock_gmp_api),
@@ -1022,7 +1040,6 @@ mod tests {
         let (
             mock_gmp_api,
             keypair,
-            gateway_address,
             chain_name,
             redis_conn,
             mut mock_refunds_model,
@@ -1059,7 +1076,6 @@ mod tests {
         let includer = SolanaIncluder::new(
             Arc::new(mock_client),
             Arc::new(keypair),
-            gateway_address,
             chain_name,
             transaction_builder,
             Arc::new(mock_gmp_api),
@@ -1078,7 +1094,6 @@ mod tests {
         let (
             mock_gmp_api,
             keypair,
-            gateway_address,
             chain_name,
             redis_conn,
             mut mock_refunds_model,
@@ -1114,7 +1129,6 @@ mod tests {
         let includer = SolanaIncluder::new(
             Arc::new(mock_client),
             Arc::new(keypair),
-            gateway_address,
             chain_name,
             transaction_builder,
             Arc::new(mock_gmp_api),
@@ -1132,7 +1146,6 @@ mod tests {
         let (
             mock_gmp_api,
             keypair,
-            gateway_address,
             chain_name,
             redis_conn,
             mut mock_refunds_model,
@@ -1163,7 +1176,6 @@ mod tests {
         let includer = SolanaIncluder::new(
             Arc::new(mock_client),
             Arc::new(keypair),
-            gateway_address,
             chain_name,
             transaction_builder,
             Arc::new(mock_gmp_api),
@@ -1182,7 +1194,6 @@ mod tests {
         let (
             mock_gmp_api,
             keypair,
-            gateway_address,
             chain_name,
             redis_conn,
             mut mock_refunds_model,
@@ -1213,7 +1224,6 @@ mod tests {
         let includer = SolanaIncluder::new(
             Arc::new(mock_client),
             Arc::new(keypair),
-            gateway_address,
             chain_name,
             transaction_builder,
             Arc::new(mock_gmp_api),
@@ -1236,7 +1246,7 @@ mod tests {
                         source_chain: "test-chain".to_string(),
                         destination_address: "test-destination-123".to_string(),
                         payload_hash: "test-payload-hash-123".to_string(),
-                        source_address: gateway_address.to_string(),
+                        source_address: Pubkey::new_unique().to_string(),
                     },
                     refund_recipient_address: "test-recipient-123".to_string(),
                     remaining_gas_balance: Amount {
@@ -1255,7 +1265,6 @@ mod tests {
         let (
             mock_gmp_api,
             keypair,
-            gateway_address,
             chain_name,
             redis_conn,
             mut mock_refunds_model,
@@ -1315,7 +1324,6 @@ mod tests {
         let includer = SolanaIncluder::new(
             Arc::new(mock_client),
             Arc::new(keypair),
-            gateway_address,
             chain_name,
             transaction_builder,
             Arc::new(mock_gmp_api),
@@ -1338,7 +1346,7 @@ mod tests {
                         source_chain: "test-chain".to_string(),
                         destination_address: "test-destination-456".to_string(),
                         payload_hash: "test-payload-hash-456".to_string(),
-                        source_address: gateway_address.to_string(),
+                        source_address: Pubkey::new_unique().to_string(),
                     },
                     refund_recipient_address: refund_recipient.to_string(),
                     remaining_gas_balance: Amount {
@@ -1357,7 +1365,6 @@ mod tests {
         let (
             mock_gmp_api,
             keypair,
-            gateway_address,
             chain_name,
             redis_conn,
             mut mock_refunds_model,
@@ -1420,7 +1427,6 @@ mod tests {
         let includer = SolanaIncluder::new(
             Arc::new(mock_client),
             Arc::new(keypair),
-            gateway_address,
             chain_name,
             transaction_builder,
             Arc::new(mock_gmp_api),
@@ -1443,7 +1449,7 @@ mod tests {
                         source_chain: "test-chain".to_string(),
                         destination_address: "test-destination-789".to_string(),
                         payload_hash: "test-payload-hash-789".to_string(),
-                        source_address: gateway_address.to_string(),
+                        source_address: Pubkey::new_unique().to_string(),
                     },
                     refund_recipient_address: refund_recipient.to_string(),
                     remaining_gas_balance: Amount {
@@ -1466,7 +1472,6 @@ mod tests {
         let (
             mock_gmp_api,
             keypair,
-            gateway_address,
             chain_name,
             mut redis_conn,
             mock_refunds_model,
@@ -1479,7 +1484,7 @@ mod tests {
         let source_chain = "ethereum".to_string();
         let destination_address = solana_axelar_governance::ID.to_string();
         let available_gas = 5000u64; // enough lamports to cover a 0 prio fee + 1 signature cost
-        let payload_hash = "a".repeat(32);
+        let payload_hash = BASE64_STANDARD.encode([0u8; 32]);
 
         mock_client
             .expect_incoming_message_already_executed()
@@ -1546,7 +1551,6 @@ mod tests {
         let includer = SolanaIncluder::new(
             Arc::new(mock_client),
             Arc::new(keypair),
-            gateway_address,
             chain_name,
             transaction_builder,
             Arc::new(mock_gmp_api),
@@ -1569,7 +1573,7 @@ mod tests {
                         source_chain: source_chain.clone(),
                         destination_address: destination_address.clone(),
                         payload_hash: payload_hash.clone(),
-                        source_address: gateway_address.to_string(),
+                        source_address: Pubkey::new_unique().to_string(),
                     },
                     payload: "test-payload".to_string(),
                     available_gas_balance: Amount {
@@ -1589,7 +1593,6 @@ mod tests {
         let (
             mut mock_gmp_api,
             keypair,
-            gateway_address,
             chain_name,
             mut redis_conn,
             mock_refunds_model,
@@ -1602,7 +1605,7 @@ mod tests {
         let source_chain = "ethereum".to_string();
         let destination_address = solana_axelar_governance::ID.to_string();
         let available_gas = 1_000u64;
-        let payload_hash = "b".repeat(32);
+        let payload_hash = BASE64_STANDARD.encode([1u8; 32]);
 
         mock_client
             .expect_incoming_message_already_executed()
@@ -1672,7 +1675,6 @@ mod tests {
         let includer = SolanaIncluder::new(
             Arc::new(mock_client),
             Arc::new(keypair),
-            gateway_address,
             chain_name,
             transaction_builder,
             Arc::new(mock_gmp_api),
@@ -1695,7 +1697,7 @@ mod tests {
                         source_chain: source_chain.clone(),
                         destination_address: destination_address.clone(),
                         payload_hash: payload_hash.clone(),
-                        source_address: gateway_address.to_string(),
+                        source_address: Pubkey::new_unique().to_string(),
                     },
                     payload: "test-payload".to_string(),
                     available_gas_balance: Amount {
@@ -1717,7 +1719,6 @@ mod tests {
         let (
             mock_gmp_api,
             keypair,
-            gateway_address,
             chain_name,
             mut redis_conn,
             mock_refunds_model,
@@ -1729,7 +1730,7 @@ mod tests {
         let source_chain = "polygon".to_string();
         let destination_address = Pubkey::new_unique().to_string(); // Arbitrary program
         let available_gas = 10_000_000_000u64;
-        let payload_hash = "c".repeat(32);
+        let payload_hash = BASE64_STANDARD.encode([2u8; 32]);
 
         let message_id_clone = message_id.clone();
 
@@ -1797,7 +1798,6 @@ mod tests {
         let includer = SolanaIncluder::new(
             Arc::new(mock_client),
             Arc::new(keypair),
-            gateway_address,
             chain_name,
             transaction_builder,
             Arc::new(mock_gmp_api),
@@ -1820,7 +1820,7 @@ mod tests {
                         source_chain: source_chain.clone(),
                         destination_address: destination_address.clone(),
                         payload_hash: payload_hash.clone(),
-                        source_address: gateway_address.to_string(),
+                        source_address: Pubkey::new_unique().to_string(),
                     },
                     payload: "test-payload".to_string(),
                     available_gas_balance: Amount {
@@ -1840,7 +1840,6 @@ mod tests {
         let (
             mut mock_gmp_api,
             keypair,
-            gateway_address,
             chain_name,
             mut redis_conn,
             mock_refunds_model,
@@ -1852,7 +1851,7 @@ mod tests {
         let source_chain = "avalanche".to_string();
         let destination_address = Pubkey::new_unique().to_string();
         let available_gas = 1_000u64;
-        let payload_hash = "d".repeat(32);
+        let payload_hash = BASE64_STANDARD.encode([3u8; 32]);
 
         mock_client
             .expect_incoming_message_already_executed()
@@ -1926,7 +1925,6 @@ mod tests {
         let includer = SolanaIncluder::new(
             Arc::new(mock_client),
             Arc::new(keypair),
-            gateway_address,
             chain_name,
             transaction_builder,
             Arc::new(mock_gmp_api),
@@ -1949,7 +1947,7 @@ mod tests {
                         source_chain: source_chain.clone(),
                         destination_address: destination_address.clone(),
                         payload_hash: payload_hash.clone(),
-                        source_address: gateway_address.to_string(),
+                        source_address: Pubkey::new_unique().to_string(),
                     },
                     payload: "test-payload".to_string(),
                     available_gas_balance: Amount {
@@ -1967,11 +1965,209 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_handle_execute_task_invalid_destination_address_returns_event() {
+        let (
+            mut mock_gmp_api,
+            keypair,
+            chain_name,
+            redis_conn,
+            mock_refunds_model,
+            mut mock_client,
+            transaction_builder,
+        ) = get_includer_fields();
+
+        let message_id = "test-execute-invalid-destination-001".to_string();
+        let source_chain = "ethereum".to_string();
+        let destination_address = "not-a-valid-pubkey".to_string();
+        let parse_error = Pubkey::from_str(&destination_address)
+            .unwrap_err()
+            .to_string();
+        let payload_hash = BASE64_STANDARD.encode([8u8; 32]);
+
+        mock_client
+            .expect_incoming_message_already_executed()
+            .times(1)
+            .returning(|_| Box::pin(async move { Ok(false) }));
+
+        let message_id_clone = message_id.clone();
+        let source_chain_clone = source_chain.clone();
+        let parse_error_clone = parse_error.clone();
+        mock_gmp_api
+            .expect_cannot_execute_message()
+            .withf(move |id, msg_id, src_chain, details, reason| {
+                *id == "test-execute-task-invalid-destination-001"
+                    && *msg_id == message_id_clone
+                    && *src_chain == source_chain_clone
+                    && *details == parse_error_clone
+                    && matches!(reason, CannotExecuteMessageReason::Error)
+            })
+            .times(1)
+            .returning(|_, _, _, _, _| Event::CannotExecuteMessageV2 {
+                common: CommonEventFields {
+                    r#type: "CANNOT_EXECUTE_MESSAGE/V2".to_string(),
+                    event_id: "test-event".to_string(),
+                    meta: None,
+                },
+                message_id: "test".to_string(),
+                source_chain: "test".to_string(),
+                reason: CannotExecuteMessageReason::Error,
+                details: "test".to_string(),
+            });
+
+        let includer = SolanaIncluder::new(
+            Arc::new(mock_client),
+            Arc::new(keypair),
+            chain_name,
+            transaction_builder,
+            Arc::new(mock_gmp_api),
+            redis_conn,
+            Arc::new(mock_refunds_model),
+        );
+
+        let result = includer
+            .handle_execute_task(ExecuteTask {
+                common: CommonTaskFields {
+                    id: "test-execute-task-invalid-destination-001".to_string(),
+                    chain: "test-chain".to_string(),
+                    timestamp: Utc::now().to_string(),
+                    r#type: "execute".to_string(),
+                    meta: None,
+                },
+                task: ExecuteTaskFields {
+                    message: GatewayV2Message {
+                        message_id: message_id.clone(),
+                        source_chain: source_chain.clone(),
+                        destination_address: destination_address.clone(),
+                        payload_hash: payload_hash.clone(),
+                        source_address: Pubkey::new_unique().to_string(),
+                    },
+                    payload: "test-payload".to_string(),
+                    available_gas_balance: Amount {
+                        amount: "1000".to_string(),
+                        token_id: None,
+                    },
+                },
+            })
+            .await;
+
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], Event::CannotExecuteMessageV2 { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_handle_execute_task_payload_decode_error_returns_event() {
+        let (
+            mut mock_gmp_api,
+            keypair,
+            chain_name,
+            mut redis_conn,
+            mock_refunds_model,
+            mut mock_client,
+            mut transaction_builder,
+        ) = get_includer_fields();
+
+        let message_id = "test-execute-payload-decode-error-001".to_string();
+        let source_chain = "polygon".to_string();
+        let destination_address = solana_axelar_governance::ID.to_string();
+        let payload_hash = BASE64_STANDARD.encode([9u8; 32]);
+        let payload_decode_error = "Failed to decode payload".to_string();
+
+        mock_client
+            .expect_incoming_message_already_executed()
+            .times(1)
+            .returning(|_| Box::pin(async move { Ok(false) }));
+
+        let message_id_clone = message_id.clone();
+        redis_conn
+            .expect_get_alt_pubkey()
+            .withf(move |id| *id == message_id_clone)
+            .times(1)
+            .returning(|_| Ok(None));
+
+        let payload_decode_error_clone = payload_decode_error.clone();
+        transaction_builder
+            .expect_build_execute_instruction()
+            .times(1)
+            .returning(move |_, _, _, _| {
+                Err(TransactionBuilderError::PayloadDecodeError(
+                    payload_decode_error_clone.clone(),
+                ))
+            });
+
+        let message_id_clone = message_id.clone();
+        let source_chain_clone = source_chain.clone();
+        let payload_decode_error_clone = payload_decode_error.clone();
+        mock_gmp_api
+            .expect_cannot_execute_message()
+            .withf(move |id, msg_id, src_chain, details, reason| {
+                *id == "test-execute-task-payload-decode-error-001"
+                    && *msg_id == message_id_clone
+                    && *src_chain == source_chain_clone
+                    && *details == payload_decode_error_clone
+                    && matches!(reason, CannotExecuteMessageReason::Error)
+            })
+            .times(1)
+            .returning(|_, _, _, _, _| Event::CannotExecuteMessageV2 {
+                common: CommonEventFields {
+                    r#type: "CANNOT_EXECUTE_MESSAGE/V2".to_string(),
+                    event_id: "test-event".to_string(),
+                    meta: None,
+                },
+                message_id: "test".to_string(),
+                source_chain: "test".to_string(),
+                reason: CannotExecuteMessageReason::Error,
+                details: "test".to_string(),
+            });
+
+        let includer = SolanaIncluder::new(
+            Arc::new(mock_client),
+            Arc::new(keypair),
+            chain_name,
+            transaction_builder,
+            Arc::new(mock_gmp_api),
+            redis_conn,
+            Arc::new(mock_refunds_model),
+        );
+
+        let result = includer
+            .handle_execute_task(ExecuteTask {
+                common: CommonTaskFields {
+                    id: "test-execute-task-payload-decode-error-001".to_string(),
+                    chain: "test-chain".to_string(),
+                    timestamp: Utc::now().to_string(),
+                    r#type: "execute".to_string(),
+                    meta: None,
+                },
+                task: ExecuteTaskFields {
+                    message: GatewayV2Message {
+                        message_id: message_id.clone(),
+                        source_chain: source_chain.clone(),
+                        destination_address: destination_address.clone(),
+                        payload_hash: payload_hash.clone(),
+                        source_address: Pubkey::new_unique().to_string(),
+                    },
+                    payload: "malformed-payload".to_string(),
+                    available_gas_balance: Amount {
+                        amount: "1000".to_string(),
+                        token_id: None,
+                    },
+                },
+            })
+            .await;
+
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], Event::CannotExecuteMessageV2 { .. }));
+    }
+
+    #[tokio::test]
     async fn handle_execute_its_task_happy_path_with_alt() {
         let (
             mock_gmp_api,
             keypair,
-            gateway_address,
             chain_name,
             mut redis_conn,
             mock_refunds_model,
@@ -2112,7 +2308,6 @@ mod tests {
         let includer = SolanaIncluder::new(
             Arc::new(mock_client),
             Arc::new(keypair),
-            gateway_address,
             chain_name,
             transaction_builder,
             Arc::new(mock_gmp_api),
@@ -2133,7 +2328,7 @@ mod tests {
                     message_id: message_id.clone(),
                     source_chain: "ethereum".to_string(),
                     destination_address: solana_axelar_its::ID.to_string(),
-                    payload_hash: "f".repeat(32),
+                    payload_hash: BASE64_STANDARD.encode([4u8; 32]),
                     source_address: "test-source-address".to_string(),
                 },
                 payload: "test-payload".to_string(),
@@ -2155,7 +2350,6 @@ mod tests {
         let (
             mut mock_gmp_api,
             keypair,
-            gateway_address,
             chain_name,
             mut redis_conn,
             mock_refunds_model,
@@ -2294,7 +2488,6 @@ mod tests {
         let includer = SolanaIncluder::new(
             Arc::new(mock_client),
             Arc::new(keypair),
-            gateway_address,
             chain_name,
             transaction_builder,
             Arc::new(mock_gmp_api),
@@ -2315,8 +2508,8 @@ mod tests {
                     message_id: message_id.clone(),
                     source_chain: "ethereum".to_string(),
                     destination_address: solana_axelar_its::ID.to_string(),
-                    payload_hash: "f".repeat(32),
-                    source_address: gateway_address.to_string(),
+                    payload_hash: BASE64_STANDARD.encode([5u8; 32]),
+                    source_address: Pubkey::new_unique().to_string(),
                 },
                 payload: "test-payload".to_string(),
                 available_gas_balance: Amount {
@@ -2340,7 +2533,6 @@ mod tests {
         let (
             mut mock_gmp_api,
             keypair,
-            gateway_address,
             chain_name,
             mut redis_conn,
             mock_refunds_model,
@@ -2509,7 +2701,6 @@ mod tests {
         let includer = SolanaIncluder::new(
             Arc::new(mock_client),
             Arc::new(keypair),
-            gateway_address,
             chain_name,
             transaction_builder,
             Arc::new(mock_gmp_api),
@@ -2530,8 +2721,8 @@ mod tests {
                     message_id: message_id.clone(),
                     source_chain: "ethereum".to_string(),
                     destination_address: solana_axelar_its::ID.to_string(),
-                    payload_hash: "g".repeat(32),
-                    source_address: gateway_address.to_string(),
+                    payload_hash: BASE64_STANDARD.encode([6u8; 32]),
+                    source_address: Pubkey::new_unique().to_string(),
                 },
                 payload: "test-payload".to_string(),
                 available_gas_balance: Amount {
@@ -2555,7 +2746,6 @@ mod tests {
         let (
             mock_gmp_api,
             keypair,
-            gateway_address,
             chain_name,
             mut redis_conn,
             mock_refunds_model,
@@ -2658,7 +2848,6 @@ mod tests {
         let includer = SolanaIncluder::new(
             Arc::new(mock_client),
             Arc::new(keypair),
-            gateway_address,
             chain_name,
             transaction_builder,
             Arc::new(mock_gmp_api),
@@ -2679,7 +2868,7 @@ mod tests {
                     message_id: message_id.clone(),
                     source_chain: "ethereum".to_string(),
                     destination_address: solana_axelar_its::ID.to_string(),
-                    payload_hash: "f".repeat(32),
+                    payload_hash: BASE64_STANDARD.encode([7u8; 32]),
                     source_address: "test-source-address".to_string(),
                 },
                 payload: "test-payload".to_string(),
@@ -2702,7 +2891,6 @@ mod tests {
         let (
             mock_gmp_api,
             keypair,
-            gateway_address,
             chain_name,
             redis_conn,
             mock_refunds_model,
@@ -2748,7 +2936,6 @@ mod tests {
         let includer = SolanaIncluder::new(
             Arc::new(mock_client),
             Arc::new(keypair),
-            gateway_address,
             chain_name,
             transaction_builder,
             Arc::new(mock_gmp_api),
@@ -2775,7 +2962,6 @@ mod tests {
         let (
             mock_gmp_api,
             keypair,
-            gateway_address,
             chain_name,
             redis_conn,
             mock_refunds_model,
@@ -2873,7 +3059,6 @@ mod tests {
         let includer = SolanaIncluder::new(
             Arc::new(mock_client),
             Arc::new(keypair),
-            gateway_address,
             chain_name,
             transaction_builder,
             Arc::new(mock_gmp_api),
@@ -2892,7 +3077,6 @@ mod tests {
         let (
             mock_gmp_api,
             keypair,
-            gateway_address,
             chain_name,
             mut redis_conn,
             mock_refunds_model,
@@ -3015,7 +3199,6 @@ mod tests {
         let includer = SolanaIncluder::new(
             Arc::new(mock_client),
             Arc::new(keypair),
-            gateway_address,
             chain_name,
             transaction_builder,
             Arc::new(mock_gmp_api),
@@ -3034,7 +3217,6 @@ mod tests {
         let (
             mock_gmp_api,
             keypair,
-            gateway_address,
             chain_name,
             mut redis_conn,
             mock_refunds_model,
@@ -3224,7 +3406,6 @@ mod tests {
         let includer = SolanaIncluder::new(
             Arc::new(mock_client),
             Arc::new(keypair),
-            gateway_address,
             chain_name,
             transaction_builder,
             Arc::new(mock_gmp_api),
@@ -3243,7 +3424,6 @@ mod tests {
         let (
             mut mock_gmp_api,
             keypair,
-            gateway_address,
             chain_name,
             mut redis_conn,
             mock_refunds_model,
@@ -3461,7 +3641,6 @@ mod tests {
         let includer = SolanaIncluder::new(
             Arc::new(mock_client),
             Arc::new(keypair),
-            gateway_address,
             chain_name,
             transaction_builder,
             Arc::new(mock_gmp_api),
@@ -3481,7 +3660,6 @@ mod tests {
         let (
             mut mock_gmp_api,
             keypair,
-            gateway_address,
             chain_name,
             mut redis_conn,
             mock_refunds_model,
@@ -3665,7 +3843,6 @@ mod tests {
         let includer = SolanaIncluder::new(
             Arc::new(mock_client),
             Arc::new(keypair),
-            gateway_address,
             chain_name,
             transaction_builder,
             Arc::new(mock_gmp_api),

@@ -15,7 +15,7 @@ use solana_transaction_parser::gmp_types::{CannotExecuteMessageReason, Event};
 use std::str::FromStr;
 use tracing::{debug, error};
 
-use solana_axelar_gateway::{seed_prefixes, VerifierSetHash, ID};
+use solana_axelar_gateway::{seed_prefixes, ID};
 use solana_rpc_client_api::response::RpcConfirmedTransactionStatusWithSignature;
 use solana_sdk::{
     commitment_config::{CommitmentConfig, CommitmentLevel},

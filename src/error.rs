@@ -54,6 +54,8 @@ pub enum IncluderClientError {
 
 #[derive(Error, Debug)]
 pub enum TransactionBuilderError {
+    #[error("PayloadDecodeError: {0}")]
+    PayloadDecodeError(String),
     #[error("SimulationError: {0}")]
     SimulationError(String),
     #[error("ClientError: {0}")]

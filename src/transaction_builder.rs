@@ -369,7 +369,8 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
                             ))
                         })?;
                 let decoded_payload = ExecutablePayload::decode(&b64_decoded)
-                    .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+                    .map_err(|e| TransactionBuilderError::PayloadDecodeError(e.to_string()))?; // return custom error to send cannot_execute_message
+
                 let user_provided_accounts = decoded_payload.account_meta();
 
                 let (signing_pda, _) =
