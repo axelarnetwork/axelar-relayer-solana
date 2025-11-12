@@ -342,7 +342,15 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
                 ))
             }
             _ => {
-                let b64_decoded = base64::prelude::BASE64_STANDARD.decode(payload).unwrap();
+                let b64_decoded =
+                    base64::prelude::BASE64_STANDARD
+                        .decode(payload)
+                        .map_err(|e| {
+                            TransactionBuilderError::GenericError(format!(
+                                "Failed to decode payload: {}",
+                                e
+                            ))
+                        })?;
                 let decoded_payload = ExecutablePayload::decode(&b64_decoded)
                     .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
                 let user_provided_accounts = decoded_payload.account_meta();
