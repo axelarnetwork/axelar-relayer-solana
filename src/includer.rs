@@ -55,7 +55,6 @@ pub struct SolanaIncluder<
 > {
     client: Arc<IC>,
     keypair: Arc<Keypair>,
-    gateway_address: Pubkey,
     chain_name: String,
     transaction_builder: TransactionBuilder<GasCalculator<IC>, IC>,
     gmp_api: Arc<G>,
@@ -74,7 +73,6 @@ impl<
     pub fn new(
         client: Arc<IC>,
         keypair: Arc<Keypair>,
-        gateway_address: Pubkey,
         chain_name: String,
         transaction_builder: TransactionBuilder<GasCalculator<IC>, IC>,
         gmp_api: Arc<G>,
@@ -84,7 +82,6 @@ impl<
         Self {
             client,
             keypair,
-            gateway_address,
             chain_name,
             transaction_builder,
             gmp_api,
@@ -115,15 +112,11 @@ impl<
     > {
         let solana_rpc = config.solana_poll_rpc.clone();
         let solana_commitment = config.solana_commitment;
-        let solana_gateway = config.solana_gateway.clone();
 
         let client = Arc::new(
             IncluderClient::new(&solana_rpc, solana_commitment, 3)
                 .map_err(|e| error_stack::report!(IncluderError::GenericError(e.to_string())))?,
         );
-
-        let gateway_address = Pubkey::from_str(&solana_gateway)
-            .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
         let keypair = Arc::new(config.signing_keypair());
 
@@ -135,7 +128,6 @@ impl<
         let solana_includer = SolanaIncluder::new(
             Arc::clone(&client),
             Arc::clone(&keypair),
-            gateway_address,
             config.common_config.chain_name,
             transaction_builder,
             Arc::clone(&gmp_api),
