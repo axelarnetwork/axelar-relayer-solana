@@ -60,6 +60,29 @@ pub trait TransactionBuilderTrait<IC: IncluderClientTrait>: ThreadSafe {
         existing_alt_pubkey: Option<Pubkey>,
     ) -> Result<(Instruction, Option<ALTInfo>), TransactionBuilderError>;
 
+    async fn build_its_instruction(
+        &self,
+        message: &Message,
+        payload: &[u8],
+        incoming_message_pda: Pubkey,
+        existing_alt_pubkey: Option<Pubkey>,
+    ) -> Result<(Instruction, Option<ALTInfo>), TransactionBuilderError>;
+
+    async fn build_governance_instruction(
+        &self,
+        message: &Message,
+        payload: &[u8],
+        incoming_message_pda: Pubkey,
+    ) -> Result<(Instruction, Option<ALTInfo>), TransactionBuilderError>;
+
+    async fn build_executable_instruction(
+        &self,
+        message: &Message,
+        payload: &[u8],
+        incoming_message_pda: Pubkey,
+        destination_address: Pubkey,
+    ) -> Result<(Instruction, Option<ALTInfo>), TransactionBuilderError>;
+
     async fn build_lookup_table_instructions(
         &self,
         recent_slot: u64,
@@ -165,248 +188,276 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
 
         match destination_address {
             x if x == solana_axelar_its::ID => {
-                let gmp_decoded_payload = GMPPayload::decode(payload)
-                    .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
-
-                let token_id = gmp_decoded_payload
-                    .token_id()
-                    .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
-
-                let (signing_pda, _) = get_validate_message_signing_pda(
-                    &message.command_id(),
-                    &solana_axelar_gateway::ID,
-                );
-                let (event_authority, _) = get_gateway_event_authority_pda();
-                let (gateway_root_pda, _) = get_gateway_root_config_internal();
-
-                let executable = solana_axelar_its::accounts::AxelarExecuteAccounts {
+                self.build_its_instruction(
+                    message,
+                    payload,
                     incoming_message_pda,
-                    signing_pda,
-                    axelar_gateway_program: solana_axelar_gateway::ID,
-                    event_authority,
-                    gateway_root_pda,
-                };
-
-                let (its_root_pda, _) = get_its_root_pda();
-                let (token_manager_pda, _) = get_token_manager_pda(&its_root_pda, &token_id);
-                let (token_mint, _) = get_token_mint_pda(&its_root_pda, &token_id);
-                let (token_manager_ata, _) = get_token_manager_ata(&token_manager_pda, &token_mint);
-
-                let mut accounts = solana_axelar_its::accounts::Execute {
-                    executable,
-                    payer: self.keypair.pubkey(),
-                    system_program: solana_program::system_program::id(),
-                    event_authority,
-                    its_root_pda,
-                    token_manager_pda,
-                    token_mint,
-                    token_manager_ata,
-                    token_program: spl_token_2022::ID,
-                    associated_token_program: spl_associated_token_account::ID,
-                    program: solana_axelar_its::ID,
-                }
-                .to_account_metas(None);
-
-                match gmp_decoded_payload {
-                    GMPPayload::InterchainTransfer(ref transfer) => {
-                        let destination_address = Pubkey::try_from(
-                            transfer.destination_address.as_ref(),
-                        )
-                        .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
-                        let (destination_ata, _) =
-                            get_destination_ata(&destination_address, &token_mint);
-                        accounts.extend(execute_interchain_transfer_extra_accounts(
-                            destination_address,
-                            destination_ata,
-                        ));
-                    }
-
-                    GMPPayload::DeployInterchainToken(ref deploy) => {
-                        let (deployer_ata, _) =
-                            get_deployer_ata(&self.keypair.pubkey(), &token_mint);
-                        let minter = if deploy.minter.is_empty() {
-                            None
-                        } else {
-                            Some(Pubkey::try_from(deploy.minter.as_ref()).map_err(|e| {
-                                TransactionBuilderError::GenericError(format!(
-                                    "Invalid minter pubkey: {}",
-                                    e
-                                ))
-                            })?)
-                        };
-
-                        let minter_roles_pda = minter
-                            .map(|minter| get_minter_roles_pda(&token_manager_pda, &minter).0);
-
-                        let (mpl_token_metadata_account, _) =
-                            get_mpl_token_metadata_account(&token_mint);
-
-                        accounts.extend(execute_deploy_interchain_token_extra_accounts(
-                            deployer_ata,
-                            self.keypair.pubkey(),
-                            solana_program::sysvar::instructions::ID,
-                            mpl_token_metadata::ID,
-                            mpl_token_metadata_account,
-                            minter,
-                            minter_roles_pda,
-                        ));
-                    }
-                    GMPPayload::LinkToken(ref link) => {
-                        let (deployer_ata, _) =
-                            get_deployer_ata(&self.keypair.pubkey(), &token_mint);
-                        let minter = Pubkey::try_from(link.link_params.as_ref()).ok();
-
-                        let minter_roles_pda = minter
-                            .map(|minter| get_minter_roles_pda(&token_manager_pda, &minter).0);
-
-                        accounts.extend(execute_link_token_extra_accounts(
-                            deployer_ata,
-                            minter,
-                            minter_roles_pda,
-                        ))
-                    }
-                    _ => {}
-                }
-
-                let data = solana_axelar_its::instruction::Execute {
-                    message: message.clone(),
-                    payload: payload.to_vec(),
-                }
-                .data();
-
-                let alt_info = if let Some(existing_alt_pubkey) = existing_alt_pubkey {
-                    // Use existing ALT pubkey, no need to create new ALT transaction
-                    // Addresses will be fetched from chain in build() method
-                    debug!(
-                        "Using existing ALT pubkey from Redis: {}",
-                        existing_alt_pubkey
-                    );
-                    Some(ALTInfo::new(None, None, Some(existing_alt_pubkey)))
-                } else {
-                    // Create new ALT
-                    let recent_slot = self
-                        .includer_client
-                        .get_slot()
-                        .await
-                        .map_err(|e| TransactionBuilderError::ClientError(e.to_string()))?;
-
-                    let alt_accounts: Vec<Pubkey> = accounts.iter().map(|acc| acc.pubkey).collect();
-
-                    let (alt_ix_create, alt_ix_extend, alt_pubkey) = self
-                        .build_lookup_table_instructions(recent_slot, &accounts)
-                        .await
-                        .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
-                    Some(
-                        ALTInfo::new(Some(alt_ix_create), Some(alt_ix_extend), Some(alt_pubkey))
-                            .with_addresses(alt_accounts),
-                    )
-                };
-
-                Ok((
-                    Instruction {
-                        program_id: solana_axelar_its::ID,
-                        accounts,
-                        data,
-                    },
-                    alt_info,
-                ))
+                    existing_alt_pubkey,
+                )
+                .await
             }
             x if x == solana_axelar_governance::ID => {
-                let (signing_pda, _) = get_validate_message_signing_pda(
-                    &message.command_id(),
-                    &solana_axelar_gateway::ID,
-                );
-                let (event_authority, _) = get_gateway_event_authority_pda();
-                let (gateway_root_pda, _) = get_gateway_root_config_internal();
-                let executable = solana_axelar_governance::accounts::AxelarExecuteAccounts {
-                    incoming_message_pda,
-                    signing_pda,
-                    axelar_gateway_program: solana_axelar_gateway::ID,
-                    event_authority,
-                    gateway_root_pda,
-                };
-
-                let (governance_config, _) = get_governance_config_pda();
-                let (governance_event_authority, _) = get_governance_event_authority_pda();
-                let (proposal_pda, _) = get_proposal_pda(&message.command_id());
-                let (operator_proposal_pda, _) = get_operator_proposal_pda(&message.command_id());
-
-                let accounts = solana_axelar_governance::accounts::ProcessGmp {
-                    executable,
-                    payer: self.keypair.pubkey(),
-                    governance_config,
-                    proposal_pda,
-                    operator_proposal_pda,
-                    governance_event_authority,
-                    axelar_governance_program: solana_axelar_governance::ID,
-                    system_program: solana_program::system_program::id(),
-                }
-                .to_account_metas(None);
-
-                let data = solana_axelar_governance::instruction::ProcessGmp {
-                    message: message.clone(),
-                    payload: payload.to_vec(),
-                }
-                .data();
-
-                Ok((
-                    Instruction {
-                        program_id: solana_axelar_governance::ID,
-                        accounts,
-                        data,
-                    },
-                    None,
-                ))
+                self.build_governance_instruction(message, payload, incoming_message_pda)
+                    .await
             }
             _ => {
-                let b64_decoded =
-                    base64::prelude::BASE64_STANDARD
-                        .decode(payload)
-                        .map_err(|e| {
-                            TransactionBuilderError::GenericError(format!(
-                                "Failed to decode payload: {}",
-                                e
-                            ))
-                        })?;
-                let decoded_payload = ExecutablePayload::decode(&b64_decoded)
-                    .map_err(|e| TransactionBuilderError::PayloadDecodeError(e.to_string()))?; // return custom error to send cannot_execute_message
-
-                let user_provided_accounts = decoded_payload.account_meta();
-
-                let (signing_pda, _) =
-                    get_validate_message_signing_pda(&message.command_id(), &destination_address);
-                let (event_authority, _) = get_gateway_event_authority_pda();
-                let (gateway_root_pda, _) = get_gateway_root_config_internal();
-
-                let mut accounts =
-                    solana_axelar_gateway::executable::helpers::AxelarExecuteAccounts {
-                        incoming_message_pda,
-                        signing_pda,
-                        axelar_gateway_program: solana_axelar_gateway::ID,
-                        event_authority,
-                        gateway_root_pda,
-                    }
-                    .to_account_metas(None);
-
-                accounts.extend(user_provided_accounts);
-
-                let data = solana_axelar_gateway::executable::helpers::AxelarExecuteInstruction {
-                    message: message.clone(),
-                    payload_without_accounts: decoded_payload.payload_without_accounts().to_vec(),
-                    encoding_scheme: decoded_payload.encoding_scheme(),
-                }
-                .data();
-
-                Ok((
-                    Instruction {
-                        program_id: destination_address,
-                        accounts,
-                        data,
-                    },
-                    None,
-                ))
+                self.build_executable_instruction(
+                    message,
+                    payload,
+                    incoming_message_pda,
+                    destination_address,
+                )
+                .await
             }
         }
+    }
+
+    async fn build_its_instruction(
+        &self,
+        message: &Message,
+        payload: &[u8],
+        incoming_message_pda: Pubkey,
+        existing_alt_pubkey: Option<Pubkey>,
+    ) -> Result<(Instruction, Option<ALTInfo>), TransactionBuilderError> {
+        let gmp_decoded_payload = GMPPayload::decode(payload)
+            .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+
+        let token_id = gmp_decoded_payload
+            .token_id()
+            .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+
+        let (signing_pda, _) =
+            get_validate_message_signing_pda(&message.command_id(), &solana_axelar_gateway::ID);
+        let (event_authority, _) = get_gateway_event_authority_pda();
+        let (gateway_root_pda, _) = get_gateway_root_config_internal();
+
+        let executable = solana_axelar_its::accounts::AxelarExecuteAccounts {
+            incoming_message_pda,
+            signing_pda,
+            axelar_gateway_program: solana_axelar_gateway::ID,
+            event_authority,
+            gateway_root_pda,
+        };
+
+        let (its_root_pda, _) = get_its_root_pda();
+        let (token_manager_pda, _) = get_token_manager_pda(&its_root_pda, &token_id);
+        let (token_mint, _) = get_token_mint_pda(&its_root_pda, &token_id);
+        let (token_manager_ata, _) = get_token_manager_ata(&token_manager_pda, &token_mint);
+
+        let mut accounts = solana_axelar_its::accounts::Execute {
+            executable,
+            payer: self.keypair.pubkey(),
+            system_program: solana_program::system_program::id(),
+            event_authority,
+            its_root_pda,
+            token_manager_pda,
+            token_mint,
+            token_manager_ata,
+            token_program: spl_token_2022::ID,
+            associated_token_program: spl_associated_token_account::ID,
+            program: solana_axelar_its::ID,
+        }
+        .to_account_metas(None);
+
+        match gmp_decoded_payload {
+            GMPPayload::InterchainTransfer(ref transfer) => {
+                let destination_address =
+                    Pubkey::try_from(transfer.destination_address.as_ref())
+                        .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+                let (destination_ata, _) = get_destination_ata(&destination_address, &token_mint);
+                accounts.extend(execute_interchain_transfer_extra_accounts(
+                    destination_address,
+                    destination_ata,
+                ));
+            }
+
+            GMPPayload::DeployInterchainToken(ref deploy) => {
+                let (deployer_ata, _) = get_deployer_ata(&self.keypair.pubkey(), &token_mint);
+                let minter = if deploy.minter.is_empty() {
+                    None
+                } else {
+                    Some(Pubkey::try_from(deploy.minter.as_ref()).map_err(|e| {
+                        TransactionBuilderError::GenericError(format!(
+                            "Invalid minter pubkey: {}",
+                            e
+                        ))
+                    })?)
+                };
+
+                let minter_roles_pda =
+                    minter.map(|minter| get_minter_roles_pda(&token_manager_pda, &minter).0);
+
+                let (mpl_token_metadata_account, _) = get_mpl_token_metadata_account(&token_mint);
+
+                accounts.extend(execute_deploy_interchain_token_extra_accounts(
+                    deployer_ata,
+                    self.keypair.pubkey(),
+                    solana_program::sysvar::instructions::ID,
+                    mpl_token_metadata::ID,
+                    mpl_token_metadata_account,
+                    minter,
+                    minter_roles_pda,
+                ));
+            }
+            GMPPayload::LinkToken(ref link) => {
+                let (deployer_ata, _) = get_deployer_ata(&self.keypair.pubkey(), &token_mint);
+                let minter = Pubkey::try_from(link.link_params.as_ref()).ok();
+
+                let minter_roles_pda =
+                    minter.map(|minter| get_minter_roles_pda(&token_manager_pda, &minter).0);
+
+                accounts.extend(execute_link_token_extra_accounts(
+                    deployer_ata,
+                    minter,
+                    minter_roles_pda,
+                ))
+            }
+            _ => {}
+        }
+
+        let data = solana_axelar_its::instruction::Execute {
+            message: message.clone(),
+            payload: payload.to_vec(),
+        }
+        .data();
+
+        let alt_info = if let Some(existing_alt_pubkey) = existing_alt_pubkey {
+            // Use existing ALT pubkey, no need to create new ALT transaction
+            // Addresses will be fetched from chain in build() method
+            debug!(
+                "Using existing ALT pubkey from Redis: {}",
+                existing_alt_pubkey
+            );
+            Some(ALTInfo::new(None, None, Some(existing_alt_pubkey)))
+        } else {
+            // Create new ALT
+            let recent_slot = self
+                .includer_client
+                .get_slot()
+                .await
+                .map_err(|e| TransactionBuilderError::ClientError(e.to_string()))?;
+
+            let alt_accounts: Vec<Pubkey> = accounts.iter().map(|acc| acc.pubkey).collect();
+
+            let (alt_ix_create, alt_ix_extend, alt_pubkey) = self
+                .build_lookup_table_instructions(recent_slot, &accounts)
+                .await
+                .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+            Some(
+                ALTInfo::new(Some(alt_ix_create), Some(alt_ix_extend), Some(alt_pubkey))
+                    .with_addresses(alt_accounts),
+            )
+        };
+
+        Ok((
+            Instruction {
+                program_id: solana_axelar_its::ID,
+                accounts,
+                data,
+            },
+            alt_info,
+        ))
+    }
+
+    async fn build_governance_instruction(
+        &self,
+        message: &Message,
+        payload: &[u8],
+        incoming_message_pda: Pubkey,
+    ) -> Result<(Instruction, Option<ALTInfo>), TransactionBuilderError> {
+        let (signing_pda, _) =
+            get_validate_message_signing_pda(&message.command_id(), &solana_axelar_gateway::ID);
+        let (event_authority, _) = get_gateway_event_authority_pda();
+        let (gateway_root_pda, _) = get_gateway_root_config_internal();
+        let executable = solana_axelar_governance::accounts::AxelarExecuteAccounts {
+            incoming_message_pda,
+            signing_pda,
+            axelar_gateway_program: solana_axelar_gateway::ID,
+            event_authority,
+            gateway_root_pda,
+        };
+
+        let (governance_config, _) = get_governance_config_pda();
+        let (governance_event_authority, _) = get_governance_event_authority_pda();
+        let (proposal_pda, _) = get_proposal_pda(&message.command_id());
+        let (operator_proposal_pda, _) = get_operator_proposal_pda(&message.command_id());
+
+        let accounts = solana_axelar_governance::accounts::ProcessGmp {
+            executable,
+            payer: self.keypair.pubkey(),
+            governance_config,
+            proposal_pda,
+            operator_proposal_pda,
+            governance_event_authority,
+            axelar_governance_program: solana_axelar_governance::ID,
+            system_program: solana_program::system_program::id(),
+        }
+        .to_account_metas(None);
+
+        let data = solana_axelar_governance::instruction::ProcessGmp {
+            message: message.clone(),
+            payload: payload.to_vec(),
+        }
+        .data();
+
+        Ok((
+            Instruction {
+                program_id: solana_axelar_governance::ID,
+                accounts,
+                data,
+            },
+            None,
+        ))
+    }
+
+    async fn build_executable_instruction(
+        &self,
+        message: &Message,
+        payload: &[u8],
+        incoming_message_pda: Pubkey,
+        destination_address: Pubkey,
+    ) -> Result<(Instruction, Option<ALTInfo>), TransactionBuilderError> {
+        let b64_decoded = base64::prelude::BASE64_STANDARD
+            .decode(payload)
+            .map_err(|e| {
+                TransactionBuilderError::GenericError(format!("Failed to decode payload: {}", e))
+            })?;
+        let decoded_payload = ExecutablePayload::decode(&b64_decoded)
+            .map_err(|e| TransactionBuilderError::PayloadDecodeError(e.to_string()))?; // return custom error to send cannot_execute_message
+
+        let user_provided_accounts = decoded_payload.account_meta();
+
+        let (signing_pda, _) =
+            get_validate_message_signing_pda(&message.command_id(), &destination_address);
+        let (event_authority, _) = get_gateway_event_authority_pda();
+        let (gateway_root_pda, _) = get_gateway_root_config_internal();
+
+        let mut accounts = solana_axelar_gateway::executable::helpers::AxelarExecuteAccounts {
+            incoming_message_pda,
+            signing_pda,
+            axelar_gateway_program: solana_axelar_gateway::ID,
+            event_authority,
+            gateway_root_pda,
+        }
+        .to_account_metas(None);
+
+        accounts.extend(user_provided_accounts);
+
+        let data = solana_axelar_gateway::executable::helpers::AxelarExecuteInstruction {
+            message: message.clone(),
+            payload_without_accounts: decoded_payload.payload_without_accounts().to_vec(),
+            encoding_scheme: decoded_payload.encoding_scheme(),
+        }
+        .data();
+
+        Ok((
+            Instruction {
+                program_id: destination_address,
+                accounts,
+                data,
+            },
+            None,
+        ))
     }
 
     async fn build_lookup_table_instructions(

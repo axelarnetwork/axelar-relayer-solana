@@ -1293,10 +1293,7 @@ mod tests {
             .expect_build()
             .times(1)
             .returning(move |_, _| {
-                Ok::<
-                    crate::transaction_type::SolanaTransactionType,
-                    crate::error::TransactionBuilderError,
-                >(crate::transaction_type::SolanaTransactionType::Legacy(
+                Ok(crate::transaction_type::SolanaTransactionType::Legacy(
                     test_tx_for_build.clone(),
                 ))
             });
@@ -1406,12 +1403,7 @@ mod tests {
                     &[&keypair_for_mock],
                     solana_sdk::hash::Hash::default(),
                 );
-                Ok::<
-                    crate::transaction_type::SolanaTransactionType,
-                    crate::error::TransactionBuilderError,
-                >(crate::transaction_type::SolanaTransactionType::Legacy(
-                    test_tx,
-                ))
+                Ok(crate::transaction_type::SolanaTransactionType::Legacy(test_tx))
             });
 
         // This will result in gas_cost_lamports > refund_amount
