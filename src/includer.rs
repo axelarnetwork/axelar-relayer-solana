@@ -1403,7 +1403,9 @@ mod tests {
                     &[&keypair_for_mock],
                     solana_sdk::hash::Hash::default(),
                 );
-                Ok(crate::transaction_type::SolanaTransactionType::Legacy(test_tx))
+                Ok(crate::transaction_type::SolanaTransactionType::Legacy(
+                    test_tx,
+                ))
             });
 
         // This will result in gas_cost_lamports > refund_amount
