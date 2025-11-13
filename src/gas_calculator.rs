@@ -97,25 +97,6 @@ impl<IC: IncluderClientTrait, FC: FeesClientTrait> GasCalculatorTrait for GasCal
             .take(MAX_ACCOUNTS)
             .map(|x| x.pubkey)
             .collect::<Vec<_>>();
-        // let fees = self
-        //     .includer_client
-        //     .get_recent_prioritization_fees(&all_touched_accounts)
-        //     .await
-        //     .map_err(|e| GasCalculatorError::Generic(e.to_string()))?;
-        // let (sum, count) = fees
-        //     .into_iter()
-        //     .rev()
-        //     .take(N_SLOTS_TO_CHECK)
-        //     .map(|x| x.prioritization_fee)
-        //     // Simple rolling average of the last `N_SLOTS_TO_CHECK` items.
-        //     .fold((0_u64, 0_u64), |(sum, count), fee| {
-        //         (sum.saturating_add(fee), count.saturating_add(1))
-        //     });
-        // let average = if count > 0 {
-        //     sum.saturating_div(count)
-        // } else {
-        //     0
-        // };
 
         let fees = self
             .fees_client

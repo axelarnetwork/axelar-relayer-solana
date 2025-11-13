@@ -16,7 +16,6 @@ pub struct SolanaConfig {
     pub solana_its: String,
     pub solana_commitment: CommitmentConfig,
     pub solana_keypair: String,
-    pub fees_client_url: String,
 }
 
 impl SolanaConfig {

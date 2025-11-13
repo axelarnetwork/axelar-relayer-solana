@@ -2,69 +2,90 @@ use async_trait::async_trait;
 
 use relayer_core::{error::ClientError, utils::ThreadSafe};
 use solana_sdk::pubkey::Pubkey;
+use statrs::statistics::{Data, OrderStatistics};
 
-use crate::{
-    error::FeesClientError,
-    utils::{get_recent_prioritization_fees_command, post_request},
-};
+use crate::{error::FeesClientError, includer_client::IncluderClientTrait};
 
 #[async_trait]
 #[cfg_attr(test, mockall::automock)]
 pub trait FeesClientTrait: ThreadSafe {
+    async fn get_prioritization_fee(&self, addresses: &[Pubkey]) -> Result<u64, FeesClientError>;
     async fn get_recent_prioritization_fees(
         &self,
         addresses: &[Pubkey],
     ) -> Result<u64, FeesClientError>;
+    async fn get_prioritization_fee_percentile(
+        &self,
+        addresses: &[Pubkey],
+        percentile: f64,
+    ) -> Result<u64, FeesClientError>;
 }
 
 #[derive(Clone)]
-pub struct FeesClient {
-    url: String,
+pub struct FeesClient<IC: IncluderClientTrait> {
+    includer_client: IC,
+    last_n_blocks: usize,
 }
 
-impl FeesClient {
-    pub fn new(url: &str) -> Result<Self, ClientError> {
+impl<IC: IncluderClientTrait> FeesClient<IC> {
+    pub fn new(includer_client: IC, last_n_blocks: usize) -> Result<Self, ClientError> {
         Ok(Self {
-            url: url.to_string(),
+            includer_client,
+            last_n_blocks,
         })
     }
 }
 
 #[async_trait]
-impl FeesClientTrait for FeesClient {
+impl<IC: IncluderClientTrait> FeesClientTrait for FeesClient<IC> {
+    async fn get_prioritization_fee(&self, addresses: &[Pubkey]) -> Result<u64, FeesClientError> {
+        // For backward compatibility, use 75th percentile
+        self.get_prioritization_fee_percentile(addresses, 75.0)
+            .await
+    }
+
     async fn get_recent_prioritization_fees(
         &self,
         addresses: &[Pubkey],
     ) -> Result<u64, FeesClientError> {
-        let body_json_str = get_recent_prioritization_fees_command(addresses.to_vec());
-        let raw = post_request(&self.url, &body_json_str)
+        self.get_prioritization_fee_percentile(addresses, 75.0)
+            .await
+    }
+
+    async fn get_prioritization_fee_percentile(
+        &self,
+        addresses: &[Pubkey],
+        percentile: f64,
+    ) -> Result<u64, FeesClientError> {
+        let recent_fees = self
+            .includer_client
+            .get_recent_prioritization_fees(addresses)
             .await
             .map_err(|e| FeesClientError::GenericError(e.to_string()))?;
 
-        let parsed: serde_json::Value =
-            serde_json::from_str(&raw).map_err(|e| FeesClientError::GenericError(e.to_string()))?;
-
-        let result = parsed.get("result").ok_or(FeesClientError::GenericError(
-            "result field not found in response".to_string(),
-        ))?;
-
-        let value = result
-            .get("priorityFeeEstimate")
-            .ok_or(FeesClientError::GenericError(
-                "priorityFeeEstimate not found in response".to_string(),
-            ))?;
-
-        let value = value.as_f64().ok_or(FeesClientError::GenericError(
-            "priorityFeeEstimate is not a floating point number".to_string(),
-        ))?;
-
-        if !value.is_finite() || value < 0.0 {
+        if recent_fees.is_empty() {
             return Err(FeesClientError::GenericError(
-                "priorityFeeEstimate is not a valid number".to_string(),
+                "No recent prioritization fees found".to_string(),
             ));
         }
 
-        Ok(value.ceil() as u64)
+        let fees_to_consider: Vec<f64> = recent_fees
+            .into_iter()
+            .take(self.last_n_blocks)
+            .map(|fee| fee.prioritization_fee as f64)
+            .collect();
+
+        if fees_to_consider.is_empty() {
+            return Err(FeesClientError::GenericError(
+                "No valid fees found in recent blocks".to_string(),
+            ));
+        }
+
+        let mut data = Data::new(fees_to_consider);
+
+        let percentile_value = data.percentile(percentile as usize).max(0.0);
+
+        Ok(percentile_value.ceil() as u64)
     }
 }
 

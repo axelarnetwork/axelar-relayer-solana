@@ -6,6 +6,7 @@ use relayer_core::utils::setup_heartbeat;
 use relayer_core::{database::PostgresDB, gmp_api, payload_cache::PayloadCache, queue::Queue};
 use solana::config::SolanaConfig;
 use solana::includer::SolanaIncluder;
+use solana::includer_client::IncluderClient;
 use solana::models::solana_subscriber_cursor::PostgresDB as SolanaPostgresDB;
 use solana::redis::RedisConnection;
 use sqlx::PgPool;
@@ -56,11 +57,11 @@ async fn main() -> anyhow::Result<()> {
         >,
         RedisConnection,
         SolanaPostgresDB,
-        solana::includer_client::IncluderClient,
+        IncluderClient,
         solana::transaction_builder::TransactionBuilder<
             solana::gas_calculator::GasCalculator<
-                solana::includer_client::IncluderClient,
-                solana::fees_client::FeesClient,
+                IncluderClient,
+                solana::fees_client::FeesClient<IncluderClient>,
             >,
             solana::includer_client::IncluderClient,
         >,

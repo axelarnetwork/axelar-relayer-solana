@@ -110,7 +110,10 @@ impl<
                 R,
                 RF,
                 IncluderClient,
-                TransactionBuilder<GasCalculator<IncluderClient, FeesClient>, IncluderClient>,
+                TransactionBuilder<
+                    GasCalculator<IncluderClient, FeesClient<IncluderClient>>,
+                    IncluderClient,
+                >,
             >,
         >,
         IncluderError,
@@ -118,15 +121,13 @@ impl<
         let solana_rpc = config.solana_poll_rpc.clone();
         let solana_commitment = config.solana_commitment;
 
-        let fees_client_url = config.fees_client_url.clone();
-
-        let fees_client = Arc::new(
-            FeesClient::new(&fees_client_url)
+        let client = Arc::new(
+            IncluderClient::new(&solana_rpc, solana_commitment, 3)
                 .map_err(|e| error_stack::report!(IncluderError::GenericError(e.to_string())))?,
         );
 
-        let client = Arc::new(
-            IncluderClient::new(&solana_rpc, solana_commitment, 3)
+        let fees_client = Arc::new(
+            FeesClient::new(client.as_ref().clone(), 10)
                 .map_err(|e| error_stack::report!(IncluderError::GenericError(e.to_string())))?,
         );
 

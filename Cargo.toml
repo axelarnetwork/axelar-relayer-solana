@@ -54,6 +54,7 @@ bytemuck = "1.24.0"
 bincode = "1"
 reqwest = "0.12.24"
 mockall = "0.13.1"
+statrs = "0.16"
 
 
 [dev-dependencies]
