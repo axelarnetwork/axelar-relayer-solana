@@ -482,20 +482,29 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use crate::gas_calculator::MockGasCalculatorTrait;
     use crate::includer::ALTInfo;
     use crate::includer_client::MockIncluderClientTrait;
     use crate::transaction_builder::{TransactionBuilder, TransactionBuilderTrait};
     use crate::transaction_type::SolanaTransactionType;
     use anchor_lang::prelude::AccountMeta;
+    use base64::prelude::BASE64_STANDARD;
+    use base64::Engine;
+    use interchain_token_transfer_gmp::alloy_primitives::{Bytes, FixedBytes, Uint};
+    use interchain_token_transfer_gmp::GMPPayload;
+    use solana_axelar_gateway::payload::EncodingScheme;
+    use solana_axelar_gateway::{
+        executable::ExecutablePayload, state::incoming_message::Message, CrossChainId,
+    };
+    use solana_axelar_governance;
+    use solana_axelar_its;
     use solana_sdk::hash::Hash;
     use solana_sdk::instruction::Instruction;
     use solana_sdk::message::VersionedMessage;
     use solana_sdk::pubkey::Pubkey;
     use solana_sdk::signature::Keypair;
     use solana_sdk::signer::Signer;
+    use std::sync::Arc;
 
     #[tokio::test]
     async fn test_transaction_builder_build_with_alt_produces_versioned_tx() {
@@ -618,5 +627,117 @@ mod tests {
             }
             _ => panic!("expected Legacy transaction when no ALTInfo is provided"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_build_execute_instruction_with_three_addresses() {
+        let keypair = Arc::new(Keypair::new());
+        let mock_gas = MockGasCalculatorTrait::new();
+        let mut mock_client = MockIncluderClientTrait::new();
+
+        let message = Message {
+            cc_id: CrossChainId {
+                chain: "ethereum".to_string(),
+                id: "test-message-id-123".to_string(),
+            },
+            source_address: "0x1234567890123456789012345678901234567890".to_string(),
+            destination_chain: "solana".to_string(),
+            destination_address: "test-destination".to_string(),
+            payload_hash: [0u8; 32],
+        };
+
+        mock_client
+            .expect_get_slot()
+            .times(1)
+            .returning(|| Box::pin(async { Ok(1000u64) }));
+
+        let builder =
+            TransactionBuilder::new(Arc::clone(&keypair), mock_gas, Arc::new(mock_client));
+
+        // ITS address should return Some(ALTInfo)
+        let its_destination = solana_axelar_its::ID;
+
+        let token_id = [1u8; 32];
+        let destination_address_bytes = [2u8; 32];
+        let gmp_payload =
+            GMPPayload::InterchainTransfer(interchain_token_transfer_gmp::InterchainTransfer {
+                token_id: FixedBytes::from(token_id),
+                destination_address: Bytes::from(destination_address_bytes),
+                amount: Uint::from(0), // Empty amount for simplicity
+                data: Bytes::from(vec![]),
+                selector: Uint::from(0),
+                source_address: Bytes::from(vec![3u8; 20]),
+            });
+        let its_payload = gmp_payload.encode();
+
+        let (its_instruction, its_alt_info) = builder
+            .build_execute_instruction(&message, &its_payload, its_destination, None)
+            .await
+            .expect("ITS build_execute_instruction should succeed");
+
+        assert_eq!(its_instruction.program_id, solana_axelar_its::ID);
+        assert!(its_alt_info.is_some(), "ITS should return Some(ALTInfo)");
+        let its_alt = its_alt_info.unwrap();
+        assert!(
+            its_alt.alt_pubkey.is_some(),
+            "ALTInfo should have alt_pubkey"
+        );
+        assert!(
+            its_alt.alt_ix_create.is_some(),
+            "ALTInfo should have alt_ix_create"
+        );
+        assert!(
+            its_alt.alt_ix_extend.is_some(),
+            "ALTInfo should have alt_ix_extend"
+        );
+        assert!(
+            its_alt.alt_addresses.is_some(),
+            "ALTInfo should have alt_addresses"
+        );
+
+        // Governance address should return None
+        let governance_destination = solana_axelar_governance::ID;
+        let governance_payload = b"governance-payload-data";
+
+        let (governance_instruction, governance_alt_info) = builder
+            .build_execute_instruction(&message, governance_payload, governance_destination, None)
+            .await
+            .expect("Governance build_execute_instruction should succeed");
+
+        assert_eq!(
+            governance_instruction.program_id,
+            solana_axelar_governance::ID
+        );
+        assert!(
+            governance_alt_info.is_none(),
+            "Governance should return None for ALTInfo"
+        );
+
+        // Arbitrary program address should return None
+        let arbitrary_destination = Pubkey::new_unique();
+
+        let executable_payload = ExecutablePayload::new::<AccountMeta>(
+            &[1, 2, 3, 4, 5],
+            &[AccountMeta::new(arbitrary_destination, false)],
+            EncodingScheme::Borsh,
+        );
+        let executable_payload_bytes = executable_payload.encode().unwrap();
+        let executable_payload_b64 = BASE64_STANDARD.encode(&executable_payload_bytes);
+
+        let (arbitrary_instruction, arbitrary_alt_info) = builder
+            .build_execute_instruction(
+                &message,
+                executable_payload_b64.as_bytes(),
+                arbitrary_destination,
+                None,
+            )
+            .await
+            .expect("Arbitrary program build_execute_instruction should succeed");
+
+        assert_eq!(arbitrary_instruction.program_id, arbitrary_destination);
+        assert!(
+            arbitrary_alt_info.is_none(),
+            "Arbitrary program should return None for ALTInfo"
+        );
     }
 }

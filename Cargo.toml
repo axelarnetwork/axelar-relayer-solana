@@ -42,7 +42,7 @@ anchor-spl = "0.31.1"
 mpl-token-metadata = "5.1.1"
 ed25519-zebra = "=4.0.3"
 
-solana-transaction-parser = { git = "https://github.com/commonprefix/solana-transaction-parser", branch = "v2-parsing" }
+solana-transaction-parser = { git = "https://github.com/commonprefix/solana-transaction-parser", branch = "v2-parsing", features = ["mocks"] }
 
 interchain-token-transfer-gmp = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "main", package = "interchain-token-transfer-gmp" }
 solana-axelar-its = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "main", package = "solana-axelar-its", features = ["no-entrypoint"] }
