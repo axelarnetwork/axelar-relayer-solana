@@ -6160,7 +6160,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a56d757972c98b346a9b766e3f02746cde6dd1cd1d1d563472929fdd74bec4d"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.12.1",
  "proc-macro2",
  "quote",
  "syn 2.0.106",
@@ -6601,7 +6601,7 @@ checksum = "caf4aa5b0f434c91fe5c7f1ecb6a5ece2130b02ad2a590589dda5146df959001"
 [[package]]
 name = "relayer-core"
 version = "0.1.0"
-source = "git+https://github.com/commonprefix/axelar-relayer-core?branch=main#eac9dfbec0346ef96467198826e97cf573554a13"
+source = "git+https://github.com/commonprefix/axelar-relayer-core?branch=main#d83e7b83776d6ce2bcf4b6bc9745d170d92e90c9"
 dependencies = [
  "anyhow",
  "async-std",
