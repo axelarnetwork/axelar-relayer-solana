@@ -423,7 +423,10 @@ impl<
         TB: TransactionBuilderTrait<IC> + Clone,
     > IncluderTrait for SolanaIncluder<G, R, RF, IC, TB>
 {
-    #[tracing::instrument(skip(self), fields(message_id))]
+    #[cfg_attr(
+        feature = "instrumentation",
+        tracing::instrument(skip(self), fields(message_id))
+    )]
     async fn handle_gateway_tx_task(
         &self,
         task: GatewayTxTask,
@@ -652,7 +655,10 @@ impl<
         };
     }
 
-    #[tracing::instrument(skip(self), fields(message_id))]
+    #[cfg_attr(
+        feature = "instrumentation",
+        tracing::instrument(skip(self), fields(message_id))
+    )]
     async fn handle_execute_task(&self, task: ExecuteTask) -> Result<Vec<Event>, IncluderError> {
         let message = Message {
             cc_id: CrossChainId {
@@ -741,7 +747,10 @@ impl<
             .map_err(|e| IncluderError::GenericError(e.to_string()))
     }
 
-    #[tracing::instrument(skip(self), fields(refund_id))]
+    #[cfg_attr(
+        feature = "instrumentation",
+        tracing::instrument(skip(self), fields(refund_id))
+    )]
     async fn handle_refund_task(&self, task: RefundTask) -> Result<(), IncluderError> {
         let refund_id = task.common.id.clone();
         if self.refund_already_processed(refund_id.clone()).await? {
