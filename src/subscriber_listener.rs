@@ -328,7 +328,7 @@ impl<STR: SolanaStreamClientTrait, SM: SolanaTransactionModel> SolanaListener<ST
                             break;
                         }
                         Err(e) => {
-                            warn!("Restarting {} stream: {:?}", stream_name, e);
+                            debug!("Restarting {} stream: {:?}", stream_name, e);
                             break;
                         }
                     }
