@@ -44,8 +44,6 @@ pub enum GatewayTxError {
 
 #[derive(Error, Debug)]
 pub enum IncluderClientError {
-    #[error("GasExceededError: {0}")]
-    GasExceededError(String),
     #[error("MaxRetriesExceededError: {0}")]
     MaxRetriesExceededError(String),
     #[error("TransactionError: {0}")]
@@ -56,6 +54,8 @@ pub enum IncluderClientError {
 
 #[derive(Error, Debug)]
 pub enum TransactionBuilderError {
+    #[error("PayloadDecodeError: {0}")]
+    PayloadDecodeError(String),
     #[error("SimulationError: {0}")]
     SimulationError(String),
     #[error("ClientError: {0}")]
@@ -78,6 +78,12 @@ pub enum RedisInterfaceError {
     RemoveAltKeyError(String),
     #[error("UpdateAltRetryCountError: {0}")]
     UpdateAltRetryCountError(String),
+    #[error("GenericError: {0}")]
+    GenericError(String),
+}
+
+#[derive(Error, Debug)]
+pub enum FeesClientError {
     #[error("GenericError: {0}")]
     GenericError(String),
 }

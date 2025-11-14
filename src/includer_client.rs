@@ -1,8 +1,8 @@
 use anchor_lang::AccountDeserialize;
 use async_trait::async_trait;
 
-use axelar_solana_gateway_v2::IncomingMessage;
 use relayer_core::{error::ClientError, utils::ThreadSafe};
+use solana_axelar_gateway::IncomingMessage;
 use solana_client::rpc_response::RpcPrioritizationFee;
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{
@@ -14,7 +14,7 @@ use tracing::warn;
 use crate::{error::IncluderClientError, transaction_type::SolanaTransactionType};
 
 #[async_trait]
-#[cfg_attr(any(test), mockall::automock)]
+#[cfg_attr(test, mockall::automock)]
 pub trait IncluderClientTrait: ThreadSafe {
     fn inner(&self) -> &RpcClient;
     async fn get_latest_blockhash(&self) -> Result<Hash, IncluderClientError>;
@@ -129,9 +129,6 @@ impl IncluderClientTrait for IncluderClient {
                     return Ok((signature, cost));
                 }
                 Err(e) => {
-                    if e.to_string().contains("Computational budget exceeded") {
-                        return Err(IncluderClientError::GasExceededError(e.to_string()));
-                    }
                     if e.get_transaction_error().is_some() {
                         return Err(IncluderClientError::TransactionError(e.to_string()));
                     }

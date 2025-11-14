@@ -9,6 +9,7 @@ pub mod utils;
 pub use models::refunds;
 pub use models::solana_subscriber_cursor;
 pub use models::solana_transaction;
+pub mod fees_client;
 pub mod includer;
 pub mod includer_client;
 pub mod program_types;

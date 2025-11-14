@@ -1,5 +1,5 @@
 use anchor_lang::{AnchorDeserialize, AnchorSerialize};
-use axelar_solana_gateway_v2::{MerklizedMessage, SigningVerifierSetInfo};
+use solana_axelar_gateway::{MerklizedMessage, SigningVerifierSetInfo};
 pub type Signature = [u8; 65];
 
 #[derive(Debug, Eq, PartialEq, Clone, AnchorSerialize, AnchorDeserialize)]
