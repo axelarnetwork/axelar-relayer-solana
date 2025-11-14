@@ -718,7 +718,10 @@ impl<
             .transaction_builder
             .build_execute_instruction(
                 &message,
-                &task.task.payload.clone().into_bytes(),
+                base64::prelude::BASE64_STANDARD
+                    .decode(task.task.payload.clone())
+                    .map_err(|e| IncluderError::GenericError(e.to_string()))?
+                    .as_slice(),
                 destination_address,
                 existing_alt_pubkey,
             )

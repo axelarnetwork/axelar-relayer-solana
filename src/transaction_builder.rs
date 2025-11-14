@@ -417,12 +417,7 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
         incoming_message_pda: Pubkey,
         destination_address: Pubkey,
     ) -> Result<(Instruction, Option<ALTInfo>), TransactionBuilderError> {
-        let b64_decoded = base64::prelude::BASE64_STANDARD
-            .decode(payload)
-            .map_err(|e| {
-                TransactionBuilderError::GenericError(format!("Failed to decode payload: {}", e))
-            })?;
-        let decoded_payload = ExecutablePayload::decode(&b64_decoded)
+        let decoded_payload = ExecutablePayload::decode(payload)
             .map_err(|e| TransactionBuilderError::PayloadDecodeError(e.to_string()))?; // return custom error to send cannot_execute_message
 
         let user_provided_accounts = decoded_payload.account_meta();
