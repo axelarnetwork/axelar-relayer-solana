@@ -613,7 +613,7 @@ impl<
                     })
                     .collect::<FuturesUnordered<_>>();
 
-                let mut failed_events = vec![];
+                let mut gmp_events = vec![];
                 while let Some(result) = merkelised_message_futures.next().await {
                     match result.status {
                         Ok(_) => {
@@ -644,13 +644,13 @@ impl<
                                 e.to_string(),
                                 CannotExecuteMessageReason::Error,
                             );
-                            failed_events.push(event);
+                            gmp_events.push(event);
                         }
                     }
                 }
                 debug!("Approved messages transaction sent successfully");
 
-                return Ok(failed_events);
+                return Ok(gmp_events);
             }
         };
     }
