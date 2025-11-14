@@ -16,7 +16,6 @@ use anchor_lang::InstructionData;
 use anchor_lang::ToAccountMetas;
 use anchor_spl::{associated_token::spl_associated_token_account, token_2022::spl_token_2022};
 use async_trait::async_trait;
-use base64::Engine;
 use interchain_token_transfer_gmp::GMPPayload;
 use mpl_token_metadata;
 use relayer_core::utils::ThreadSafe;
