@@ -120,16 +120,26 @@ impl IncluderClientTrait for IncluderClient {
                     self.client.send_and_confirm_transaction(tx).await
                 }
             };
+
             match res {
                 Ok(signature) => {
+                    // At this point, the transaction has been sent and confirmed. We need to return the signature,
+                    // even if we fail to get the cost.
                     let cost = match self.get_transaction_cost_from_signature(&signature).await {
                         Ok(cost) => cost,
-                        Err(e) => return Err(IncluderClientError::GenericError(e.to_string())),
+                        Err(e) => {
+                            warn!("Failed to get transaction cost from signature: {}", e);
+                            return Ok((signature, None));
+                        }
                     };
                     return Ok((signature, cost));
                 }
                 Err(e) => {
+                    // TODO: we can reach this point even if the transaction was sent and confirmed successfully,
+                    // and we'll fail to account for the fee.
+                    // We might have to manually implement send_and_confirm()
                     if e.get_transaction_error().is_some() {
+                        // TODO: should maybe do different actions depending on the error?
                         return Err(IncluderClientError::TransactionError(e.to_string()));
                     }
                     if retries >= self.max_retries {
