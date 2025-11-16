@@ -223,7 +223,44 @@ impl<
         task: ExecuteTask,
         alt_info: Option<ALTInfo>,
     ) -> Result<Vec<Event>, IncluderError> {
-        let alt_pubkey = alt_info.as_ref().and_then(|a| a.alt_pubkey);
+        let mut alt_gas_cost_lamports = 0;
+
+        if let Some(ALTInfo {
+            alt_ix_create: Some(ref alt_ix_create),
+            alt_ix_extend: Some(ref alt_ix_extend),
+            alt_pubkey: Some(ref alt_pubkey),
+            alt_addresses: _,
+        }) = alt_info
+        {
+            // ALT doesn't exist, create it
+            let alt_tx_build = self
+                .transaction_builder
+                .build(&[alt_ix_create.clone(), alt_ix_extend.clone()], None)
+                .await
+                .map_err(|e| IncluderError::GenericError(e.to_string()))?;
+
+
+            let (signature, alt_cost) = self
+                .client
+                .send_transaction(alt_tx_build)
+                .await
+                .map_err(|e| IncluderError::GenericError(e.to_string()))?;
+            alt_gas_cost_lamports = alt_cost.unwrap_or(0);
+
+            debug!(
+                "ALT transaction sent successfully: {}",
+                signature.to_string()
+            );
+
+            if let Err(e) = self
+                .redis_conn
+                .write_alt_pubkey(task.task.message.message_id.clone(), *alt_pubkey)
+                .await
+            {
+                error!("Failed to write ALT pubkey to Redis: {}", e);
+            }
+        }
+
         let transaction = self
             .transaction_builder
             .build(std::slice::from_ref(&instruction), alt_info.clone())
@@ -238,36 +275,6 @@ impl<
 
         let gas_cost_lamports = calculate_total_cost_lamports(&transaction, gas_cost)
             .map_err(|e| IncluderError::GenericError(e.to_string()))?;
-
-        let mut alt_gas_cost_lamports = 0;
-        let mut alt_tx = None;
-
-        if let Some(ALTInfo {
-            alt_ix_create: Some(ref alt_ix_create),
-            alt_ix_extend: Some(ref alt_ix_extend),
-            alt_pubkey: Some(_),
-            alt_addresses: _,
-        }) = alt_info
-        {
-            // ALT doesn't exist, create it
-            let alt_tx_build = self
-                .transaction_builder
-                .build(&[alt_ix_create.clone(), alt_ix_extend.clone()], None)
-                .await
-                .map_err(|e| IncluderError::GenericError(e.to_string()))?;
-
-            alt_tx = Some(alt_tx_build.clone());
-
-            let alt_simulation_units = self
-                .client
-                .get_units_consumed_from_simulation(alt_tx_build.clone())
-                .await
-                .map_err(|e| IncluderError::GenericError(e.to_string()))?;
-
-            alt_gas_cost_lamports =
-                calculate_total_cost_lamports(&alt_tx_build, alt_simulation_units)
-                    .map_err(|e| IncluderError::GenericError(e.to_string()))?;
-        }
 
         debug!(
             "Available balance: {}, needed gas cost: {}, alt gas cost: {}",
@@ -294,30 +301,6 @@ impl<
             return Ok(vec![event]);
         }
 
-        let mut alt_actual_gas_cost = 0;
-
-        if let Some(alt_tx) = alt_tx {
-            let (signature, alt_cost) = self
-                .client
-                .send_transaction(alt_tx)
-                .await
-                .map_err(|e| IncluderError::GenericError(e.to_string()))?;
-            alt_actual_gas_cost = alt_cost.unwrap_or(0);
-            debug!(
-                "ALT transaction sent successfully: {}",
-                signature.to_string()
-            );
-            if let Some(alt_pubkey) = alt_pubkey {
-                if let Err(e) = self
-                    .redis_conn
-                    .write_alt_pubkey(task.task.message.message_id.clone(), alt_pubkey)
-                    .await
-                {
-                    error!("Failed to write ALT pubkey to Redis: {}", e);
-                }
-            }
-        }
-
         match self.client.send_transaction(transaction).await {
             Ok((signature, gas_cost)) => {
                 info!("Transaction sent successfully: {}", signature.to_string());
@@ -326,7 +309,7 @@ impl<
                 self.redis_conn
                     .write_gas_cost(
                         task.task.message.message_id.clone(),
-                        gas_cost.unwrap_or(0).saturating_add(alt_actual_gas_cost),
+                        gas_cost.unwrap_or(0).saturating_add(alt_gas_cost_lamports),
                         TransactionType::Execute,
                     )
                     .await;
@@ -337,7 +320,8 @@ impl<
                 IncluderClientError::TransactionError(e) => {
                     warn!("Transaction reverted: {}", e);
                     // Include ALT cost if ALT transaction was sent successfully
-                    let total_reverted_cost = gas_cost_lamports.saturating_add(alt_actual_gas_cost);
+                    let total_reverted_cost =
+                        gas_cost_lamports.saturating_add(alt_gas_cost_lamports);
                     let event = self.gmp_api.execute_message(
                         task.task.message.message_id.clone(),
                         task.task.message.source_chain.clone(),
