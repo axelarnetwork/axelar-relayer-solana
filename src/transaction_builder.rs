@@ -2,11 +2,12 @@ use crate::gas_calculator::GasCalculatorTrait;
 use crate::includer::ALTInfo;
 use crate::includer_client::IncluderClientTrait;
 use crate::utils::{
-    get_deployer_ata, get_destination_ata, get_gateway_root_config_internal,
+    create_transaction, get_deployer_ata, get_destination_ata, get_gateway_root_config_internal,
     get_governance_config_pda, get_governance_event_authority_pda, get_incoming_message_pda,
-    get_its_root_pda, get_minter_roles_pda, get_mpl_token_metadata_account,
-    get_operator_proposal_pda, get_proposal_pda, get_token_manager_ata, get_token_manager_pda,
-    get_token_mint_pda, get_validate_message_signing_pda,
+    get_its_event_authority_pda, get_its_root_pda, get_minter_roles_pda,
+    get_mpl_token_metadata_account, get_operator_proposal_pda, get_proposal_pda,
+    get_token_manager_ata, get_token_manager_pda, get_token_mint_pda,
+    get_validate_message_signing_pda,
 };
 use crate::{
     error::TransactionBuilderError, transaction_type::SolanaTransactionType,
@@ -27,11 +28,9 @@ use solana_axelar_its::instructions::{
 use solana_sdk::address_lookup_table::instruction::{create_lookup_table, extend_lookup_table};
 use solana_sdk::address_lookup_table::state::AddressLookupTable;
 use solana_sdk::instruction::{AccountMeta, Instruction};
-use solana_sdk::message::{v0, AddressLookupTableAccount, VersionedMessage};
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signer::keypair::Keypair;
 use solana_sdk::signer::Signer as _;
-use solana_sdk::transaction::{Transaction, VersionedTransaction};
 use std::sync::Arc;
 use tracing::debug;
 
@@ -110,70 +109,76 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
         ixs: &[Instruction],
         alt_info: Option<ALTInfo>,
     ) -> Result<SolanaTransactionType, TransactionBuilderError> {
-        let compute_unit_price_ix = self
+        let alt_addresses = if let Some(alt_info) = alt_info.clone() {
+            let alt_pubkey = alt_info.alt_pubkey.ok_or_else(|| {
+                TransactionBuilderError::GenericError("ALTInfo provided without pubkey".to_string())
+            })?;
+
+            if let Some(addresses) = alt_info.alt_addresses {
+                addresses
+            } else {
+                // In case ALT exists already (retries): fetch from chain
+                debug!("Fetching ALT addresses from chain");
+                let alt_account_data = self
+                    .includer_client
+                    .get_account_data(&alt_pubkey)
+                    .await
+                    .map_err(|e| TransactionBuilderError::ClientError(e.to_string()))?;
+                let alt_state = AddressLookupTable::deserialize(&alt_account_data)
+                    .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+                alt_state.addresses.to_vec()
+            }
+        } else {
+            vec![]
+        };
+
+        let unit_price = self
             .gas_calculator
             .compute_unit_price(ixs)
             .await
             .map_err(|e| TransactionBuilderError::ClientError(e.to_string()))?;
 
-        // Since simulation gets the latest blockhash we can directly use it for the tx construction
-        let (compute_budget_ix, hash) = self
-            .gas_calculator
-            .compute_budget(ixs)
+        let recent_hash = self
+            .includer_client
+            .get_latest_blockhash()
             .await
             .map_err(|e| TransactionBuilderError::ClientError(e.to_string()))?;
 
-        let mut instructions = vec![compute_unit_price_ix, compute_budget_ix];
-        instructions.extend_from_slice(ixs);
+        // Proto transaction where the compute budget is set to a high value to ensure the transaction is simulated successfully
+        // We will override the compute budget in the final transaction.
+        let proto_transaction = create_transaction(
+            ixs.to_vec(),
+            alt_info.clone(),
+            alt_addresses.clone(),
+            unit_price,
+            500_0000,
+            &self.keypair,
+            recent_hash,
+        )
+        .await
+        .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
 
-        match alt_info {
-            Some(alt_info) => {
-                let alt_pubkey = alt_info.alt_pubkey.ok_or_else(|| {
-                    TransactionBuilderError::GenericError(
-                        "ALTInfo provided without pubkey".to_string(),
-                    )
-                })?;
+        // Compute the actual compute budget required for the transaction
+        let compute_budget = self
+            .gas_calculator
+            .compute_budget(proto_transaction.clone())
+            .await
+            .map_err(|e| TransactionBuilderError::ClientError(e.to_string()))?;
 
-                let addresses = if let Some(addresses) = alt_info.alt_addresses {
-                    addresses
-                } else {
-                    // In case ALT exists already (retries): fetch from chain
-                    debug!("Fetching ALT addresses from chain");
-                    let alt_account_data = self
-                        .includer_client
-                        .get_account_data(&alt_pubkey)
-                        .await
-                        .map_err(|e| TransactionBuilderError::ClientError(e.to_string()))?;
-                    let alt_state = AddressLookupTable::deserialize(&alt_account_data)
-                        .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
-                    alt_state.addresses.to_vec()
-                };
+        // Create the final transaction with the actual compute budget
+        let final_transaction = create_transaction(
+            ixs.to_vec(),
+            alt_info,
+            alt_addresses,
+            unit_price,
+            compute_budget,
+            &self.keypair,
+            recent_hash,
+        )
+        .await
+        .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
 
-                let alt_ref = AddressLookupTableAccount {
-                    key: alt_pubkey,
-                    addresses,
-                };
-                let v0_msg = v0::Message::try_compile(
-                    &self.keypair.pubkey(),
-                    &instructions,
-                    &[alt_ref],
-                    hash,
-                )
-                .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
-                let message = VersionedMessage::V0(v0_msg);
-                let versioned_tx = VersionedTransaction::try_new(message, &[&self.keypair])
-                    .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
-                Ok(SolanaTransactionType::Versioned(versioned_tx))
-            }
-            None => Ok(SolanaTransactionType::Legacy(
-                Transaction::new_signed_with_payer(
-                    &instructions,
-                    Some(&self.keypair.pubkey()),
-                    &[&self.keypair],
-                    hash,
-                ),
-            )),
-        }
+        Ok(final_transaction)
     }
 
     async fn build_execute_instruction(
@@ -226,7 +231,7 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
             .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
 
         let (signing_pda, _) =
-            get_validate_message_signing_pda(&message.command_id(), &solana_axelar_gateway::ID);
+            get_validate_message_signing_pda(&message.command_id(), &solana_axelar_its::ID);
         let (event_authority, _) = get_gateway_event_authority_pda();
         let (gateway_root_pda, _) = get_gateway_root_config_internal();
 
@@ -247,7 +252,7 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
             executable,
             payer: self.keypair.pubkey(),
             system_program: solana_program::system_program::id(),
-            event_authority,
+            event_authority: get_its_event_authority_pda().0,
             its_root_pda,
             token_manager_pda,
             token_mint,
