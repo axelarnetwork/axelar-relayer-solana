@@ -2,12 +2,12 @@ use crate::gas_calculator::GasCalculatorTrait;
 use crate::includer::ALTInfo;
 use crate::includer_client::IncluderClientTrait;
 use crate::utils::{
-    create_transaction, get_deployer_ata, get_destination_ata, get_gateway_root_config_internal,
-    get_governance_config_pda, get_governance_event_authority_pda, get_incoming_message_pda,
-    get_its_event_authority_pda, get_its_root_pda, get_minter_roles_pda,
-    get_mpl_token_metadata_account, get_operator_proposal_pda, get_proposal_pda,
-    get_token_manager_ata, get_token_manager_pda, get_token_mint_pda,
-    get_validate_message_signing_pda,
+    calculate_total_cost_lamports, create_transaction, get_deployer_ata, get_destination_ata,
+    get_gateway_root_config_internal, get_governance_config_pda,
+    get_governance_event_authority_pda, get_incoming_message_pda, get_its_event_authority_pda,
+    get_its_root_pda, get_minter_roles_pda, get_mpl_token_metadata_account,
+    get_operator_proposal_pda, get_proposal_pda, get_token_manager_ata, get_token_manager_pda,
+    get_token_mint_pda, get_validate_message_signing_pda,
 };
 use crate::{
     error::TransactionBuilderError, transaction_type::SolanaTransactionType,
@@ -48,7 +48,7 @@ pub trait TransactionBuilderTrait<IC: IncluderClientTrait>: ThreadSafe {
         &self,
         ixs: &[Instruction],
         alt_info: Option<ALTInfo>,
-    ) -> Result<SolanaTransactionType, TransactionBuilderError>;
+    ) -> Result<(SolanaTransactionType, u64), TransactionBuilderError>;
 
     async fn build_execute_instruction(
         &self,
@@ -108,7 +108,7 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
         &self,
         ixs: &[Instruction],
         alt_info: Option<ALTInfo>,
-    ) -> Result<SolanaTransactionType, TransactionBuilderError> {
+    ) -> Result<(SolanaTransactionType, u64), TransactionBuilderError> {
         let alt_addresses = if let Some(alt_info) = alt_info.clone() {
             let alt_pubkey = alt_info.alt_pubkey.ok_or_else(|| {
                 TransactionBuilderError::GenericError("ALTInfo provided without pubkey".to_string())
@@ -178,7 +178,10 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
         .await
         .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
 
-        Ok(final_transaction)
+        let final_cost = calculate_total_cost_lamports(&final_transaction, compute_budget)
+            .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+
+        Ok((final_transaction, final_cost))
     }
 
     async fn build_execute_instruction(

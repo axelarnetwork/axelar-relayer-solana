@@ -9,10 +9,10 @@ use crate::redis::RedisConnectionTrait;
 use crate::refund_manager::SolanaRefundManager;
 use crate::transaction_builder::{TransactionBuilder, TransactionBuilderTrait};
 use crate::utils::{
-    calculate_total_cost_lamports, get_cannot_execute_events_from_execute_data,
-    get_gas_service_event_authority_pda, get_gateway_event_authority_pda,
-    get_gateway_root_config_internal, get_incoming_message_pda, get_operator_pda,
-    get_signature_verification_pda, get_treasury_pda, get_verifier_set_tracker_pda,
+    get_cannot_execute_events_from_execute_data, get_gas_service_event_authority_pda,
+    get_gateway_event_authority_pda, get_gateway_root_config_internal, get_incoming_message_pda,
+    get_operator_pda, get_signature_verification_pda, get_treasury_pda,
+    get_verifier_set_tracker_pda, not_enough_gas_event,
 };
 use anchor_lang::{InstructionData, ToAccountMetas};
 use async_trait::async_trait;
@@ -176,7 +176,7 @@ impl<
         message_id: Option<String>,
         source_chain: Option<String>,
     ) -> SendToChainResult {
-        let tx = match self
+        let (tx, _) = match self
             .transaction_builder
             .build(std::slice::from_ref(&ix), None)
             .await
@@ -223,7 +223,9 @@ impl<
         task: ExecuteTask,
         alt_info: Option<ALTInfo>,
     ) -> Result<Vec<Event>, IncluderError> {
-        let mut alt_gas_cost_lamports = 0;
+        let mut alt_cost = None;
+        let mut available_gas_balance = i64::from_str(&task.task.available_gas_balance.amount)
+            .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
         if let Some(ALTInfo {
             alt_ix_create: Some(ref alt_ix_create),
@@ -233,19 +235,39 @@ impl<
         }) = alt_info
         {
             // ALT doesn't exist, create it
-            let alt_tx_build = self
+            let (alt_tx_build, estimated_alt_cost) = self
                 .transaction_builder
                 .build(&[alt_ix_create.clone(), alt_ix_extend.clone()], None)
                 .await
                 .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
+            if estimated_alt_cost as i64 > available_gas_balance {
+                // TODO: should take into account the cost for closing the ALT
+                return Ok(not_enough_gas_event(
+                    available_gas_balance,
+                    estimated_alt_cost,
+                    task,
+                    Arc::clone(&self.gmp_api),
+                ));
+            }
 
-            let (signature, alt_cost) = self
+            let (signature, actual_alt_cost) = self
                 .client
                 .send_transaction(alt_tx_build)
                 .await
                 .map_err(|e| IncluderError::GenericError(e.to_string()))?;
-            alt_gas_cost_lamports = alt_cost.unwrap_or(0);
+
+            self.redis_conn
+                .write_gas_cost(
+                    task.task.message.message_id.clone(),
+                    actual_alt_cost.unwrap_or(0),
+                    TransactionType::Execute,
+                )
+                .await;
+
+            alt_cost = actual_alt_cost;
+            available_gas_balance =
+                available_gas_balance.saturating_sub(alt_cost.unwrap_or(0) as i64);
 
             debug!(
                 "ALT transaction sent successfully: {}",
@@ -261,55 +283,32 @@ impl<
             }
         }
 
-        let transaction = self
+        let (transaction, estimated_tx_cost) = self
             .transaction_builder
             .build(std::slice::from_ref(&instruction), alt_info.clone())
             .await
             .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
-        let gas_cost = self
-            .client
-            .get_units_consumed_from_simulation(transaction.clone())
-            .await
-            .map_err(|e| IncluderError::GenericError(e.to_string()))?;
-
-        let gas_cost_lamports = calculate_total_cost_lamports(&transaction, gas_cost)
-            .map_err(|e| IncluderError::GenericError(e.to_string()))?;
-
-        debug!(
-            "Available balance: {}, needed gas cost: {}, alt gas cost: {}",
-            task.task.available_gas_balance.amount, gas_cost_lamports, alt_gas_cost_lamports
-        );
-
-        let total_cost = gas_cost_lamports.saturating_add(alt_gas_cost_lamports);
-
-        if total_cost
-            > u64::from_str(&task.task.available_gas_balance.amount)
-                .map_err(|e| IncluderError::GenericError(e.to_string()))?
-        {
-            let error_message = format!(
-                "Not enough gas to execute message. Available gas: {}, required gas: {}",
-                task.task.available_gas_balance.amount, total_cost
-            );
-            let event = self.gmp_api.cannot_execute_message(
-                task.common.id.clone(),
-                task.task.message.message_id.clone(),
-                task.task.message.source_chain.clone(),
-                error_message,
-                CannotExecuteMessageReason::InsufficientGas,
-            );
-            return Ok(vec![event]);
+        if estimated_tx_cost as i64 > available_gas_balance {
+            return Ok(not_enough_gas_event(
+                available_gas_balance,
+                estimated_tx_cost,
+                task,
+                Arc::clone(&self.gmp_api),
+            ));
         }
 
         match self.client.send_transaction(transaction).await {
-            Ok((signature, gas_cost)) => {
+            Ok((signature, actual_tx_cost)) => {
                 info!("Transaction sent successfully: {}", signature.to_string());
 
                 // TODO: Spawn a task to write to Redis
                 self.redis_conn
                     .write_gas_cost(
                         task.task.message.message_id.clone(),
-                        gas_cost.unwrap_or(0).saturating_add(alt_gas_cost_lamports),
+                        actual_tx_cost
+                            .unwrap_or(0)
+                            .saturating_add(alt_cost.unwrap_or(0)),
                         TransactionType::Execute,
                     )
                     .await;
@@ -320,8 +319,10 @@ impl<
                 IncluderClientError::TransactionError(e) => {
                     warn!("Transaction reverted: {}", e);
                     // Include ALT cost if ALT transaction was sent successfully
+                    // TODO: this might be off. We need to know the actual cost of the transaction
+                    // in the case where it failed.
                     let total_reverted_cost =
-                        gas_cost_lamports.saturating_add(alt_gas_cost_lamports);
+                        estimated_tx_cost.saturating_add(alt_cost.unwrap_or(0));
                     let event = self.gmp_api.execute_message(
                         task.task.message.message_id.clone(),
                         task.task.message.source_chain.clone(),
@@ -780,23 +781,16 @@ impl<
             data,
         };
 
-        let tx = self
+        let (tx, estimated_tx_cost) = self
             .transaction_builder
             .build(&[ix], None)
             .await
             .map_err(|e| IncluderError::GenericError(e.to_string()))?;
-        let compute_units_cost = self
-            .client
-            .get_units_consumed_from_simulation(tx.clone())
-            .await
-            .map_err(|e| IncluderError::GenericError(e.to_string()))?;
-        let gas_cost_lamports = calculate_total_cost_lamports(&tx, compute_units_cost)
-            .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
-        if gas_cost_lamports > refund_amount {
+        if estimated_tx_cost > refund_amount {
             return Err(IncluderError::GenericError(format!(
                 "Cost is higher than remaining balance to refund. Cost: {}, Remaining balance: {}",
-                gas_cost_lamports, refund_amount
+                estimated_tx_cost, refund_amount
             )));
         }
 

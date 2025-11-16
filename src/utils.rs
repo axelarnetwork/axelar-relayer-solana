@@ -8,7 +8,7 @@ use anchor_lang::Key;
 use anchor_spl::{associated_token::spl_associated_token_account, token_2022::spl_token_2022};
 use anyhow::anyhow;
 use relayer_core::{
-    gmp_api::GmpApiTrait,
+    gmp_api::{gmp_types::ExecuteTask, GmpApiTrait},
     queue::{QueueItem, QueueTrait},
 };
 use serde_json::json;
@@ -450,4 +450,24 @@ pub async fn create_transaction(
             ),
         )),
     }
+}
+
+pub fn not_enough_gas_event<G: GmpApiTrait>(
+    available_gas_balance: i64,
+    required_gas: u64,
+    task: ExecuteTask,
+    gmp_api: Arc<G>,
+) -> Vec<Event> {
+    let error_message = format!(
+        "Not enough gas to execute message. Available gas: {}, required gas: {}",
+        available_gas_balance, required_gas
+    );
+    let event = gmp_api.cannot_execute_message(
+        task.common.id.clone(),
+        task.task.message.message_id.clone(),
+        task.task.message.source_chain.clone(),
+        error_message,
+        CannotExecuteMessageReason::InsufficientGas,
+    );
+    vec![event]
 }
