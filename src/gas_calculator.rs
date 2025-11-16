@@ -37,59 +37,30 @@ impl<IC: IncluderClientTrait, FC: FeesClientTrait> GasCalculator<IC, FC> {
 #[cfg_attr(test, mockall::automock)]
 #[async_trait]
 pub trait GasCalculatorTrait: ThreadSafe {
-    async fn compute_budget(
-        &self,
-        ixs: &[Instruction],
-    ) -> Result<(Instruction, Hash), GasCalculatorError>;
-    async fn compute_unit_price(
-        &self,
-        ixs: &[Instruction],
-    ) -> Result<Instruction, GasCalculatorError>;
+    async fn compute_budget(&self, tx: SolanaTransactionType) -> Result<u64, GasCalculatorError>;
+    async fn compute_unit_price(&self, ixs: &[Instruction]) -> Result<u64, GasCalculatorError>;
 }
 
 #[async_trait]
 impl<IC: IncluderClientTrait, FC: FeesClientTrait> GasCalculatorTrait for GasCalculator<IC, FC> {
-    async fn compute_budget(
-        &self,
-        ixs: &[Instruction],
-    ) -> Result<(Instruction, Hash), GasCalculatorError> {
+    async fn compute_budget(&self, tx: SolanaTransactionType) -> Result<u64, GasCalculatorError> {
         const PERCENT_POINTS_TO_TOP_UP: u64 = 10;
 
-        let hash = self
-            .includer_client
-            .get_latest_blockhash()
-            .await
-            .map_err(|e| GasCalculatorError::Generic(e.to_string()))?;
-        let tx_to_simulate = Transaction::new_signed_with_payer(
-            ixs,
-            Some(&self.solana_keypair.pubkey()),
-            &[&self.solana_keypair],
-            hash,
-        );
         let computed_units = self
             .includer_client
-            .get_units_consumed_from_simulation(SolanaTransactionType::Legacy(tx_to_simulate))
+            .get_units_consumed_from_simulation(tx)
             .await
             .map_err(|e| GasCalculatorError::Generic(e.to_string()))?;
 
         let safety_margin = computed_units
             .saturating_mul(PERCENT_POINTS_TO_TOP_UP)
             .saturating_div(100);
-        let compute_budget = computed_units.saturating_add(safety_margin);
 
-        let ix =
-            ComputeBudgetInstruction::set_compute_unit_limit(compute_budget.try_into().map_err(
-                |e: std::num::TryFromIntError| GasCalculatorError::Generic(e.to_string()),
-            )?);
-        Ok((ix, hash))
+        Ok(computed_units.saturating_add(safety_margin))
     }
 
-    async fn compute_unit_price(
-        &self,
-        ixs: &[Instruction],
-    ) -> Result<Instruction, GasCalculatorError> {
+    async fn compute_unit_price(&self, ixs: &[Instruction]) -> Result<u64, GasCalculatorError> {
         const MAX_ACCOUNTS: usize = 128;
-        // const N_SLOTS_TO_CHECK: usize = 10;
 
         let all_touched_accounts = ixs
             .iter()
@@ -106,6 +77,6 @@ impl<IC: IncluderClientTrait, FC: FeesClientTrait> GasCalculatorTrait for GasCal
 
         debug!("Got prioritization fees: {}", fees);
 
-        Ok(ComputeBudgetInstruction::set_compute_unit_price(fees))
+        Ok(fees)
     }
 }
