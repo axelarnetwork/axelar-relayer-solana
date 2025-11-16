@@ -1,4 +1,5 @@
 use crate::{
+    includer::ALTInfo,
     program_types::{ExecuteData, MerkleisedPayload},
     transaction_type::SolanaTransactionType,
     types::SolanaTransaction,
@@ -19,8 +20,13 @@ use solana_axelar_gateway::{seed_prefixes, ID};
 use solana_rpc_client_api::response::RpcConfirmedTransactionStatusWithSignature;
 use solana_sdk::{
     commitment_config::{CommitmentConfig, CommitmentLevel},
+    compute_budget::ComputeBudgetInstruction,
+    instruction::Instruction,
+    message::{v0, AddressLookupTableAccount, VersionedMessage},
     pubkey::Pubkey,
-    signature::Signature,
+    signature::{Keypair, Signature},
+    signer::Signer,
+    transaction::{Transaction, VersionedTransaction},
 };
 use std::sync::Arc;
 
@@ -238,6 +244,10 @@ pub fn get_its_root_pda() -> (Pubkey, u8) {
     )
 }
 
+pub fn get_its_event_authority_pda() -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[b"__event_authority"], &solana_axelar_its::ID)
+}
+
 pub fn get_token_manager_pda(its_root_pda: &Pubkey, token_id: &[u8]) -> (Pubkey, u8) {
     Pubkey::find_program_address(
         &[
@@ -393,4 +403,51 @@ pub fn calculate_total_cost_lamports(
     let base_fee = LAMPORTS_PER_SIGNATURE.saturating_mul(sigs);
 
     Ok(base_fee.saturating_add(priority_lamports))
+}
+
+pub async fn create_transaction(
+    mut instructions: Vec<Instruction>,
+    alt_info: Option<ALTInfo>,
+    alt_addresses: Vec<Pubkey>,
+    unit_price: u64,
+    compute_budget: u64,
+    keypair: &Keypair,
+    recent_hash: solana_sdk::hash::Hash,
+) -> Result<SolanaTransactionType, anyhow::Error> {
+    let set_compute_unit_price_ix = ComputeBudgetInstruction::set_compute_unit_price(unit_price);
+    let set_compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(
+        compute_budget
+            .try_into()
+            .map_err(|e: std::num::TryFromIntError| anyhow::anyhow!(e.to_string()))?,
+    );
+
+    instructions.splice(0..0, [set_compute_unit_price_ix, set_compute_budget_ix]);
+
+    match alt_info {
+        Some(alt_info) => {
+            let alt_pubkey = alt_info
+                .alt_pubkey
+                .ok_or_else(|| anyhow::anyhow!("ALTInfo provided without pubkey"))?;
+
+            let alt_ref = AddressLookupTableAccount {
+                key: alt_pubkey,
+                addresses: alt_addresses,
+            };
+            let v0_msg =
+                v0::Message::try_compile(&keypair.pubkey(), &instructions, &[alt_ref], recent_hash)
+                    .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+            let message = VersionedMessage::V0(v0_msg);
+            let versioned_tx = VersionedTransaction::try_new(message, &[&keypair])
+                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+            Ok(SolanaTransactionType::Versioned(versioned_tx))
+        }
+        None => Ok(SolanaTransactionType::Legacy(
+            Transaction::new_signed_with_payer(
+                &instructions,
+                Some(&keypair.pubkey()),
+                &[&keypair],
+                recent_hash,
+            ),
+        )),
+    }
 }
