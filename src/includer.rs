@@ -30,6 +30,8 @@ use relayer_core::{
 };
 use solana_axelar_gas_service;
 use solana_axelar_gateway::{state::incoming_message::Message, CrossChainId};
+use solana_sdk::address_lookup_table::state::AddressLookupTable;
+use solana_sdk::clock::Slot;
 use solana_sdk::instruction::Instruction;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Signature;
@@ -42,6 +44,7 @@ use solana_transaction_parser::redis::TransactionType;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::time::sleep;
 use tracing::{debug, error, info, warn};
 
 const SOLANA_EXPIRATION_TIME: u64 = 90;
@@ -231,7 +234,7 @@ impl<
             alt_ix_create: Some(ref alt_ix_create),
             alt_ix_extend: Some(ref alt_ix_extend),
             alt_pubkey: Some(ref alt_pubkey),
-            alt_addresses: _,
+            alt_addresses: Some(ref alt_addresses),
         }) = alt_info
         {
             // ALT doesn't exist, create it
@@ -257,7 +260,8 @@ impl<
                 .await
                 .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
-            // TODO: give it some time to activate (1 block?)
+            self.wait_for_alt_activation(alt_pubkey, alt_addresses.len())
+                .await?;
 
             self.redis_conn
                 .write_gas_cost(
@@ -389,6 +393,39 @@ impl<
                 }
             }
             None => Ok(false),
+        }
+    }
+
+    async fn wait_for_alt_activation(
+        &self,
+        alt_pubkey: &Pubkey,
+        addresses_len: usize,
+    ) -> Result<(), IncluderError> {
+        let mut retries = 0;
+        loop {
+            let alt_account = self.client.inner().get_account(alt_pubkey).await;
+            match alt_account {
+                Ok(account) => {
+                    let alt_state = AddressLookupTable::deserialize(&account.data)
+                        .map_err(|e| IncluderError::GenericError(e.to_string()))?;
+
+                    if alt_state.meta.deactivation_slot == Slot::MAX
+                        && alt_state.addresses.len() == addresses_len
+                    {
+                        return Ok(());
+                    }
+                }
+                Err(e) => {
+                    warn!("Failed to get ALT account: {}", e);
+                }
+            }
+            sleep(Duration::from_millis(200)).await;
+            retries += 1;
+            if retries >= 10 {
+                return Err(IncluderError::GenericError(
+                    "Failed to activate ALT".to_string(),
+                ));
+            }
         }
     }
 }
