@@ -3,7 +3,9 @@ use chrono::{offset::Utc, DateTime};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use solana_sdk::signature::Signature;
-use solana_transaction_status::UiMessage;
+use solana_transaction_status::{
+    option_serializer::OptionSerializer, UiLoadedAddresses, UiMessage,
+};
 use solana_transaction_status_client_types::{
     EncodedConfirmedTransactionWithStatusMeta, EncodedTransaction, UiInnerInstructions,
 };
@@ -77,7 +79,7 @@ impl SolanaTransaction {
             .transaction
             .meta
             .ok_or_else(|| anyhow!("No meta found"))?;
-        let account_keys = match &tx.transaction.transaction {
+        let mut account_keys = match &tx.transaction.transaction {
             EncodedTransaction::LegacyBinary(_) => {
                 Err(anyhow!("Legacy binary transactions are not supported"))
             }
@@ -98,6 +100,12 @@ impl SolanaTransaction {
                 .map(|key| key.pubkey.to_string())
                 .collect::<Vec<String>>()),
         }?;
+
+        if let OptionSerializer::Some(loaded) = meta.loaded_addresses.as_ref() {
+            account_keys.extend(loaded.writable.iter().cloned());
+            account_keys.extend(loaded.readonly.iter().cloned());
+        }
+
         Ok(Self {
             signature,
             timestamp: tx
