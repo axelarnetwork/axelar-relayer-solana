@@ -414,6 +414,7 @@ impl<
                     {
                         return Ok(());
                     }
+                    debug!("ALT not activated yet: {:?}", alt_state);
                 }
                 Err(e) => {
                     warn!("Failed to get ALT account: {}", e);
