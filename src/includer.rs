@@ -257,6 +257,8 @@ impl<
                 .await
                 .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
+            // TODO: give it some time to activate (1 block?)
+
             self.redis_conn
                 .write_gas_cost(
                     task.task.message.message_id.clone(),
@@ -1284,8 +1286,11 @@ mod tests {
             .expect_build()
             .times(1)
             .returning(move |_, _| {
-                Ok(crate::transaction_type::SolanaTransactionType::Legacy(
-                    test_tx_for_build.clone(),
+                Ok((
+                    crate::transaction_type::SolanaTransactionType::Legacy(
+                        test_tx_for_build.clone(),
+                    ),
+                    100_000u64,
                 ))
             });
 
@@ -1394,8 +1399,9 @@ mod tests {
                     &[&keypair_for_mock],
                     solana_sdk::hash::Hash::default(),
                 );
-                Ok(crate::transaction_type::SolanaTransactionType::Legacy(
-                    test_tx,
+                Ok((
+                    crate::transaction_type::SolanaTransactionType::Legacy(test_tx),
+                    100_000u64,
                 ))
             });
 
@@ -1504,8 +1510,11 @@ mod tests {
             .expect_build()
             .times(1)
             .returning(move |_, _| {
-                Ok(crate::transaction_type::SolanaTransactionType::Legacy(
-                    test_tx_for_build.clone(),
+                Ok((
+                    crate::transaction_type::SolanaTransactionType::Legacy(
+                        test_tx_for_build.clone(),
+                    ),
+                    100_000u64,
                 ))
             });
 
@@ -1619,8 +1628,11 @@ mod tests {
             .expect_build()
             .times(1)
             .returning(move |_, _| {
-                Ok(crate::transaction_type::SolanaTransactionType::Legacy(
-                    test_tx_for_build.clone(),
+                Ok((
+                    crate::transaction_type::SolanaTransactionType::Legacy(
+                        test_tx_for_build.clone(),
+                    ),
+                    100_000u64,
                 ))
             });
 
@@ -1752,8 +1764,11 @@ mod tests {
             .expect_build()
             .times(1)
             .returning(move |_, _| {
-                Ok(crate::transaction_type::SolanaTransactionType::Legacy(
-                    test_tx_for_build.clone(),
+                Ok((
+                    crate::transaction_type::SolanaTransactionType::Legacy(
+                        test_tx_for_build.clone(),
+                    ),
+                    100_000u64,
                 ))
             });
 
@@ -1868,8 +1883,11 @@ mod tests {
             .expect_build()
             .times(1)
             .returning(move |_, _| {
-                Ok(crate::transaction_type::SolanaTransactionType::Legacy(
-                    test_tx_for_build.clone(),
+                Ok((
+                    crate::transaction_type::SolanaTransactionType::Legacy(
+                        test_tx_for_build.clone(),
+                    ),
+                    100_000u64,
                 ))
             });
 
@@ -2241,9 +2259,15 @@ mod tests {
             .returning(move |_, _| {
                 let idx = build_calls_clone.fetch_add(1, Ordering::SeqCst);
                 if idx == 0 {
-                    Ok(SolanaTransactionType::Versioned(main_tx_clone.clone()))
+                    Ok((
+                        SolanaTransactionType::Versioned(main_tx_clone.clone()),
+                        100_000u64,
+                    ))
                 } else {
-                    Ok(SolanaTransactionType::Legacy(alt_tx_clone.clone()))
+                    Ok((
+                        SolanaTransactionType::Legacy(alt_tx_clone.clone()),
+                        100_000u64,
+                    ))
                 }
             });
 
@@ -2426,9 +2450,15 @@ mod tests {
             .returning(move |_, _| {
                 let idx = build_calls_clone.fetch_add(1, Ordering::SeqCst);
                 if idx == 0 {
-                    Ok(SolanaTransactionType::Versioned(main_tx_clone.clone()))
+                    Ok((
+                        SolanaTransactionType::Versioned(main_tx_clone.clone()),
+                        100_000u64,
+                    ))
                 } else {
-                    Ok(SolanaTransactionType::Legacy(alt_tx_clone.clone()))
+                    Ok((
+                        SolanaTransactionType::Legacy(alt_tx_clone.clone()),
+                        100_000u64,
+                    ))
                 }
             });
 
@@ -2610,9 +2640,15 @@ mod tests {
             .returning(move |_, _| {
                 let idx = build_calls_clone.fetch_add(1, Ordering::SeqCst);
                 if idx == 0 {
-                    Ok(SolanaTransactionType::Versioned(main_tx_clone.clone()))
+                    Ok((
+                        SolanaTransactionType::Versioned(main_tx_clone.clone()),
+                        100_000u64,
+                    ))
                 } else {
-                    Ok(SolanaTransactionType::Legacy(alt_tx_clone.clone()))
+                    Ok((
+                        SolanaTransactionType::Legacy(alt_tx_clone.clone()),
+                        100_000u64,
+                    ))
                 }
             });
 
@@ -2802,7 +2838,14 @@ mod tests {
         transaction_builder
             .expect_build()
             .times(1)
-            .returning(move |_, _| Ok(SolanaTransactionType::Versioned(main_tx_clone.clone())));
+            .returning(move |_, _| {
+                Ok((
+                    crate::transaction_type::SolanaTransactionType::Versioned(
+                        main_tx_clone.clone(),
+                    ),
+                    100_000u64,
+                ))
+            });
 
         let compute_units = 100_000u64;
         mock_client
@@ -2910,7 +2953,10 @@ mod tests {
                 assert_eq!(ixs[0].program_id, instruction_program);
                 assert_eq!(ixs[0].accounts, instruction_accounts);
                 assert_eq!(ixs[0].data, instruction_data);
-                Ok(SolanaTransactionType::Legacy(tx_for_builder.clone()))
+                Ok((
+                    crate::transaction_type::SolanaTransactionType::Legacy(tx_for_builder.clone()),
+                    100_000u64,
+                ))
             });
 
         mock_client
@@ -3022,9 +3068,24 @@ mod tests {
             .returning(move |_, _| {
                 let idx = build_calls_clone.fetch_add(1, Ordering::SeqCst);
                 match idx {
-                    0 => Ok(SolanaTransactionType::Legacy(init_tx_clone.clone())),
-                    1 => Ok(SolanaTransactionType::Legacy(verify_tx_clone.clone())),
-                    _ => Ok(SolanaTransactionType::Legacy(rotate_tx_clone.clone())),
+                    0 => Ok((
+                        crate::transaction_type::SolanaTransactionType::Legacy(
+                            init_tx_clone.clone(),
+                        ),
+                        100_000u64,
+                    )),
+                    1 => Ok((
+                        crate::transaction_type::SolanaTransactionType::Legacy(
+                            verify_tx_clone.clone(),
+                        ),
+                        100_000u64,
+                    )),
+                    _ => Ok((
+                        crate::transaction_type::SolanaTransactionType::Legacy(
+                            rotate_tx_clone.clone(),
+                        ),
+                        100_000u64,
+                    )),
                 }
             });
 
@@ -3153,9 +3214,24 @@ mod tests {
             .returning(move |_, _| {
                 let idx = build_calls_clone.fetch_add(1, Ordering::SeqCst);
                 match idx {
-                    0 => Ok(SolanaTransactionType::Legacy(init_tx_clone.clone())),
-                    1 => Ok(SolanaTransactionType::Legacy(verify_tx_clone.clone())),
-                    _ => Ok(SolanaTransactionType::Legacy(approve_tx_clone.clone())),
+                    0 => Ok((
+                        crate::transaction_type::SolanaTransactionType::Legacy(
+                            init_tx_clone.clone(),
+                        ),
+                        100_000u64,
+                    )),
+                    1 => Ok((
+                        crate::transaction_type::SolanaTransactionType::Legacy(
+                            verify_tx_clone.clone(),
+                        ),
+                        100_000u64,
+                    )),
+                    _ => Ok((
+                        crate::transaction_type::SolanaTransactionType::Legacy(
+                            approve_tx_clone.clone(),
+                        ),
+                        100_000u64,
+                    )),
                 }
             });
 
@@ -3340,11 +3416,36 @@ mod tests {
             .returning(move |_, _| {
                 let idx = build_calls_clone.fetch_add(1, Ordering::SeqCst);
                 match idx {
-                    0 => Ok(SolanaTransactionType::Legacy(init_tx_clone.clone())),
-                    1 => Ok(SolanaTransactionType::Legacy(verify_tx_1_clone.clone())),
-                    2 => Ok(SolanaTransactionType::Legacy(verify_tx_2_clone.clone())),
-                    3 => Ok(SolanaTransactionType::Legacy(approve_tx_1_clone.clone())),
-                    4 => Ok(SolanaTransactionType::Legacy(approve_tx_2_clone.clone())),
+                    0 => Ok((
+                        crate::transaction_type::SolanaTransactionType::Legacy(
+                            init_tx_clone.clone(),
+                        ),
+                        100_000u64,
+                    )),
+                    1 => Ok((
+                        crate::transaction_type::SolanaTransactionType::Legacy(
+                            verify_tx_1_clone.clone(),
+                        ),
+                        100_000u64,
+                    )),
+                    2 => Ok((
+                        crate::transaction_type::SolanaTransactionType::Legacy(
+                            verify_tx_2_clone.clone(),
+                        ),
+                        100_000u64,
+                    )),
+                    3 => Ok((
+                        crate::transaction_type::SolanaTransactionType::Legacy(
+                            approve_tx_1_clone.clone(),
+                        ),
+                        100_000u64,
+                    )),
+                    4 => Ok((
+                        crate::transaction_type::SolanaTransactionType::Legacy(
+                            approve_tx_2_clone.clone(),
+                        ),
+                        100_000u64,
+                    )),
                     _ => panic!("unexpected build call"),
                 }
             });
@@ -3547,11 +3648,36 @@ mod tests {
             .returning(move |_, _| {
                 let idx = build_calls_clone.fetch_add(1, Ordering::SeqCst);
                 match idx {
-                    0 => Ok(SolanaTransactionType::Legacy(init_tx_clone.clone())),
-                    1 => Ok(SolanaTransactionType::Legacy(verify_tx_1_clone.clone())),
-                    2 => Ok(SolanaTransactionType::Legacy(verify_tx_2_clone.clone())),
-                    3 => Ok(SolanaTransactionType::Legacy(approve_tx_1_clone.clone())),
-                    4 => Ok(SolanaTransactionType::Legacy(approve_tx_2.clone())),
+                    0 => Ok((
+                        crate::transaction_type::SolanaTransactionType::Legacy(
+                            init_tx_clone.clone(),
+                        ),
+                        100_000u64,
+                    )),
+                    1 => Ok((
+                        crate::transaction_type::SolanaTransactionType::Legacy(
+                            verify_tx_1_clone.clone(),
+                        ),
+                        100_000u64,
+                    )),
+                    2 => Ok((
+                        crate::transaction_type::SolanaTransactionType::Legacy(
+                            verify_tx_2_clone.clone(),
+                        ),
+                        100_000u64,
+                    )),
+                    3 => Ok((
+                        crate::transaction_type::SolanaTransactionType::Legacy(
+                            approve_tx_1_clone.clone(),
+                        ),
+                        100_000u64,
+                    )),
+                    4 => Ok((
+                        crate::transaction_type::SolanaTransactionType::Legacy(
+                            approve_tx_2.clone(),
+                        ),
+                        100_000u64,
+                    )),
                     _ => panic!("unexpected build call"),
                 }
             });
@@ -3776,8 +3902,18 @@ mod tests {
             .returning(move |_, _| {
                 let idx = build_calls_clone.fetch_add(1, Ordering::SeqCst);
                 match idx {
-                    0 => Ok(SolanaTransactionType::Legacy(init_tx_clone.clone())),
-                    1 => Ok(SolanaTransactionType::Legacy(verify_tx_clone.clone())),
+                    0 => Ok((
+                        crate::transaction_type::SolanaTransactionType::Legacy(
+                            init_tx_clone.clone(),
+                        ),
+                        100_000u64,
+                    )),
+                    1 => Ok((
+                        crate::transaction_type::SolanaTransactionType::Legacy(
+                            verify_tx_clone.clone(),
+                        ),
+                        100_000u64,
+                    )),
                     _ => panic!("unexpected build call"),
                 }
             });
