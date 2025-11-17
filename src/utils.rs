@@ -124,6 +124,7 @@ pub async fn upsert_and_publish<SM: SolanaTransactionModel>(
     queue: &Arc<dyn QueueTrait>,
     tx: &SolanaTransaction,
     from_service: String,
+    force_publish: bool,
 ) -> Result<bool, anyhow::Error> {
     let ixs = tx
         .ixs
@@ -145,7 +146,7 @@ pub async fn upsert_and_publish<SM: SolanaTransactionModel>(
         .await
         .map_err(|e| anyhow!("Error upserting transaction: {:?}", e))?;
 
-    if inserted {
+    if inserted || force_publish {
         let chain_transaction = serde_json::to_string(&tx)?;
 
         let item = &QueueItem::Transaction(Box::new(chain_transaction.clone()));

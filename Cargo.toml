@@ -101,5 +101,9 @@ path = "src/bin/includer.rs"
 name = "alt_manager"
 path = "src/bin/alt_manager.rs"
 
+[[bin]]
+name = "subscriber_recovery"
+path = "src/bin/recovery/subscriber.rs"
+
 [features]
 instrumentation = []

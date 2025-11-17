@@ -308,7 +308,7 @@ impl<STR: SolanaStreamClientTrait, SM: SolanaTransactionModel> SolanaListener<ST
                                 }
                             };
 
-                            match upsert_and_publish(&transaction_model_clone, &queue_clone, &tx, stream_name_clone.clone()).await {
+                            match upsert_and_publish(&transaction_model_clone, &queue_clone, &tx, stream_name_clone.clone(), false).await {
                                 Ok(inserted) => {
                                     if inserted {
                                         info!(
