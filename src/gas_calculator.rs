@@ -44,7 +44,7 @@ pub trait GasCalculatorTrait: ThreadSafe {
 #[async_trait]
 impl<IC: IncluderClientTrait, FC: FeesClientTrait> GasCalculatorTrait for GasCalculator<IC, FC> {
     async fn compute_budget(&self, tx: SolanaTransactionType) -> Result<u64, GasCalculatorError> {
-        const PERCENT_POINTS_TO_TOP_UP: u64 = 10;
+        const PERCENT_POINTS_TO_TOP_UP: u64 = 20;
 
         let computed_units = self
             .includer_client
