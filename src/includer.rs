@@ -910,7 +910,7 @@ mod tests {
     use solana_sdk::instruction::AccountMeta;
     use solana_sdk::message::{v0, VersionedMessage};
     use solana_sdk::pubkey::Pubkey;
-    use solana_sdk::transaction::{Transaction, VersionedTransaction};
+    use solana_sdk::transaction::{Transaction, TransactionError, VersionedTransaction};
     use solana_transaction_parser::gmp_types::{
         Amount, CannotExecuteMessageReason, CommonEventFields, CommonTaskFields, Event,
         ExecuteTask, ExecuteTaskFields, GatewayV2Message, RefundTask,
@@ -2715,7 +2715,7 @@ mod tests {
                 } else {
                     Box::pin(async move {
                         Err(IncluderClientError::TransactionError(
-                            "Execution failed".to_string(),
+                            TransactionError::AccountNotFound,
                         ))
                     })
                 }

@@ -1,3 +1,4 @@
+use solana_sdk::transaction::TransactionError;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -47,7 +48,7 @@ pub enum IncluderClientError {
     #[error("MaxRetriesExceededError: {0}")]
     MaxRetriesExceededError(String),
     #[error("TransactionError: {0}")]
-    TransactionError(String),
+    TransactionError(TransactionError),
     #[error("GenericError: {0}")]
     GenericError(String),
 }

@@ -140,7 +140,9 @@ impl IncluderClientTrait for IncluderClient {
                     // We might have to manually implement send_and_confirm()
                     if e.get_transaction_error().is_some() {
                         // TODO: should maybe do different actions depending on the error?
-                        return Err(IncluderClientError::TransactionError(e.to_string()));
+                        return Err(IncluderClientError::TransactionError(
+                            e.get_transaction_error().unwrap(),
+                        ));
                     }
                     if retries >= self.max_retries {
                         warn!(
