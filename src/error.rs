@@ -53,6 +53,14 @@ pub enum IncluderClientError {
     GenericError(String),
 }
 
+#[derive(Error, Debug, Clone)]
+pub enum SolanaIncluderError {
+    #[error("TransactionError: {0}")]
+    TransactionError(TransactionError),
+    #[error("GenericError: {0}")]
+    GenericError(String),
+}
+
 #[derive(Error, Debug)]
 pub enum TransactionBuilderError {
     #[error("PayloadDecodeError: {0}")]

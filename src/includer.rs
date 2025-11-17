@@ -1,5 +1,5 @@
 use crate::config::SolanaConfig;
-use crate::error::{IncluderClientError, TransactionBuilderError};
+use crate::error::{IncluderClientError, SolanaIncluderError, TransactionBuilderError};
 use crate::fees_client::FeesClient;
 use crate::gas_calculator::GasCalculator;
 use crate::includer_client::{IncluderClient, IncluderClientTrait};
@@ -9,10 +9,10 @@ use crate::redis::RedisConnectionTrait;
 use crate::refund_manager::SolanaRefundManager;
 use crate::transaction_builder::{TransactionBuilder, TransactionBuilderTrait};
 use crate::utils::{
-    get_cannot_execute_events_from_execute_data, get_gas_service_event_authority_pda,
-    get_gateway_event_authority_pda, get_gateway_root_config_internal, get_incoming_message_pda,
-    get_operator_pda, get_signature_verification_pda, get_treasury_pda,
-    get_verifier_set_tracker_pda, not_enough_gas_event,
+    get_gas_service_event_authority_pda, get_gateway_event_authority_pda,
+    get_gateway_root_config_internal, get_incoming_message_pda, get_operator_pda,
+    get_signature_verification_pda, get_treasury_pda, get_verifier_set_tracker_pda,
+    not_enough_gas_event,
 };
 use anchor_lang::{InstructionData, ToAccountMetas};
 use async_trait::async_trait;
@@ -29,13 +29,16 @@ use relayer_core::{
     payload_cache::PayloadCache, queue::Queue,
 };
 use solana_axelar_gas_service;
+use solana_axelar_gateway::MerklizedMessage;
 use solana_axelar_gateway::{state::incoming_message::Message, CrossChainId};
+use solana_axelar_its::instruction;
 use solana_sdk::address_lookup_table::state::AddressLookupTable;
 use solana_sdk::clock::Slot;
-use solana_sdk::instruction::Instruction;
+use solana_sdk::instruction::{Instruction, InstructionError};
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Signature;
 use solana_sdk::signer::{keypair::Keypair, Signer};
+use solana_sdk::transaction::TransactionError;
 use solana_transaction_parser::gmp_types::{
     Amount, CannotExecuteMessageReason, Event, ExecuteTask, GatewayTxTask, MessageExecutionStatus,
     RefundTask,
@@ -173,53 +176,37 @@ impl<
         Ok(includer)
     }
 
-    async fn send_gateway_tx_to_chain(
+    async fn build_and_send_transaction(
         &self,
-        ix: Instruction,
-        message_id: Option<String>,
-        source_chain: Option<String>,
-    ) -> SendToChainResult {
-        let (tx, _) = match self
-            .transaction_builder
-            .build(std::slice::from_ref(&ix), None)
-            .await
-        {
-            Ok(tx) => tx,
+        ixs: Vec<Instruction>,
+    ) -> Result<(Signature, Option<u64>), SolanaIncluderError> {
+        let (tx, _) = match self.transaction_builder.build(&ixs, None).await {
+            Ok((tx, cost)) => (tx, cost),
             Err(e) => {
-                return SendToChainResult {
-                    gas_cost: None,
-                    tx_hash: None,
-                    status: Err(IncluderError::GenericError(e.to_string())),
-                    message_id,
-                    source_chain,
-                }
+                return Err(SolanaIncluderError::GenericError(e.to_string()));
             }
         };
 
         let res = self.client.send_transaction(tx).await;
         match res {
             Ok((signature, gas_cost)) => {
-                let tx_hash = signature.to_string();
-                debug!("Transaction sent successfully: {}", tx_hash);
-
-                SendToChainResult {
-                    tx_hash: Some(tx_hash),
-                    status: Ok(()),
-                    message_id,
-                    source_chain,
-                    gas_cost,
-                }
+                debug!(
+                    "Transaction sent successfully: {}, Cost: {}",
+                    signature.to_string(),
+                    gas_cost.unwrap_or(0)
+                );
+                Ok((signature, gas_cost))
             }
-            Err(e) => SendToChainResult {
-                gas_cost: None,
-                tx_hash: None,
-                status: Err(IncluderError::RPCError(e.to_string())),
-                message_id,
-                source_chain,
+            Err(e) => match e {
+                IncluderClientError::TransactionError(e) => {
+                    Err(SolanaIncluderError::TransactionError(e))
+                }
+                _ => Err(SolanaIncluderError::GenericError(e.to_string())),
             },
         }
     }
 
+    // TODO: do a pass on fee calculation here
     async fn build_execute_transaction_and_send(
         &self,
         instruction: Instruction,
@@ -429,42 +416,11 @@ impl<
             }
         }
     }
-}
 
-struct SendToChainResult {
-    tx_hash: Option<String>,
-    status: Result<(), IncluderError>,
-    message_id: Option<String>,
-    source_chain: Option<String>,
-    gas_cost: Option<u64>,
-}
-
-#[async_trait]
-impl<
-        G: GmpApiTrait + ThreadSafe + Clone,
-        R: RedisConnectionTrait + Clone,
-        RF: RefundsModel + Clone,
-        IC: IncluderClientTrait + Clone,
-        TB: TransactionBuilderTrait<IC> + Clone,
-    > IncluderTrait for SolanaIncluder<G, R, RF, IC, TB>
-{
-    #[cfg_attr(
-        feature = "instrumentation",
-        tracing::instrument(skip(self), fields(message_id))
-    )]
-    async fn handle_gateway_tx_task(
+    async fn initialize_payload_verification_session(
         &self,
-        task: GatewayTxTask,
-    ) -> Result<Vec<Event>, IncluderError> {
-        let mut total_cost: u64 = 0;
-
-        let execute_data_bytes = base64::prelude::BASE64_STANDARD
-            .decode(task.task.execute_data)
-            .map_err(|e| IncluderError::GenericError(e.to_string()))?;
-
-        let execute_data = ExecuteData::try_from_slice(&execute_data_bytes)
-            .map_err(|e| IncluderError::GenericError(e.to_string()))?;
-
+        execute_data: &ExecuteData,
+    ) -> Result<(Signature, Option<u64>), IncluderError> {
         let (verification_session_tracker_pda, _) = get_signature_verification_pda(
             &execute_data.payload_merkle_root,
             &execute_data.signing_verifier_set_merkle_root,
@@ -494,29 +450,49 @@ impl<
             data: ix_data,
         };
 
-        let send_to_chain_res = self.send_gateway_tx_to_chain(ix, None, None).await;
-        if let Err(e) = send_to_chain_res.status {
-            return get_cannot_execute_events_from_execute_data(
-                &execute_data,
-                CannotExecuteMessageReason::Error,
-                e.to_string(),
-                task.common.id.clone(),
-                Arc::clone(&self.gmp_api),
-            )
+        let (tx, _) = self
+            .transaction_builder
+            .build(&[ix], None)
             .await
-            .map_err(|e| IncluderError::GenericError(e.to_string()));
+            .map_err(|e| IncluderError::GenericError(e.to_string()))?;
+
+        let res = self.client.send_transaction(tx).await;
+        match res {
+            Ok((signature, gas_cost)) => {
+                debug!(
+                    "Transaction for initializing payload verification session successfully: {}. Cost: {:?}",
+                    signature,
+                    gas_cost
+                );
+                return Ok((signature, gas_cost));
+            }
+            Err(e) => {
+                return Err(IncluderError::GenericError(e.to_string()));
+            }
         }
-        debug!(
-            "Transaction for initializing payload verification session successfully: {}. Cost: {}",
-            send_to_chain_res.tx_hash.unwrap_or("".to_string()),
-            send_to_chain_res.gas_cost.unwrap_or(0)
+    }
+
+    // verify each signature in the signing session
+    async fn verify_signatures(
+        &self,
+        execute_data: &ExecuteData,
+    ) -> Result<u64, SolanaIncluderError> {
+        let mut total_cost = 0;
+
+        // Collect PDAs
+        let (verification_session_tracker_pda, _) = get_signature_verification_pda(
+            &execute_data.payload_merkle_root,
+            &execute_data.signing_verifier_set_merkle_root,
         );
 
-        total_cost += send_to_chain_res.gas_cost.unwrap_or(0);
+        let (verifier_set_tracker_pda, _) =
+            get_verifier_set_tracker_pda(&execute_data.signing_verifier_set_merkle_root);
 
-        // verify each signature in the signing session
+        let (gateway_root_pda, _) = get_gateway_root_config_internal();
+
+        // Build and submit verification txs
         let signing_verifier_set_leaves = execute_data.signing_verifier_set_leaves.clone();
-        let mut verifier_ver_future_set = signing_verifier_set_leaves
+        let mut verifier_set_verification_futures = signing_verifier_set_leaves
             .into_iter()
             .map(|verifier_info| {
                 let ix_data = solana_axelar_gateway::instruction::VerifySignature {
@@ -530,154 +506,248 @@ impl<
                     verification_session_account: verification_session_tracker_pda,
                     verifier_set_tracker_pda,
                 };
+
                 let ix = Instruction {
                     program_id: solana_axelar_gateway::ID,
                     accounts: accounts.to_account_metas(None),
                     data: ix_data,
                 };
 
-                self.send_gateway_tx_to_chain(ix, None, None)
+                self.build_and_send_transaction(vec![ix])
             })
             .collect::<FuturesUnordered<_>>();
-        while let Some(result) = verifier_ver_future_set.next().await {
-            if let Err(e) = result.status {
-                return get_cannot_execute_events_from_execute_data(
-                    &execute_data,
-                    CannotExecuteMessageReason::Error,
-                    e.to_string(),
-                    task.common.id.clone(),
-                    Arc::clone(&self.gmp_api),
-                )
-                .await
-                .map_err(|e| IncluderError::GenericError(e.to_string()));
-            }
-            total_cost += result.gas_cost.unwrap_or(0);
+
+        // Wait for all verification txs to complete and collect the results
+        while let Some(result) = verifier_set_verification_futures.next().await {
+            let (signature, gas_cost) = result?;
+            total_cost += gas_cost.unwrap_or(0);
             debug!(
-                "Transaction for verifying signature successfully: {}. Cost: {}",
-                result.tx_hash.unwrap_or("".to_string()),
-                result.gas_cost.unwrap_or(0)
+                "Transaction for verifying signature successfully: {}. Cost: {:?}",
+                signature, gas_cost
             );
         }
 
+        Ok(total_cost)
+    }
+
+    async fn rotate_signers(
+        &self,
+        execute_data: &ExecuteData,
+        new_verifier_set_merkle_root: &[u8; 32],
+    ) -> Result<Option<u64>, SolanaIncluderError> {
+        // Collect PDAs
+        let (new_verifier_set_tracker_pda, _) =
+            get_verifier_set_tracker_pda(&execute_data.signing_verifier_set_merkle_root);
+
+        let (gateway_root_pda, _) = get_gateway_root_config_internal();
+
+        let (verification_session_tracker_pda, _) = get_signature_verification_pda(
+            &execute_data.payload_merkle_root,
+            &execute_data.signing_verifier_set_merkle_root,
+        );
+
         let (event_authority, _) = get_gateway_event_authority_pda();
 
-        match execute_data.payload_items {
-            MerkleisedPayload::VerifierSetRotation {
-                new_verifier_set_merkle_root,
-            } => {
-                let (new_verifier_set_tracker_pda, _) =
-                    get_verifier_set_tracker_pda(&execute_data.signing_verifier_set_merkle_root);
-                let ix_data = solana_axelar_gateway::instruction::RotateSigners {
-                    new_verifier_set_merkle_root,
+        // Build RotateSigners instruction
+        let ix_data = solana_axelar_gateway::instruction::RotateSigners {
+            new_verifier_set_merkle_root: *new_verifier_set_merkle_root,
+        }
+        .data();
+        let accounts = solana_axelar_gateway::accounts::RotateSigners {
+            payer: self.keypair.pubkey(),
+            program: solana_axelar_gateway::ID,
+            system_program: solana_program::system_program::id(),
+            gateway_root_pda,
+            verifier_set_tracker_pda: new_verifier_set_tracker_pda, // TODO: this is probably wrong
+            operator: Some(self.keypair.pubkey()),
+            new_verifier_set_tracker: new_verifier_set_tracker_pda,
+            verification_session_account: verification_session_tracker_pda,
+            event_authority,
+        };
+
+        let ix = Instruction {
+            program_id: solana_axelar_gateway::ID,
+            accounts: accounts.to_account_metas(None),
+            data: ix_data,
+        };
+
+        // Build and send RotateSigners transaction
+        let (signature, gas_cost) = self.build_and_send_transaction(vec![ix]).await?;
+        debug!(
+            "Rotated signers transaction sent successfully: {}. Cost: {:?}",
+            signature, gas_cost
+        );
+        Ok(gas_cost)
+    }
+
+    async fn approve_messages(
+        &self,
+        messages: Vec<MerklizedMessage>,
+        execute_data: &ExecuteData,
+    ) -> Result<
+        (
+            Vec<(CrossChainId, u64)>,
+            Vec<(CrossChainId, SolanaIncluderError)>,
+        ),
+        SolanaIncluderError,
+    > {
+        // Collect PDAs
+        let (gateway_root_pda, _) = get_gateway_root_config_internal();
+
+        let (verification_session_tracker_pda, _) = get_signature_verification_pda(
+            &execute_data.payload_merkle_root,
+            &execute_data.signing_verifier_set_merkle_root,
+        );
+
+        let (event_authority, _) = get_gateway_event_authority_pda();
+
+        // Build ApproveMessage instruction for each message
+        let mut merkelised_message_futures = messages
+            .into_iter()
+            .map(|merklized_message| {
+                let command_id = merklized_message.leaf.message.command_id();
+                let (pda, _) = get_incoming_message_pda(&command_id);
+
+                let ix_data = solana_axelar_gateway::instruction::ApproveMessage {
+                    merklized_message: merklized_message.clone(),
+                    payload_merkle_root: execute_data.payload_merkle_root,
                 }
                 .data();
-                let accounts = solana_axelar_gateway::accounts::RotateSigners {
-                    payer: self.keypair.pubkey(),
+
+                let accounts = solana_axelar_gateway::accounts::ApproveMessage {
+                    funder: self.keypair.pubkey(),
+                    incoming_message_pda: pda,
                     program: solana_axelar_gateway::ID,
                     system_program: solana_program::system_program::id(),
                     gateway_root_pda,
-                    verifier_set_tracker_pda,
-                    operator: Some(self.keypair.pubkey()),
-                    new_verifier_set_tracker: new_verifier_set_tracker_pda,
                     verification_session_account: verification_session_tracker_pda,
                     event_authority,
                 };
+
                 let ix = Instruction {
                     program_id: solana_axelar_gateway::ID,
                     accounts: accounts.to_account_metas(None),
                     data: ix_data,
                 };
-                let tx_res = self.send_gateway_tx_to_chain(ix, None, None).await;
-                match tx_res.status {
-                    Ok(_) => {
-                        debug!(
-                            "Rotated signers transaction sent successfully. Cost: {}",
-                            total_cost
-                        );
-                        total_cost += tx_res.gas_cost.unwrap_or(0);
-                        debug!("Total cost: {}", total_cost);
-                        // For verifier set rotation, we don't have messages to process, so return empty
-                        return Ok(vec![]);
-                    }
-                    Err(e) => {
-                        return Err(IncluderError::GatewayTxTaskError(e.to_string()));
-                    }
+
+                let cc_id = merklized_message.leaf.message.cc_id;
+                async { (cc_id, self.build_and_send_transaction(vec![ix]).await) }
+            })
+            .collect::<FuturesUnordered<_>>();
+
+        let mut failed_messages = vec![];
+        let mut successful_messages = vec![];
+        while let Some((cc_id, result)) = merkelised_message_futures.next().await {
+            match result {
+                Ok((signature, gas_cost)) => {
+                    successful_messages.push((cc_id, gas_cost.unwrap_or(0)));
+                    debug!(
+                        "Message approved successfully, signature: {}, cost: {:?}",
+                        signature, gas_cost
+                    );
+                }
+                Err(e) => {
+                    failed_messages.push((cc_id, e));
                 }
             }
-            MerkleisedPayload::NewMessages { messages } => {
-                let number_of_messages = messages.len();
-                let mut merkelised_message_futures = messages
-                    .into_iter()
-                    .map(|merklized_message| {
-                        let command_id = merklized_message.leaf.message.command_id();
-                        let (pda, _) = get_incoming_message_pda(&command_id);
+        }
 
-                        let msg_id = merklized_message.leaf.message.cc_id.id.clone();
-                        let chain = merklized_message.leaf.message.cc_id.chain.clone();
+        return Ok((successful_messages, failed_messages));
+    }
+}
 
-                        let ix_data = solana_axelar_gateway::instruction::ApproveMessage {
-                            merklized_message,
-                            payload_merkle_root: execute_data.payload_merkle_root,
-                        }
-                        .data();
-                        let accounts = solana_axelar_gateway::accounts::ApproveMessage {
-                            funder: self.keypair.pubkey(),
-                            incoming_message_pda: pda,
-                            program: solana_axelar_gateway::ID,
-                            system_program: solana_program::system_program::id(),
-                            gateway_root_pda,
-                            verification_session_account: verification_session_tracker_pda,
-                            event_authority,
-                        };
-                        let ix = Instruction {
-                            program_id: solana_axelar_gateway::ID,
-                            accounts: accounts.to_account_metas(None),
-                            data: ix_data,
-                        };
-                        self.send_gateway_tx_to_chain(ix, Some(msg_id), Some(chain))
-                    })
-                    .collect::<FuturesUnordered<_>>();
+#[async_trait]
+impl<
+        G: GmpApiTrait + ThreadSafe + Clone,
+        R: RedisConnectionTrait + Clone,
+        RF: RefundsModel + Clone,
+        IC: IncluderClientTrait + Clone,
+        TB: TransactionBuilderTrait<IC> + Clone,
+    > IncluderTrait for SolanaIncluder<G, R, RF, IC, TB>
+{
+    #[cfg_attr(
+        feature = "instrumentation",
+        tracing::instrument(skip(self), fields(message_id))
+    )]
+    async fn handle_gateway_tx_task(
+        &self,
+        task: GatewayTxTask,
+    ) -> Result<Vec<Event>, IncluderError> {
+        let mut verification_cost: u64 = 0;
 
-                let mut gmp_events = vec![];
-                while let Some(result) = merkelised_message_futures.next().await {
-                    match result.status {
-                        Ok(_) => {
-                            // The overhead cost is the initialize payload verification session and the total cost of verifying all signatures
-                            // divided by the number of messages. The total cost for the message is the overhead plus its own cost.
-                            let overhead_cost =
-                                total_cost.saturating_div(number_of_messages as u64);
-                            let message_cost =
-                                result.gas_cost.unwrap_or(0).saturating_add(overhead_cost);
-                            debug!(
-                                "Message approved successfully, signature: {}",
-                                result.tx_hash.unwrap_or("".to_string())
-                            );
-                            self.redis_conn
-                                .write_gas_cost(
-                                    result.message_id.unwrap_or("".to_string()),
-                                    message_cost,
-                                    TransactionType::Approve,
-                                )
-                                .await;
-                        }
-                        Err(e) => {
-                            // Create the cannot execute event for this specific failed message
-                            let event = self.gmp_api.cannot_execute_message(
-                                task.common.id.clone(),
-                                result.message_id.unwrap_or("".to_string()),
-                                result.source_chain.unwrap_or("".to_string()),
-                                e.to_string(),
-                                CannotExecuteMessageReason::Error,
-                            );
-                            gmp_events.push(event);
-                        }
-                    }
-                }
-                debug!("Approved messages transaction sent successfully");
+        let execute_data_bytes = base64::prelude::BASE64_STANDARD
+            .decode(task.task.execute_data)
+            .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
-                return Ok(gmp_events);
+        let execute_data = ExecuteData::try_from_slice(&execute_data_bytes)
+            .map_err(|e| IncluderError::GenericError(e.to_string()))?;
+
+        // Initialize payload verification session
+        let (_, init_verification_session_cost) = match self
+            .initialize_payload_verification_session(&execute_data)
+            .await
+            .map_err(|e| IncluderError::GenericError(e.to_string()))
+        {
+            Ok((verification_signature, verification)) => (verification_signature, verification),
+            Err(e) => {
+                return Err(IncluderError::GenericError(e.to_string()));
             }
         };
+
+        verification_cost =
+            verification_cost.saturating_add(init_verification_session_cost.unwrap_or(0));
+
+        // Verify signatures
+        let verify_signatures_cost = self
+            .verify_signatures(&execute_data)
+            .await
+            .map_err(|e| IncluderError::GenericError(e.to_string()))?;
+
+        verification_cost = verification_cost.saturating_add(verify_signatures_cost);
+
+        let mut gmp_events = vec![];
+        match &execute_data.payload_items {
+            MerkleisedPayload::VerifierSetRotation {
+                new_verifier_set_merkle_root,
+            } => {
+                self.rotate_signers(&execute_data, new_verifier_set_merkle_root)
+                    .await
+                    .map_err(|e| IncluderError::GenericError(e.to_string()))?;
+            }
+            MerkleisedPayload::NewMessages { messages } => {
+                let (successful_messages, failed_messages) = self
+                    .approve_messages(messages.clone(), &execute_data)
+                    .await
+                    .map_err(|e| IncluderError::GenericError(e.to_string()))?;
+
+                // The overhead cost is the initialize payload verification session and the total cost of verifying all signatures
+                // divided by the number of messages. The total cost for the message is the overhead plus its own cost.
+                let overhead_cost =
+                    verification_cost.saturating_div(successful_messages.len() as u64);
+                for (cc_id, gas_cost) in &successful_messages {
+                    self.redis_conn
+                        .write_gas_cost(
+                            cc_id.id.clone(),
+                            gas_cost.saturating_add(overhead_cost),
+                            TransactionType::Approve,
+                        )
+                        .await;
+                }
+
+                for (cc_id, e) in &failed_messages {
+                    // TODO: some errors might be retryable
+                    gmp_events.push(self.gmp_api.cannot_execute_message(
+                        task.common.id.clone(),
+                        cc_id.id.clone(),
+                        cc_id.chain.clone(),
+                        e.to_string(),
+                        CannotExecuteMessageReason::Error,
+                    ));
+                }
+            }
+        };
+
+        Ok(gmp_events)
     }
 
     #[cfg_attr(
@@ -2950,80 +3020,6 @@ mod tests {
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), vec![]);
-    }
-
-    #[tokio::test]
-    async fn send_gateway_tx_to_chain_happy_path() {
-        let (
-            mock_gmp_api,
-            keypair,
-            chain_name,
-            redis_conn,
-            mock_refunds_model,
-            mut mock_client,
-            mut transaction_builder,
-        ) = get_includer_fields();
-
-        let instruction = Instruction::new_with_bytes(
-            solana_axelar_gateway::ID,
-            &[0xAA],
-            vec![AccountMeta::new(keypair.pubkey(), true)],
-        );
-
-        let mut legacy_tx = Transaction::new_with_payer(
-            std::slice::from_ref(&instruction),
-            Some(&keypair.pubkey()),
-        );
-        legacy_tx.sign(&[&keypair], Hash::default());
-        let expected_signature = legacy_tx.signatures[0];
-
-        let tx_for_builder = legacy_tx.clone();
-        let instruction_program = instruction.program_id;
-        let instruction_accounts = instruction.accounts.clone();
-        let instruction_data = instruction.data.clone();
-
-        transaction_builder
-            .expect_build()
-            .times(1)
-            .returning(move |ixs, alt| {
-                assert!(alt.is_none());
-                assert_eq!(ixs.len(), 1);
-                assert_eq!(ixs[0].program_id, instruction_program);
-                assert_eq!(ixs[0].accounts, instruction_accounts);
-                assert_eq!(ixs[0].data, instruction_data);
-                Ok((
-                    crate::transaction_type::SolanaTransactionType::Legacy(tx_for_builder.clone()),
-                    100_000u64,
-                ))
-            });
-
-        mock_client
-            .expect_send_transaction()
-            .times(1)
-            .returning(move |_| Box::pin(async move { Ok((expected_signature, Some(5_000u64))) }));
-
-        let includer = SolanaIncluder::new(
-            Arc::new(mock_client),
-            Arc::new(keypair),
-            chain_name,
-            transaction_builder,
-            Arc::new(mock_gmp_api),
-            redis_conn,
-            Arc::new(mock_refunds_model),
-        );
-
-        let message_id = Some("test-gateway-message-123".to_string());
-        let source_chain = Some("ethereum".to_string());
-
-        let send_result = includer
-            .send_gateway_tx_to_chain(instruction, message_id.clone(), source_chain.clone())
-            .await;
-
-        assert!(send_result.status.is_ok());
-        assert_eq!(send_result.tx_hash, Some(expected_signature.to_string()));
-        assert_eq!(send_result.gas_cost, Some(5_000u64));
-        assert_eq!(send_result.message_id, message_id);
-        assert_eq!(send_result.source_chain, source_chain);
     }
 
     #[tokio::test]

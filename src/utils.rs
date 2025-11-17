@@ -347,34 +347,6 @@ pub fn get_destination_ata(destination_pubkey: &Pubkey, token_mint_pda: &Pubkey)
     )
 }
 
-pub async fn get_cannot_execute_events_from_execute_data<G: GmpApiTrait>(
-    execute_data: &ExecuteData,
-    reason: CannotExecuteMessageReason,
-    details: String,
-    task_id: String,
-    gmp_api: Arc<G>,
-) -> Result<Vec<Event>, anyhow::Error> {
-    let mut cannot_execute_events = vec![];
-    let payload_items = execute_data.payload_items.clone();
-    match payload_items {
-        MerkleisedPayload::VerifierSetRotation { .. } => {
-            // skipping set rotation as it is not a message
-        }
-        MerkleisedPayload::NewMessages { messages } => {
-            for message in messages {
-                cannot_execute_events.push(gmp_api.cannot_execute_message(
-                    task_id.clone(),
-                    message.leaf.message.cc_id.id.clone(),
-                    message.leaf.message.cc_id.chain.clone(),
-                    details.clone(),
-                    reason.clone(),
-                ));
-            }
-        }
-    }
-    Ok(cannot_execute_events)
-}
-
 pub fn calculate_total_cost_lamports(
     tx: &SolanaTransactionType,
     units: u64,
