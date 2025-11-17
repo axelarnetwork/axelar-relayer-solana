@@ -32,7 +32,7 @@ use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signer::keypair::Keypair;
 use solana_sdk::signer::Signer as _;
 use std::sync::Arc;
-use tracing::debug;
+use tracing::{debug, error};
 
 #[derive(Clone)]
 pub struct TransactionBuilder<GE: GasCalculatorTrait, IC: IncluderClientTrait> {
@@ -265,6 +265,22 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
             program: solana_axelar_its::ID,
         }
         .to_account_metas(None);
+
+        debug!("GMP decoded payload: {:?}", gmp_decoded_payload);
+
+        // unwrap ReceiveFromHub payload
+        let gmp_decoded_payload = match gmp_decoded_payload.clone() {
+            GMPPayload::ReceiveFromHub(inner_payload) => {
+                GMPPayload::decode(inner_payload.payload.as_ref())
+                    .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?
+            }
+            _ => {
+                error!("Unexpected GMP payload type: {:?}", gmp_decoded_payload);
+                return Err(TransactionBuilderError::GenericError(
+                    "Unexpected GMP payload type".to_string(),
+                ));
+            }
+        };
 
         match gmp_decoded_payload {
             GMPPayload::InterchainTransfer(ref transfer) => {
