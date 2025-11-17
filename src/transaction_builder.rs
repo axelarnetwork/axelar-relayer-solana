@@ -553,31 +553,25 @@ mod tests {
         mock_gas
             .expect_compute_unit_price()
             .times(1)
-            .returning(move |_| {
-                let ix = cup_ix_clone.clone();
-                Ok(ix)
-            });
+            .returning(move |_| Ok(100_000u64));
 
         let cb_ix_clone = compute_budget_ix.clone();
         mock_gas
             .expect_compute_budget()
             .times(1)
-            .returning(move |_| {
-                let ix = cb_ix_clone.clone();
-                let hash = recent_blockhash;
-                Ok((ix, hash))
-            });
+            .returning(move |_| Ok(100_000u64));
 
         let alt_info = ALTInfo::new(None, None, Some(alt_pubkey)).with_addresses(alt_addresses);
 
         let builder = TransactionBuilder::new(Arc::clone(&keypair), mock_gas, mock_client);
 
-        let result = builder
+        // TODO: add assertions for cost
+        let (tx, cost) = builder
             .build(std::slice::from_ref(&user_ix), Some(alt_info))
             .await
             .expect("build with ALT should succeed");
 
-        match result {
+        match tx {
             SolanaTransactionType::Versioned(versioned_tx) => match versioned_tx.message {
                 VersionedMessage::V0(msg) => {
                     assert_eq!(msg.instructions.len(), 3);
@@ -614,29 +608,23 @@ mod tests {
         mock_gas
             .expect_compute_unit_price()
             .times(1)
-            .returning(move |_| {
-                let ix = cup_ix_clone.clone();
-                Ok(ix)
-            });
+            .returning(move |_| Ok(100_000u64));
 
         let cb_ix_clone = compute_budget_ix.clone();
         mock_gas
             .expect_compute_budget()
             .times(1)
-            .returning(move |_| {
-                let ix = cb_ix_clone.clone();
-                let hash = recent_blockhash;
-                Ok((ix, hash))
-            });
+            .returning(move |_| Ok(100_000u64));
 
         let builder = TransactionBuilder::new(Arc::clone(&keypair), mock_gas, mock_client);
 
-        let result = builder
+        // TODO: add assertions for cost
+        let (tx, cost) = builder
             .build(std::slice::from_ref(&user_ix), None)
             .await
             .expect("build without ALT should succeed");
 
-        match result {
+        match tx {
             SolanaTransactionType::Legacy(tx) => {
                 assert_eq!(tx.message.instructions.len(), 3);
                 assert_eq!(tx.message.account_keys[0], keypair.pubkey());
