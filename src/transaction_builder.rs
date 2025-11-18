@@ -227,11 +227,11 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
         existing_alt_pubkey: Option<Pubkey>,
     ) -> Result<(Instruction, Option<ALTInfo>), TransactionBuilderError> {
         let gmp_decoded_payload = GMPPayload::decode(payload)
-            .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+            .map_err(|e| TransactionBuilderError::PayloadDecodeError(e.to_string()))?;
 
         let token_id = gmp_decoded_payload
             .token_id()
-            .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+            .map_err(|e| TransactionBuilderError::PayloadDecodeError(e.to_string()))?;
 
         let (signing_pda, _) =
             get_validate_message_signing_pda(&message.command_id(), &solana_axelar_its::ID);
@@ -272,7 +272,7 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
         let gmp_decoded_payload = match gmp_decoded_payload.clone() {
             GMPPayload::ReceiveFromHub(inner_payload) => {
                 GMPPayload::decode(inner_payload.payload.as_ref())
-                    .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?
+                    .map_err(|e| TransactionBuilderError::PayloadDecodeError(e.to_string()))?
             }
             _ => {
                 error!("Unexpected GMP payload type: {:?}", gmp_decoded_payload);
@@ -286,7 +286,7 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
             GMPPayload::InterchainTransfer(ref transfer) => {
                 let destination_address =
                     Pubkey::try_from(transfer.destination_address.as_ref())
-                        .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+                        .map_err(|e| TransactionBuilderError::PayloadDecodeError(e.to_string()))?;
                 let (destination_ata, _) = get_destination_ata(&destination_address, &token_mint);
                 accounts.extend(execute_interchain_transfer_extra_accounts(
                     destination_address,
@@ -300,7 +300,7 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
                     None
                 } else {
                     Some(Pubkey::try_from(deploy.minter.as_ref()).map_err(|e| {
-                        TransactionBuilderError::GenericError(format!(
+                        TransactionBuilderError::PayloadDecodeError(format!(
                             "Invalid minter pubkey: {}",
                             e
                         ))
