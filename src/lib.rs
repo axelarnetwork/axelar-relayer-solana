@@ -12,7 +12,6 @@ pub use models::solana_transaction;
 pub mod fees_client;
 pub mod includer;
 pub mod includer_client;
-pub mod program_types;
 pub mod redis;
 pub mod refund_manager;
 pub mod subscriber_listener;

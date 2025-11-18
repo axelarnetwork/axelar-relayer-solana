@@ -1,9 +1,4 @@
-use crate::{
-    includer::ALTInfo,
-    program_types::{ExecuteData, MerkleisedPayload},
-    transaction_type::SolanaTransactionType,
-    types::SolanaTransaction,
-};
+use crate::{includer::ALTInfo, transaction_type::SolanaTransactionType, types::SolanaTransaction};
 use anchor_lang::Key;
 use anchor_spl::{associated_token::spl_associated_token_account, token_2022::spl_token_2022};
 use anyhow::anyhow;

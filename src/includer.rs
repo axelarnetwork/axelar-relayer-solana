@@ -4,7 +4,6 @@ use crate::fees_client::FeesClient;
 use crate::gas_calculator::GasCalculator;
 use crate::includer_client::{IncluderClient, IncluderClientTrait};
 use crate::models::refunds::RefundsModel;
-use crate::program_types::{ExecuteData, MerkleisedPayload};
 use crate::redis::RedisConnectionTrait;
 use crate::refund_manager::SolanaRefundManager;
 use crate::transaction_builder::{TransactionBuilder, TransactionBuilderTrait};
@@ -29,9 +28,10 @@ use relayer_core::{
     payload_cache::PayloadCache, queue::Queue,
 };
 use solana_axelar_gas_service;
-use solana_axelar_gateway::MerklizedMessage;
-use solana_axelar_gateway::{state::incoming_message::Message, CrossChainId};
 use solana_axelar_its::instruction;
+use solana_axelar_std::execute_data::{ExecuteData, MerklizedPayload};
+use solana_axelar_std::MerklizedMessage;
+use solana_axelar_std::{CrossChainId, Message};
 use solana_sdk::address_lookup_table::state::AddressLookupTable;
 use solana_sdk::clock::Slot;
 use solana_sdk::instruction::{Instruction, InstructionError};
@@ -707,14 +707,14 @@ impl<
 
         let mut gmp_events = vec![];
         match &execute_data.payload_items {
-            MerkleisedPayload::VerifierSetRotation {
+            MerklizedPayload::VerifierSetRotation {
                 new_verifier_set_merkle_root,
             } => {
                 self.rotate_signers(&execute_data, new_verifier_set_merkle_root)
                     .await
                     .map_err(|e| IncluderError::GenericError(e.to_string()))?;
             }
-            MerkleisedPayload::NewMessages { messages } => {
+            MerklizedPayload::NewMessages { messages } => {
                 let (successful_messages, failed_messages) = self
                     .approve_messages(messages.clone(), &execute_data)
                     .await
@@ -972,7 +972,7 @@ mod tests {
     use base64::prelude::BASE64_STANDARD;
     use borsh::BorshSerialize;
     use relayer_core::gmp_api::MockGmpApiTrait;
-    use solana_axelar_gateway::{
+    use solana_axelar_std::{
         MerklizedMessage, MessageLeaf, PublicKey, SigningVerifierSetInfo, VerifierSetLeaf,
     };
     use solana_sdk::address_lookup_table::AddressLookupTableAccount;
@@ -3042,21 +3042,21 @@ mod tests {
             leaf: VerifierSetLeaf {
                 nonce: 0,
                 quorum: 0,
-                signer_pubkey: PublicKey::Secp256k1([0; 33]),
+                signer_pubkey: PublicKey([0; 33]),
                 signer_weight: 0,
                 position: 0,
                 set_size: 0,
                 domain_separator: [0; 32],
             },
             merkle_proof: vec![0xDD, 0xEE, 0xFF],
-            signature: [0; 65],
+            signature: solana_axelar_std::Signature([0; 65]),
         };
 
         let execute_data = ExecuteData {
             payload_merkle_root,
             signing_verifier_set_merkle_root,
             signing_verifier_set_leaves: vec![verifier_info],
-            payload_items: MerkleisedPayload::VerifierSetRotation {
+            payload_items: MerklizedPayload::VerifierSetRotation {
                 new_verifier_set_merkle_root,
             },
         };
@@ -3171,21 +3171,21 @@ mod tests {
             leaf: VerifierSetLeaf {
                 nonce: 0,
                 quorum: 0,
-                signer_pubkey: PublicKey::Secp256k1([0; 33]),
+                signer_pubkey: PublicKey([0; 33]),
                 signer_weight: 0,
                 position: 0,
                 set_size: 0,
                 domain_separator: [0; 32],
             },
             merkle_proof: vec![0xDD, 0xEE, 0xFF],
-            signature: [0; 65],
+            signature: solana_axelar_std::Signature([0; 65]),
         };
 
         let execute_data = ExecuteData {
             payload_merkle_root,
             signing_verifier_set_merkle_root,
             signing_verifier_set_leaves: vec![verifier_info],
-            payload_items: MerkleisedPayload::NewMessages {
+            payload_items: MerklizedPayload::NewMessages {
                 messages: vec![MerklizedMessage {
                     leaf: MessageLeaf {
                         message: Message {
@@ -3326,28 +3326,28 @@ mod tests {
             leaf: VerifierSetLeaf {
                 nonce: 0,
                 quorum: 0,
-                signer_pubkey: PublicKey::Secp256k1([1; 33]),
+                signer_pubkey: PublicKey([1; 33]),
                 signer_weight: 0,
                 position: 0,
                 set_size: 0,
                 domain_separator: [0; 32],
             },
             merkle_proof: vec![0xAA],
-            signature: [1; 65],
+            signature: solana_axelar_std::Signature([1; 65]),
         };
 
         let verifier_info_2 = SigningVerifierSetInfo {
             leaf: VerifierSetLeaf {
                 nonce: 1,
                 quorum: 0,
-                signer_pubkey: PublicKey::Secp256k1([2; 33]),
+                signer_pubkey: PublicKey([2; 33]),
                 signer_weight: 0,
                 position: 1,
                 set_size: 0,
                 domain_separator: [0; 32],
             },
             merkle_proof: vec![0xBB],
-            signature: [2; 65],
+            signature: solana_axelar_std::Signature([2; 65]),
         };
 
         let msg_id_1 = "test-message-id-1".to_string();
@@ -3395,7 +3395,7 @@ mod tests {
             payload_merkle_root,
             signing_verifier_set_merkle_root,
             signing_verifier_set_leaves: vec![verifier_info_1, verifier_info_2],
-            payload_items: MerkleisedPayload::NewMessages {
+            payload_items: MerklizedPayload::NewMessages {
                 messages: vec![merkle_msg_1, merkle_msg_2],
             },
         };
@@ -3558,28 +3558,28 @@ mod tests {
             leaf: VerifierSetLeaf {
                 nonce: 0,
                 quorum: 0,
-                signer_pubkey: PublicKey::Secp256k1([1; 33]),
+                signer_pubkey: PublicKey([1; 33]),
                 signer_weight: 0,
                 position: 0,
                 set_size: 0,
                 domain_separator: [0; 32],
             },
             merkle_proof: vec![0xAA],
-            signature: [1; 65],
+            signature: solana_axelar_std::Signature([1; 65]),
         };
 
         let verifier_info_2 = SigningVerifierSetInfo {
             leaf: VerifierSetLeaf {
                 nonce: 1,
                 quorum: 0,
-                signer_pubkey: PublicKey::Secp256k1([2; 33]),
+                signer_pubkey: PublicKey([2; 33]),
                 signer_weight: 0,
                 position: 1,
                 set_size: 0,
                 domain_separator: [0; 32],
             },
             merkle_proof: vec![0xBB],
-            signature: [2; 65],
+            signature: solana_axelar_std::Signature([2; 65]),
         };
 
         let msg_id_1 = "test-message-id-1".to_string();
@@ -3627,7 +3627,7 @@ mod tests {
             payload_merkle_root,
             signing_verifier_set_merkle_root,
             signing_verifier_set_leaves: vec![verifier_info_1, verifier_info_2],
-            payload_items: MerkleisedPayload::NewMessages {
+            payload_items: MerklizedPayload::NewMessages {
                 messages: vec![merkle_msg_1, merkle_msg_2],
             },
         };
@@ -3819,14 +3819,14 @@ mod tests {
             leaf: VerifierSetLeaf {
                 nonce: 0,
                 quorum: 0,
-                signer_pubkey: PublicKey::Secp256k1([3; 33]),
+                signer_pubkey: PublicKey([3; 33]),
                 signer_weight: 0,
                 position: 0,
                 set_size: 1,
                 domain_separator: [0; 32],
             },
             merkle_proof: vec![0xCC],
-            signature: [3; 65],
+            signature: solana_axelar_std::Signature([3; 65]),
         };
 
         let msg_id_1 = "verify-fail-msg-1".to_string();
@@ -3894,7 +3894,7 @@ mod tests {
             payload_merkle_root,
             signing_verifier_set_merkle_root,
             signing_verifier_set_leaves: vec![verifier_info],
-            payload_items: MerkleisedPayload::NewMessages {
+            payload_items: MerklizedPayload::NewMessages {
                 messages: vec![merkle_msg_1, merkle_msg_2, merkle_msg_3],
             },
         };

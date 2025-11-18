@@ -20,11 +20,12 @@ use async_trait::async_trait;
 use interchain_token_transfer_gmp::GMPPayload;
 use mpl_token_metadata;
 use relayer_core::utils::ThreadSafe;
-use solana_axelar_gateway::{executable::ExecutablePayload, state::incoming_message::Message};
+use solana_axelar_gateway::executable::ExecutablePayload;
 use solana_axelar_its::instructions::{
     execute_deploy_interchain_token_extra_accounts, execute_interchain_transfer_extra_accounts,
     execute_link_token_extra_accounts,
 };
+use solana_axelar_std::Message;
 use solana_sdk::address_lookup_table::instruction::{create_lookup_table, extend_lookup_table};
 use solana_sdk::address_lookup_table::state::AddressLookupTable;
 use solana_sdk::instruction::{AccountMeta, Instruction};
@@ -510,12 +511,11 @@ mod tests {
     use base64::Engine;
     use interchain_token_transfer_gmp::alloy_primitives::{Bytes, FixedBytes, Uint};
     use interchain_token_transfer_gmp::GMPPayload;
+    use solana_axelar_gateway::executable::ExecutablePayload;
     use solana_axelar_gateway::payload::EncodingScheme;
-    use solana_axelar_gateway::{
-        executable::ExecutablePayload, state::incoming_message::Message, CrossChainId,
-    };
     use solana_axelar_governance;
     use solana_axelar_its;
+    use solana_axelar_std::{CrossChainId, Message};
     use solana_sdk::hash::Hash;
     use solana_sdk::instruction::Instruction;
     use solana_sdk::message::VersionedMessage;
