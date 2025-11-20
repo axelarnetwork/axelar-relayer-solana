@@ -519,6 +519,7 @@ impl<
 
         // Wait for all verification txs to complete and collect the results
         while let Some(result) = verifier_set_verification_futures.next().await {
+            // TODO: should send CannotExecuteMessage on unrecoverable errors
             let (signature, gas_cost) = result?;
             total_cost += gas_cost.unwrap_or(0);
             debug!(
