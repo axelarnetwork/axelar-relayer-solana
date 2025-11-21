@@ -1,3 +1,4 @@
+use solana_sdk::transaction::TransactionError;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -44,18 +45,26 @@ pub enum GatewayTxError {
 
 #[derive(Error, Debug)]
 pub enum IncluderClientError {
-    #[error("GasExceededError: {0}")]
-    GasExceededError(String),
     #[error("MaxRetriesExceededError: {0}")]
     MaxRetriesExceededError(String),
     #[error("TransactionError: {0}")]
-    TransactionError(String),
+    TransactionError(TransactionError),
+    #[error("GenericError: {0}")]
+    GenericError(String),
+}
+
+#[derive(Error, Debug, Clone)]
+pub enum SolanaIncluderError {
+    #[error("TransactionError: {0}")]
+    TransactionError(TransactionError),
     #[error("GenericError: {0}")]
     GenericError(String),
 }
 
 #[derive(Error, Debug)]
 pub enum TransactionBuilderError {
+    #[error("PayloadDecodeError: {0}")]
+    PayloadDecodeError(String),
     #[error("SimulationError: {0}")]
     SimulationError(String),
     #[error("ClientError: {0}")]
@@ -78,6 +87,12 @@ pub enum RedisInterfaceError {
     RemoveAltKeyError(String),
     #[error("UpdateAltRetryCountError: {0}")]
     UpdateAltRetryCountError(String),
+    #[error("GenericError: {0}")]
+    GenericError(String),
+}
+
+#[derive(Error, Debug)]
+pub enum FeesClientError {
     #[error("GenericError: {0}")]
     GenericError(String),
 }

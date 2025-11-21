@@ -1,13 +1,9 @@
-use crate::{
-    program_types::{ExecuteData, MerkleisedPayload},
-    transaction_type::SolanaTransactionType,
-    types::SolanaTransaction,
-};
+use crate::{includer::ALTInfo, transaction_type::SolanaTransactionType, types::SolanaTransaction};
 use anchor_lang::Key;
 use anchor_spl::{associated_token::spl_associated_token_account, token_2022::spl_token_2022};
 use anyhow::anyhow;
 use relayer_core::{
-    gmp_api::GmpApiTrait,
+    gmp_api::{gmp_types::ExecuteTask, GmpApiTrait},
     queue::{QueueItem, QueueTrait},
 };
 use serde_json::json;
@@ -15,12 +11,17 @@ use solana_transaction_parser::gmp_types::{CannotExecuteMessageReason, Event};
 use std::str::FromStr;
 use tracing::{debug, error};
 
-use axelar_solana_gateway_v2::{seed_prefixes, ID};
+use solana_axelar_gateway::{seed_prefixes, ID};
 use solana_rpc_client_api::response::RpcConfirmedTransactionStatusWithSignature;
 use solana_sdk::{
     commitment_config::{CommitmentConfig, CommitmentLevel},
+    compute_budget::ComputeBudgetInstruction,
+    instruction::Instruction,
+    message::{v0, AddressLookupTableAccount, VersionedMessage},
     pubkey::Pubkey,
-    signature::Signature,
+    signature::{Keypair, Signature},
+    signer::Signer,
+    transaction::{Transaction, VersionedTransaction},
 };
 use std::sync::Arc;
 
@@ -57,6 +58,26 @@ pub fn get_tx_batch_command(
     }
 
     serde_json::to_string(&batch).unwrap_or_else(|_| "[]".to_string())
+}
+
+pub fn get_recent_prioritization_fees_command(addresses: Vec<Pubkey>) -> String {
+    let account_keys: Vec<String> = addresses.iter().map(|pk| pk.to_string()).collect();
+
+    let request = json!({
+        "jsonrpc": "2.0",
+        "id": "1",
+        "method": "getPriorityFeeEstimate",
+        "params": [
+            {
+                "accountKeys": account_keys,
+                "options": {
+                    "includeAllPriorityFeeLevels": false
+                }
+            }
+        ]
+    });
+
+    serde_json::to_string(&request).unwrap_or_else(|_| "{}".to_string())
 }
 
 pub async fn post_request(url: &str, body_json: &str) -> anyhow::Result<String> {
@@ -98,6 +119,7 @@ pub async fn upsert_and_publish<SM: SolanaTransactionModel>(
     queue: &Arc<dyn QueueTrait>,
     tx: &SolanaTransaction,
     from_service: String,
+    force_publish: bool,
 ) -> Result<bool, anyhow::Error> {
     let ixs = tx
         .ixs
@@ -119,7 +141,7 @@ pub async fn upsert_and_publish<SM: SolanaTransactionModel>(
         .await
         .map_err(|e| anyhow!("Error upserting transaction: {:?}", e))?;
 
-    if inserted {
+    if inserted || force_publish {
         let chain_transaction = serde_json::to_string(&tx)?;
 
         let item = &QueueItem::Transaction(Box::new(chain_transaction.clone()));
@@ -163,41 +185,41 @@ pub fn get_incoming_message_pda(command_id: &[u8]) -> (Pubkey, u8) {
     Pubkey::find_program_address(&[seed_prefixes::INCOMING_MESSAGE_SEED, command_id], &ID)
 }
 pub fn get_gateway_event_authority_pda() -> (Pubkey, u8) {
-    Pubkey::find_program_address(&[b"__event_authority"], &axelar_solana_gateway_v2::ID)
+    Pubkey::find_program_address(&[b"__event_authority"], &solana_axelar_gateway::ID)
 }
 
 pub fn get_governance_config_pda() -> (Pubkey, u8) {
     Pubkey::find_program_address(
-        &[axelar_solana_governance_v2::GovernanceConfig::SEED_PREFIX],
-        &axelar_solana_governance_v2::ID,
+        &[solana_axelar_governance::GovernanceConfig::SEED_PREFIX],
+        &solana_axelar_governance::ID,
     )
 }
 
 pub fn get_governance_event_authority_pda() -> (Pubkey, u8) {
-    Pubkey::find_program_address(&[b"__event_authority"], &axelar_solana_governance_v2::ID)
+    Pubkey::find_program_address(&[b"__event_authority"], &solana_axelar_governance::ID)
 }
 
 pub fn get_proposal_pda(command_id: &[u8]) -> (Pubkey, u8) {
     Pubkey::find_program_address(
         &[
-            axelar_solana_governance_v2::seed_prefixes::PROPOSAL_PDA,
+            solana_axelar_governance::seed_prefixes::PROPOSAL_PDA,
             command_id,
         ],
-        &axelar_solana_governance_v2::ID,
+        &solana_axelar_governance::ID,
     )
 }
 
 pub fn get_operator_proposal_pda(command_id: &[u8]) -> (Pubkey, u8) {
     Pubkey::find_program_address(
         &[b"operator_proposal", command_id],
-        &axelar_solana_governance_v2::ID,
+        &solana_axelar_governance::ID,
     )
 }
 
 pub fn get_validate_message_signing_pda(command_id: &[u8], program_id: &Pubkey) -> (Pubkey, u8) {
     Pubkey::find_program_address(
         &[
-            axelar_solana_gateway_v2::seed_prefixes::VALIDATE_MESSAGE_SIGNING_SEED,
+            solana_axelar_gateway::seed_prefixes::VALIDATE_MESSAGE_SIGNING_SEED,
             command_id,
         ],
         program_id,
@@ -206,37 +228,41 @@ pub fn get_validate_message_signing_pda(command_id: &[u8], program_id: &Pubkey) 
 
 pub fn get_gateway_root_config_internal() -> (Pubkey, u8) {
     Pubkey::find_program_address(
-        &[axelar_solana_gateway_v2::seed_prefixes::GATEWAY_SEED],
-        &axelar_solana_gateway_v2::ID,
+        &[solana_axelar_gateway::seed_prefixes::GATEWAY_SEED],
+        &solana_axelar_gateway::ID,
     )
 }
 
 pub fn get_its_root_pda() -> (Pubkey, u8) {
     Pubkey::find_program_address(
-        &[axelar_solana_its_v2::seed_prefixes::ITS_SEED],
-        &axelar_solana_its_v2::ID,
+        &[solana_axelar_its::seed_prefixes::ITS_SEED],
+        &solana_axelar_its::ID,
     )
+}
+
+pub fn get_its_event_authority_pda() -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[b"__event_authority"], &solana_axelar_its::ID)
 }
 
 pub fn get_token_manager_pda(its_root_pda: &Pubkey, token_id: &[u8]) -> (Pubkey, u8) {
     Pubkey::find_program_address(
         &[
-            axelar_solana_its_v2::seed_prefixes::TOKEN_MANAGER_SEED,
+            solana_axelar_its::seed_prefixes::TOKEN_MANAGER_SEED,
             its_root_pda.as_ref(),
             token_id,
         ],
-        &axelar_solana_its_v2::ID,
+        &solana_axelar_its::ID,
     )
 }
 
 pub fn get_token_mint_pda(its_root_pda: &Pubkey, token_id: &[u8]) -> (Pubkey, u8) {
     Pubkey::find_program_address(
         &[
-            axelar_solana_its_v2::seed_prefixes::INTERCHAIN_TOKEN_SEED,
+            solana_axelar_its::seed_prefixes::INTERCHAIN_TOKEN_SEED,
             its_root_pda.as_ref(),
             token_id,
         ],
-        &axelar_solana_its_v2::ID,
+        &solana_axelar_its::ID,
     )
 }
 
@@ -276,33 +302,33 @@ pub fn get_mpl_token_metadata_account(token_mint_pda: &Pubkey) -> (Pubkey, u8) {
 pub fn get_minter_roles_pda(token_manager_pda: &Pubkey, minter: &Pubkey) -> (Pubkey, u8) {
     Pubkey::find_program_address(
         &[
-            axelar_solana_its_v2::state::UserRoles::SEED_PREFIX,
+            solana_axelar_its::state::UserRoles::SEED_PREFIX,
             token_manager_pda.as_ref(),
             minter.as_ref(),
         ],
-        &axelar_solana_its_v2::ID,
+        &solana_axelar_its::ID,
     )
 }
 
 pub fn get_operator_pda(operator: &Pubkey) -> (Pubkey, u8) {
     Pubkey::find_program_address(
         &[
-            axelar_solana_operators::OperatorAccount::SEED_PREFIX,
+            solana_axelar_operators::OperatorAccount::SEED_PREFIX,
             operator.key().as_ref(),
         ],
-        &axelar_solana_operators::ID,
+        &solana_axelar_operators::ID,
     )
 }
 
 pub fn get_treasury_pda() -> (Pubkey, u8) {
     Pubkey::find_program_address(
-        &[axelar_solana_gas_service_v2::state::Treasury::SEED_PREFIX],
-        &axelar_solana_gas_service_v2::ID,
+        &[solana_axelar_gas_service::state::Treasury::SEED_PREFIX],
+        &solana_axelar_gas_service::ID,
     )
 }
 
 pub fn get_gas_service_event_authority_pda() -> (Pubkey, u8) {
-    Pubkey::find_program_address(&[b"__event_authority"], &axelar_solana_gas_service_v2::ID)
+    Pubkey::find_program_address(&[b"__event_authority"], &solana_axelar_gas_service::ID)
 }
 
 pub fn get_destination_ata(destination_pubkey: &Pubkey, token_mint_pda: &Pubkey) -> (Pubkey, u8) {
@@ -314,34 +340,6 @@ pub fn get_destination_ata(destination_pubkey: &Pubkey, token_mint_pda: &Pubkey)
         ],
         &spl_associated_token_account::id(),
     )
-}
-
-pub async fn get_cannot_execute_events_from_execute_data<G: GmpApiTrait>(
-    execute_data: &ExecuteData,
-    reason: CannotExecuteMessageReason,
-    details: String,
-    task_id: String,
-    gmp_api: Arc<G>,
-) -> Result<Vec<Event>, anyhow::Error> {
-    let mut cannot_execute_events = vec![];
-    let payload_items = execute_data.payload_items.clone();
-    match payload_items {
-        MerkleisedPayload::VerifierSetRotation { .. } => {
-            // skipping set rotation as it is not a message
-        }
-        MerkleisedPayload::NewMessages { messages } => {
-            for message in messages {
-                cannot_execute_events.push(gmp_api.cannot_execute_message(
-                    task_id.clone(),
-                    message.leaf.message.cc_id.id.clone(),
-                    message.leaf.message.cc_id.chain.clone(),
-                    details.clone(),
-                    reason.clone(),
-                ));
-            }
-        }
-    }
-    Ok(cannot_execute_events)
 }
 
 pub fn calculate_total_cost_lamports(
@@ -373,4 +371,71 @@ pub fn calculate_total_cost_lamports(
     let base_fee = LAMPORTS_PER_SIGNATURE.saturating_mul(sigs);
 
     Ok(base_fee.saturating_add(priority_lamports))
+}
+
+pub async fn create_transaction(
+    mut instructions: Vec<Instruction>,
+    alt_info: Option<ALTInfo>,
+    alt_addresses: Vec<Pubkey>,
+    unit_price: u64,
+    compute_budget: u64,
+    keypair: &Keypair,
+    recent_hash: solana_sdk::hash::Hash,
+) -> Result<SolanaTransactionType, anyhow::Error> {
+    let set_compute_unit_price_ix = ComputeBudgetInstruction::set_compute_unit_price(unit_price);
+    let set_compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(
+        compute_budget
+            .try_into()
+            .map_err(|e: std::num::TryFromIntError| anyhow::anyhow!(e.to_string()))?,
+    );
+
+    instructions.splice(0..0, [set_compute_unit_price_ix, set_compute_budget_ix]);
+
+    match alt_info {
+        Some(alt_info) => {
+            let alt_pubkey = alt_info
+                .alt_pubkey
+                .ok_or_else(|| anyhow::anyhow!("ALTInfo provided without pubkey"))?;
+
+            let alt_ref = AddressLookupTableAccount {
+                key: alt_pubkey,
+                addresses: alt_addresses,
+            };
+            let v0_msg =
+                v0::Message::try_compile(&keypair.pubkey(), &instructions, &[alt_ref], recent_hash)
+                    .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+            let message = VersionedMessage::V0(v0_msg);
+            let versioned_tx = VersionedTransaction::try_new(message, &[&keypair])
+                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+            Ok(SolanaTransactionType::Versioned(versioned_tx))
+        }
+        None => Ok(SolanaTransactionType::Legacy(
+            Transaction::new_signed_with_payer(
+                &instructions,
+                Some(&keypair.pubkey()),
+                &[&keypair],
+                recent_hash,
+            ),
+        )),
+    }
+}
+
+pub fn not_enough_gas_event<G: GmpApiTrait>(
+    available_gas_balance: i64,
+    required_gas: u64,
+    task: ExecuteTask,
+    gmp_api: Arc<G>,
+) -> Vec<Event> {
+    let error_message = format!(
+        "Not enough gas to execute message. Available gas: {}, required gas: {}",
+        available_gas_balance, required_gas
+    );
+    let event = gmp_api.cannot_execute_message(
+        task.common.id.clone(),
+        task.task.message.message_id.clone(),
+        task.task.message.source_chain,
+        error_message,
+        CannotExecuteMessageReason::InsufficientGas,
+    );
+    vec![event]
 }

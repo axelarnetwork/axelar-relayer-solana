@@ -10,6 +10,7 @@ use tracing::{debug, warn};
 use redis::aio::ConnectionManager;
 
 const GAS_COST_EXPIRATION: u64 = 604800; // one week
+const ALT_PREFIX: &str = "ALT:";
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct AltEntry {
@@ -71,6 +72,14 @@ impl RedisConnection {
     pub fn new(conn: ConnectionManager) -> Self {
         Self { conn }
     }
+
+    fn create_alt_key(&self, message_id: String) -> String {
+        format!("{}:{}", ALT_PREFIX, message_id)
+    }
+
+    fn create_failed_alt_key(&self, message_id: String) -> String {
+        format!("FAILED:{}", self.create_alt_key(message_id))
+    }
 }
 
 #[async_trait]
@@ -114,7 +123,7 @@ impl RedisConnectionTrait for RedisConnection {
         debug!("Writing ALT pubkey to Redis");
         let mut redis_conn = self.conn.clone();
         let set_opts = SetOptions::default().with_expiration(SetExpiry::EX(GAS_COST_EXPIRATION));
-        let key = format!("ALT:{}", message_id);
+        let key = self.create_alt_key(message_id);
 
         let created_at = chrono::Utc::now().timestamp();
         let entry = AltEntry {
@@ -154,7 +163,7 @@ impl RedisConnectionTrait for RedisConnection {
         message_id: String,
     ) -> Result<Option<Pubkey>, RedisInterfaceError> {
         let mut redis_conn = self.conn.clone();
-        let key = format!("ALT:{}", message_id);
+        let key = self.create_alt_key(message_id.clone());
         let result: Result<Option<String>, redis::RedisError> = redis_conn.get(key.clone()).await;
 
         match result {
@@ -203,7 +212,7 @@ impl RedisConnectionTrait for RedisConnection {
             let (next_cursor, mut scanned_keys): (u64, Vec<String>) = redis::cmd("SCAN")
                 .arg(cursor)
                 .arg("MATCH")
-                .arg("ALT:*")
+                .arg(format!("{}:*", ALT_PREFIX))
                 .arg("COUNT")
                 .arg(1000)
                 .query_async(&mut redis_conn)
@@ -224,7 +233,7 @@ impl RedisConnectionTrait for RedisConnection {
         }
 
         for key in keys {
-            if let Some(message_id) = key.strip_prefix("ALT:") {
+            if let Some(message_id) = key.strip_prefix(format!("{}:", ALT_PREFIX).as_str()) {
                 if let Ok(Some(value_str)) =
                     redis::AsyncCommands::get::<_, Option<String>>(&mut redis_conn, &key).await
                 {
@@ -248,7 +257,7 @@ impl RedisConnectionTrait for RedisConnection {
 
     async fn remove_alt_key(&self, message_id: String) -> Result<(), RedisInterfaceError> {
         let mut redis_conn = self.conn.clone();
-        let key = format!("ALT:{}", message_id);
+        let key = self.create_alt_key(message_id);
 
         redis::AsyncCommands::del::<_, ()>(&mut redis_conn, key.clone())
             .await
@@ -269,7 +278,7 @@ impl RedisConnectionTrait for RedisConnection {
         retry_count: u32,
     ) -> Result<(), RedisInterfaceError> {
         let mut redis_conn = self.conn.clone();
-        let key = format!("ALT:{}", message_id);
+        let key = self.create_alt_key(message_id.clone());
         let set_opts = SetOptions::default().with_expiration(SetExpiry::EX(GAS_COST_EXPIRATION));
 
         let existing_value: Option<String> = redis::AsyncCommands::get(&mut redis_conn, &key)
@@ -324,7 +333,7 @@ impl RedisConnectionTrait for RedisConnection {
 
     async fn set_alt_inactive(&self, message_id: String) -> Result<(), RedisInterfaceError> {
         let mut redis_conn = self.conn.clone();
-        let key = format!("ALT:{}", message_id);
+        let key = self.create_alt_key(message_id.clone());
         let set_opts = SetOptions::default().with_expiration(SetExpiry::EX(GAS_COST_EXPIRATION));
 
         let existing_value: Option<String> = redis::AsyncCommands::get(&mut redis_conn, &key)
@@ -380,8 +389,8 @@ impl RedisConnectionTrait for RedisConnection {
         alt_pubkey: Pubkey,
     ) -> Result<(), RedisInterfaceError> {
         let mut redis_conn = self.conn.clone();
-        let alt_key = format!("ALT:{}", message_id);
-        let failed_key = format!("FAILED:ALT:{}", message_id);
+        let alt_key = self.create_alt_key(message_id.clone());
+        let failed_key = self.create_failed_alt_key(message_id.clone());
 
         let pubkey_str = alt_pubkey.to_string();
 
@@ -536,7 +545,7 @@ mod tests {
         assert_eq!(result, Some(alt_pubkey));
 
         let mut conn = redis_conn.inner().clone();
-        let key = format!("ALT:{}", message_id);
+        let key = redis_conn.create_alt_key(message_id.clone());
         let stored_value: Option<String> = redis::AsyncCommands::get(&mut conn, key).await.unwrap();
 
         assert!(stored_value.is_some());
@@ -565,7 +574,7 @@ mod tests {
         let invalid_json = "not-a-valid-json";
 
         let mut conn = redis_conn.inner().clone();
-        let key = format!("ALT:{}", message_id);
+        let key = redis_conn.create_alt_key(message_id.clone());
         let _: () = redis::AsyncCommands::set(&mut conn, key, invalid_json)
             .await
             .unwrap();
@@ -769,7 +778,7 @@ mod tests {
         assert_eq!(result, Some(alt_pubkey));
 
         let mut conn = redis_conn.inner().clone();
-        let key = format!("ALT:{}", message_id);
+        let key = redis_conn.create_alt_key(message_id.clone());
         let ttl: i64 = redis::AsyncCommands::ttl(&mut conn, key).await.unwrap();
 
         assert!(ttl > 0, "TTL should be positive");
@@ -992,7 +1001,7 @@ mod tests {
 
         // Verify it's in FAILED:ALT
         let mut conn = redis_conn.inner().clone();
-        let key = format!("FAILED:ALT:{}", message_id);
+        let key = redis_conn.create_failed_alt_key(message_id.clone());
         let value: String = redis::AsyncCommands::get(&mut conn, &key).await.unwrap();
         assert_eq!(value, alt_pubkey.to_string());
 
@@ -1035,8 +1044,8 @@ mod tests {
             .unwrap();
 
         let mut conn = redis_conn.inner().clone();
-        let key_1 = format!("FAILED:ALT:{}", message_id_1);
-        let key_2 = format!("FAILED:ALT:{}", message_id_2);
+        let key_1 = redis_conn.create_failed_alt_key(message_id_1.clone());
+        let key_2 = redis_conn.create_failed_alt_key(message_id_2.clone());
 
         let value_1: String = redis::AsyncCommands::get(&mut conn, &key_1).await.unwrap();
         let value_2: String = redis::AsyncCommands::get(&mut conn, &key_2).await.unwrap();

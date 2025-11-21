@@ -15,10 +15,11 @@ WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 
 # Create dummy files for each workspace member to cache dependencies
-RUN mkdir -p src/bin && \
+RUN mkdir -p src/bin/recovery && \
     echo 'fn main() {}' > src/bin/ingestor.rs && \
     echo 'fn main() {}' > src/bin/includer.rs && \
     echo 'fn main() {}' > src/bin/subscriber.rs && \
+    echo 'fn main() {}' > src/bin/recovery/subscriber.rs && \
     echo 'fn main() {}' > src/bin/alt_manager.rs
 
 

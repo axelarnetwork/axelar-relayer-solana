@@ -80,6 +80,25 @@ impl<RPC: SolanaRpcClientTrait, SC: SubscriberCursor, SM: SolanaTransactionModel
         };
     }
 
+    pub async fn recover_txs(&self, signatures: Vec<Signature>) -> Result<(), anyhow::Error> {
+        for signature in signatures {
+            let tx = self.poll_tx(signature.to_string()).await;
+            if let Ok(tx) = tx {
+                upsert_and_publish(
+                    &self.transaction_model,
+                    &self.queue,
+                    &tx,
+                    "poller".to_string(),
+                    true,
+                )
+                .await?;
+            } else {
+                error!("Error storing transaction: {:?}", tx);
+            }
+        }
+        Ok(())
+    }
+
     // Poller runs in the background and polls every X seconds for all transactions
     // that happened for the specified account since its last poll. It only writes
     // to the queue if the transaction has not been processed already.
@@ -111,7 +130,8 @@ impl<RPC: SolanaRpcClientTrait, SC: SubscriberCursor, SM: SolanaTransactionModel
                     &self.transaction_model,
                     &self.queue,
                     &tx,
-                    "poller".to_string(),
+                    "recovery_poller".to_string(),
+                    false,
                 )
                 .await
                 {

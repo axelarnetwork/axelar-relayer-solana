@@ -15,7 +15,7 @@ use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Signature;
 use tokio::{select, sync::Semaphore, time::timeout};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 pub trait TransactionListener {
     type Transaction;
@@ -308,7 +308,7 @@ impl<STR: SolanaStreamClientTrait, SM: SolanaTransactionModel> SolanaListener<ST
                                 }
                             };
 
-                            match upsert_and_publish(&transaction_model_clone, &queue_clone, &tx, stream_name_clone.clone()).await {
+                            match upsert_and_publish(&transaction_model_clone, &queue_clone, &tx, stream_name_clone.clone(), false).await {
                                 Ok(inserted) => {
                                     if inserted {
                                         info!(
@@ -328,7 +328,7 @@ impl<STR: SolanaStreamClientTrait, SM: SolanaTransactionModel> SolanaListener<ST
                             break;
                         }
                         Err(e) => {
-                            warn!("Restarting {} stream: {:?}", stream_name, e);
+                            debug!("Restarting {} stream: {:?}", stream_name, e);
                             break;
                         }
                     }
