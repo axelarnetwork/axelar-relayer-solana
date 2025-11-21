@@ -484,14 +484,19 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
         recent_slot: u64,
         execute_accounts: &[AccountMeta],
     ) -> Result<(Instruction, Instruction, Pubkey), TransactionBuilderError> {
-        let (ix_alt_create, alt_pubkey) =
-            create_lookup_table(self.keypair.pubkey(), self.keypair.pubkey(), recent_slot);
+        // create a new keypair as the authority to avoid conflicts with concurrent ALT creations using the same recent hash
+        let authority_keypair = Keypair::new();
+        let (ix_alt_create, alt_pubkey) = create_lookup_table(
+            authority_keypair.pubkey(),
+            self.keypair.pubkey(),
+            recent_slot,
+        );
 
         let alt_accounts = execute_accounts.iter().map(|acc| acc.pubkey).collect();
 
         let ix_alt_extend = extend_lookup_table(
             alt_pubkey,
-            self.keypair.pubkey(),
+            authority_keypair.pubkey(),
             Some(self.keypair.pubkey()),
             alt_accounts,
         );
