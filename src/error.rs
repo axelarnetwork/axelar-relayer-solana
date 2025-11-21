@@ -75,10 +75,10 @@ pub enum TransactionBuilderError {
 
 #[derive(Error, Debug)]
 pub enum RedisInterfaceError {
-    #[error("GetAltPubkeyError: {0}")]
-    GetAltPubkeyError(String),
-    #[error("WriteAltPubkeyError: {0}")]
-    WriteAltPubkeyError(String),
+    #[error("GetAltEntryError: {0}")]
+    GetAltEntryError(String),
+    #[error("WriteAltEntryError: {0}")]
+    WriteAltEntryError(String),
     #[error("SetAltInactiveError: {0}")]
     SetAltInactiveError(String),
     #[error("SetAltFailedError: {0}")]

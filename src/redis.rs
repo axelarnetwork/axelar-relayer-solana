@@ -15,6 +15,7 @@ const ALT_PREFIX: &str = "ALT:";
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct AltEntry {
     pubkey: String,
+    authority_keypair_str: String,
     created_at: i64, // Unix timestamp in seconds
     #[serde(default)]
     retry_count: u32, // Number of retry attempts
@@ -36,19 +37,20 @@ pub trait RedisConnectionTrait: ThreadSafe {
         gas_cost: u64,
         transaction_type: TransactionType,
     );
-    async fn write_alt_pubkey(
+    async fn write_alt_entry(
         &self,
         message_id: String,
         alt_pubkey: Pubkey,
+        authority_keypair_str: String,
     ) -> Result<(), RedisInterfaceError>;
-    async fn get_alt_pubkey(
+    async fn get_alt_entry(
         &self,
         message_id: String,
-    ) -> Result<Option<Pubkey>, RedisInterfaceError>;
+    ) -> Result<Option<(Pubkey, String)>, RedisInterfaceError>;
     #[allow(clippy::type_complexity)]
     async fn get_all_alt_keys(
         &self,
-    ) -> Result<Vec<(String, Pubkey, i64, u32, bool)>, RedisInterfaceError>;
+    ) -> Result<Vec<(String, Pubkey, String, i64, u32, bool)>, RedisInterfaceError>;
     async fn remove_alt_key(&self, message_id: String) -> Result<(), RedisInterfaceError>;
     async fn update_alt_retry_count(
         &self,
@@ -115,10 +117,11 @@ impl RedisConnectionTrait for RedisConnection {
         }
     }
 
-    async fn write_alt_pubkey(
+    async fn write_alt_entry(
         &self,
         message_id: String,
         alt_pubkey: Pubkey,
+        authority_keypair_str: String,
     ) -> Result<(), RedisInterfaceError> {
         debug!("Writing ALT pubkey to Redis");
         let mut redis_conn = self.conn.clone();
@@ -128,24 +131,22 @@ impl RedisConnectionTrait for RedisConnection {
         let created_at = chrono::Utc::now().timestamp();
         let entry = AltEntry {
             pubkey: alt_pubkey.to_string(),
+            authority_keypair_str,
             created_at,
             retry_count: 0,
             active: true,
         };
 
         let entry_json = serde_json::to_string(&entry).map_err(|e| {
-            RedisInterfaceError::WriteAltPubkeyError(format!(
-                "Failed to serialize ALT entry: {}",
-                e
-            ))
+            RedisInterfaceError::WriteAltEntryError(format!("Failed to serialize ALT entry: {}", e))
         })?;
 
         redis_conn
             .set_options(key.clone(), entry_json.clone(), set_opts)
             .await
             .map_err(|e| {
-                RedisInterfaceError::WriteAltPubkeyError(format!(
-                    "Failed to write ALT pubkey to Redis: {}",
+                RedisInterfaceError::WriteAltEntryError(format!(
+                    "Failed to write ALT entry to Redis: {}",
                     e
                 ))
             })?;
@@ -158,28 +159,28 @@ impl RedisConnectionTrait for RedisConnection {
         Ok(())
     }
 
-    async fn get_alt_pubkey(
+    async fn get_alt_entry(
         &self,
         message_id: String,
-    ) -> Result<Option<Pubkey>, RedisInterfaceError> {
+    ) -> Result<Option<(Pubkey, String)>, RedisInterfaceError> {
         let mut redis_conn = self.conn.clone();
         let key = self.create_alt_key(message_id.clone());
         let result: Result<Option<String>, redis::RedisError> = redis_conn.get(key.clone()).await;
 
         match result {
             Ok(Some(value_str)) => {
-                debug!("Found ALT pubkey in Redis for message_id: {}", message_id);
+                debug!("Found ALT entry in Redis for message_id: {}", message_id);
 
                 let entry = serde_json::from_str::<AltEntry>(&value_str).map_err(|e| {
                     warn!("Failed to deserialize ALT entry: {}", e);
-                    RedisInterfaceError::GetAltPubkeyError(format!(
+                    RedisInterfaceError::GetAltEntryError(format!(
                         "Failed to deserialize ALT entry: {}",
                         e
                     ))
                 })?;
 
                 match entry.pubkey.parse::<Pubkey>() {
-                    Ok(pubkey) => Ok(Some(pubkey)),
+                    Ok(pubkey) => Ok(Some((pubkey, entry.authority_keypair_str))),
                     Err(e) => {
                         warn!("Failed to parse ALT pubkey from entry: {}", e);
                         Ok(None)
@@ -202,7 +203,7 @@ impl RedisConnectionTrait for RedisConnection {
 
     async fn get_all_alt_keys(
         &self,
-    ) -> Result<Vec<(String, Pubkey, i64, u32, bool)>, RedisInterfaceError> {
+    ) -> Result<Vec<(String, Pubkey, String, i64, u32, bool)>, RedisInterfaceError> {
         let mut redis_conn = self.conn.clone();
         let mut all_keys = Vec::new();
 
@@ -242,6 +243,7 @@ impl RedisConnectionTrait for RedisConnection {
                             all_keys.push((
                                 message_id.to_string(),
                                 pubkey,
+                                entry.authority_keypair_str,
                                 entry.created_at,
                                 entry.retry_count,
                                 entry.active,
@@ -430,11 +432,16 @@ impl RedisConnectionTrait for RedisConnection {
 mod tests {
     use super::*;
     use redis::Client;
+    use solana_sdk::signer::keypair::Keypair;
     use solana_transaction_parser::redis::TransactionType;
     use std::time::Duration;
     use testcontainers::core::{IntoContainerPort, WaitFor};
     use testcontainers::runners::AsyncRunner;
     use testcontainers::GenericImage;
+
+    fn create_test_authority_keypair_str() -> String {
+        Keypair::new().to_base58_string()
+    }
 
     async fn create_redis_connection() -> (
         testcontainers::ContainerAsync<GenericImage>,
@@ -531,18 +538,23 @@ mod tests {
 
         let message_id = "test-message-789".to_string();
         let alt_pubkey = Pubkey::new_unique();
+        let authority_keypair_str = create_test_authority_keypair_str();
         let before_timestamp = chrono::Utc::now().timestamp();
 
         redis_conn
-            .write_alt_pubkey(message_id.clone(), alt_pubkey)
+            .write_alt_entry(
+                message_id.clone(),
+                alt_pubkey,
+                authority_keypair_str.clone(),
+            )
             .await
             .unwrap();
 
         let after_timestamp = chrono::Utc::now().timestamp();
 
-        let result = redis_conn.get_alt_pubkey(message_id.clone()).await.unwrap();
+        let result = redis_conn.get_alt_entry(message_id.clone()).await.unwrap();
 
-        assert_eq!(result, Some(alt_pubkey));
+        assert_eq!(result, Some((alt_pubkey, authority_keypair_str.clone())));
 
         let mut conn = redis_conn.inner().clone();
         let key = redis_conn.create_alt_key(message_id.clone());
@@ -551,6 +563,7 @@ mod tests {
         assert!(stored_value.is_some());
         let entry: AltEntry = serde_json::from_str(&stored_value.unwrap()).unwrap();
         assert_eq!(entry.pubkey, alt_pubkey.to_string());
+        assert_eq!(entry.authority_keypair_str, authority_keypair_str);
         assert!(entry.created_at >= before_timestamp);
         assert!(entry.created_at <= after_timestamp);
     }
@@ -561,7 +574,7 @@ mod tests {
 
         let message_id = "non-existent-message".to_string();
 
-        let result = redis_conn.get_alt_pubkey(message_id).await.unwrap();
+        let result = redis_conn.get_alt_entry(message_id).await.unwrap();
 
         assert_eq!(result, None);
     }
@@ -579,7 +592,7 @@ mod tests {
             .await
             .unwrap();
 
-        let result = redis_conn.get_alt_pubkey(message_id).await;
+        let result = redis_conn.get_alt_entry(message_id).await;
 
         assert!(result.is_err());
     }
@@ -592,15 +605,25 @@ mod tests {
         let message_id_2 = "test-message-2".to_string();
         let alt_pubkey_1 = Pubkey::new_unique();
         let alt_pubkey_2 = Pubkey::new_unique();
+        let authority_keypair_str_1 = create_test_authority_keypair_str();
+        let authority_keypair_str_2 = create_test_authority_keypair_str();
 
         let before_timestamp = chrono::Utc::now().timestamp();
 
         redis_conn
-            .write_alt_pubkey(message_id_1.clone(), alt_pubkey_1)
+            .write_alt_entry(
+                message_id_1.clone(),
+                alt_pubkey_1,
+                authority_keypair_str_1.clone(),
+            )
             .await
             .unwrap();
         redis_conn
-            .write_alt_pubkey(message_id_2.clone(), alt_pubkey_2)
+            .write_alt_entry(
+                message_id_2.clone(),
+                alt_pubkey_2,
+                authority_keypair_str_2.clone(),
+            )
             .await
             .unwrap();
 
@@ -613,14 +636,16 @@ mod tests {
         let mut found_1 = false;
         let mut found_2 = false;
 
-        for (msg_id, pubkey, timestamp, _retry_count, active) in result {
+        for (msg_id, pubkey, authority_str, timestamp, _retry_count, active) in result {
             if msg_id == message_id_1 && pubkey == alt_pubkey_1 {
+                assert_eq!(authority_str, authority_keypair_str_1);
                 assert!(timestamp >= before_timestamp);
                 assert!(timestamp <= after_timestamp);
                 assert!(active); // Should be active by default
                 found_1 = true;
             }
             if msg_id == message_id_2 && pubkey == alt_pubkey_2 {
+                assert_eq!(authority_str, authority_keypair_str_2);
                 assert!(timestamp >= before_timestamp);
                 assert!(timestamp <= after_timestamp);
                 found_2 = true;
@@ -640,10 +665,11 @@ mod tests {
         for i in 0..150 {
             let message_id = format!("test-message-{}", i);
             let alt_pubkey = Pubkey::new_unique();
+            let authority_keypair_str = create_test_authority_keypair_str();
             message_ids.push(message_id.clone());
             alt_pubkeys.push(alt_pubkey);
             redis_conn
-                .write_alt_pubkey(message_id, alt_pubkey)
+                .write_alt_entry(message_id, alt_pubkey, authority_keypair_str)
                 .await
                 .unwrap();
         }
@@ -653,7 +679,7 @@ mod tests {
         assert_eq!(result.len(), 150);
 
         let mut found_count = 0;
-        for (msg_id, pubkey, _timestamp, _retry_count, _active) in result {
+        for (msg_id, pubkey, _authority_str, _timestamp, _retry_count, _active) in result {
             if let Some(idx) = message_ids.iter().position(|m| m == &msg_id) {
                 if alt_pubkeys[idx] == pubkey {
                     found_count += 1;
@@ -670,24 +696,25 @@ mod tests {
 
         let message_id = "test-message-remove".to_string();
         let alt_pubkey = Pubkey::new_unique();
+        let authority_keypair_str = create_test_authority_keypair_str();
 
         redis_conn
-            .write_alt_pubkey(message_id.clone(), alt_pubkey)
+            .write_alt_entry(message_id.clone(), alt_pubkey, authority_keypair_str)
             .await
             .unwrap();
 
-        let result = redis_conn.get_alt_pubkey(message_id.clone()).await.unwrap();
-        assert_eq!(result, Some(alt_pubkey));
+        let result = redis_conn.get_alt_entry(message_id.clone()).await.unwrap();
+        assert_eq!(result.map(|(p, _)| p), Some(alt_pubkey));
 
         redis_conn.remove_alt_key(message_id.clone()).await.unwrap();
 
-        let result = redis_conn.get_alt_pubkey(message_id.clone()).await.unwrap();
+        let result = redis_conn.get_alt_entry(message_id.clone()).await.unwrap();
         assert_eq!(result, None);
 
         let all_keys = redis_conn.get_all_alt_keys().await.unwrap();
         assert!(!all_keys
             .iter()
-            .any(|(msg_id, _, _, _, _)| msg_id == &message_id));
+            .any(|(msg_id, _, _, _, _, _)| msg_id == &message_id));
     }
 
     #[tokio::test]
@@ -711,17 +738,20 @@ mod tests {
         let alt_pubkey_1 = Pubkey::new_unique();
         let alt_pubkey_2 = Pubkey::new_unique();
         let alt_pubkey_3 = Pubkey::new_unique();
+        let authority_keypair_str_1 = create_test_authority_keypair_str();
+        let authority_keypair_str_2 = create_test_authority_keypair_str();
+        let authority_keypair_str_3 = create_test_authority_keypair_str();
 
         redis_conn
-            .write_alt_pubkey(message_id_1.clone(), alt_pubkey_1)
+            .write_alt_entry(message_id_1.clone(), alt_pubkey_1, authority_keypair_str_1)
             .await
             .unwrap();
         redis_conn
-            .write_alt_pubkey(message_id_2.clone(), alt_pubkey_2)
+            .write_alt_entry(message_id_2.clone(), alt_pubkey_2, authority_keypair_str_2)
             .await
             .unwrap();
         redis_conn
-            .write_alt_pubkey(message_id_3.clone(), alt_pubkey_3)
+            .write_alt_entry(message_id_3.clone(), alt_pubkey_3, authority_keypair_str_3)
             .await
             .unwrap();
 
@@ -733,33 +763,33 @@ mod tests {
             .await
             .unwrap();
         let result_1 = redis_conn
-            .get_alt_pubkey(message_id_1.clone())
+            .get_alt_entry(message_id_1.clone())
             .await
             .unwrap();
         let result_2 = redis_conn
-            .get_alt_pubkey(message_id_2.clone())
+            .get_alt_entry(message_id_2.clone())
             .await
             .unwrap();
         let result_3 = redis_conn
-            .get_alt_pubkey(message_id_3.clone())
+            .get_alt_entry(message_id_3.clone())
             .await
             .unwrap();
 
-        assert_eq!(result_1, Some(alt_pubkey_1));
+        assert_eq!(result_1.map(|(p, _)| p), Some(alt_pubkey_1));
         assert_eq!(result_2, None);
-        assert_eq!(result_3, Some(alt_pubkey_3));
+        assert_eq!(result_3.map(|(p, _)| p), Some(alt_pubkey_3));
 
         let all_keys = redis_conn.get_all_alt_keys().await.unwrap();
         assert_eq!(all_keys.len(), 2);
         assert!(all_keys
             .iter()
-            .any(|(msg_id, _, _, _, _)| msg_id == &message_id_1));
+            .any(|(msg_id, _, _, _, _, _)| msg_id == &message_id_1));
         assert!(!all_keys
             .iter()
-            .any(|(msg_id, _, _, _, _)| msg_id == &message_id_2));
+            .any(|(msg_id, _, _, _, _, _)| msg_id == &message_id_2));
         assert!(all_keys
             .iter()
-            .any(|(msg_id, _, _, _, _)| msg_id == &message_id_3));
+            .any(|(msg_id, _, _, _, _, _)| msg_id == &message_id_3));
     }
 
     #[tokio::test]
@@ -768,14 +798,15 @@ mod tests {
 
         let message_id = "test-message-expiration".to_string();
         let alt_pubkey = Pubkey::new_unique();
+        let authority_keypair_str = create_test_authority_keypair_str();
 
         redis_conn
-            .write_alt_pubkey(message_id.clone(), alt_pubkey)
+            .write_alt_entry(message_id.clone(), alt_pubkey, authority_keypair_str)
             .await
             .unwrap();
 
-        let result = redis_conn.get_alt_pubkey(message_id.clone()).await.unwrap();
-        assert_eq!(result, Some(alt_pubkey));
+        let result = redis_conn.get_alt_entry(message_id.clone()).await.unwrap();
+        assert_eq!(result.map(|(p, _)| p), Some(alt_pubkey));
 
         let mut conn = redis_conn.inner().clone();
         let key = redis_conn.create_alt_key(message_id.clone());
@@ -844,28 +875,38 @@ mod tests {
         let message_id_2 = "test-message-2".to_string();
         let alt_pubkey_1 = Pubkey::new_unique();
         let alt_pubkey_2 = Pubkey::new_unique();
+        let authority_keypair_str_1 = create_test_authority_keypair_str();
+        let authority_keypair_str_2 = create_test_authority_keypair_str();
 
         redis_conn
-            .write_alt_pubkey(message_id_1.clone(), alt_pubkey_1)
+            .write_alt_entry(
+                message_id_1.clone(),
+                alt_pubkey_1,
+                authority_keypair_str_1.clone(),
+            )
             .await
             .unwrap();
         redis_conn
-            .write_alt_pubkey(message_id_2.clone(), alt_pubkey_2)
+            .write_alt_entry(
+                message_id_2.clone(),
+                alt_pubkey_2,
+                authority_keypair_str_2.clone(),
+            )
             .await
             .unwrap();
 
         let result_1 = redis_conn
-            .get_alt_pubkey(message_id_1.clone())
+            .get_alt_entry(message_id_1.clone())
             .await
             .unwrap();
         let result_2 = redis_conn
-            .get_alt_pubkey(message_id_2.clone())
+            .get_alt_entry(message_id_2.clone())
             .await
             .unwrap();
 
-        assert_eq!(result_1, Some(alt_pubkey_1));
-        assert_eq!(result_2, Some(alt_pubkey_2));
-        assert_ne!(result_1, result_2);
+        assert_eq!(result_1, Some((alt_pubkey_1, authority_keypair_str_1)));
+        assert_eq!(result_2, Some((alt_pubkey_2, authority_keypair_str_2)));
+        assert_ne!(result_1.map(|(p, _)| p), result_2.map(|(p, _)| p));
     }
 
     #[tokio::test]
@@ -875,20 +916,26 @@ mod tests {
         let message_id = "test-message-overwrite".to_string();
         let alt_pubkey_1 = Pubkey::new_unique();
         let alt_pubkey_2 = Pubkey::new_unique();
+        let authority_keypair_str_1 = create_test_authority_keypair_str();
+        let authority_keypair_str_2 = create_test_authority_keypair_str();
 
         redis_conn
-            .write_alt_pubkey(message_id.clone(), alt_pubkey_1)
+            .write_alt_entry(message_id.clone(), alt_pubkey_1, authority_keypair_str_1)
             .await
             .unwrap();
 
         redis_conn
-            .write_alt_pubkey(message_id.clone(), alt_pubkey_2)
+            .write_alt_entry(
+                message_id.clone(),
+                alt_pubkey_2,
+                authority_keypair_str_2.clone(),
+            )
             .await
             .unwrap();
 
-        let result = redis_conn.get_alt_pubkey(message_id).await.unwrap();
+        let result = redis_conn.get_alt_entry(message_id).await.unwrap();
 
-        assert_eq!(result, Some(alt_pubkey_2));
+        assert_eq!(result, Some((alt_pubkey_2, authority_keypair_str_2)));
     }
 
     #[tokio::test]
@@ -897,16 +944,21 @@ mod tests {
 
         let message_id = "test-message-failure".to_string();
         let alt_pubkey = Pubkey::new_unique();
+        let authority_keypair_str = create_test_authority_keypair_str();
 
         redis_conn
-            .write_alt_pubkey(message_id.clone(), alt_pubkey)
+            .write_alt_entry(
+                message_id.clone(),
+                alt_pubkey,
+                authority_keypair_str.clone(),
+            )
             .await
             .unwrap();
 
         container.stop_with_timeout(Some(1)).await.unwrap();
 
         let write_result = redis_conn
-            .write_alt_pubkey(message_id.clone(), alt_pubkey)
+            .write_alt_entry(message_id.clone(), alt_pubkey, authority_keypair_str)
             .await;
 
         assert!(
@@ -914,7 +966,7 @@ mod tests {
             "Write should fail when Redis is unavailable"
         );
 
-        let result = redis_conn.get_alt_pubkey(message_id.clone()).await.unwrap();
+        let result = redis_conn.get_alt_entry(message_id.clone()).await.unwrap();
 
         assert_eq!(result, None);
     }
@@ -925,19 +977,24 @@ mod tests {
 
         let message_id = "test-message-inactive".to_string();
         let alt_pubkey = Pubkey::new_unique();
+        let authority_keypair_str = create_test_authority_keypair_str();
 
         redis_conn
-            .write_alt_pubkey(message_id.clone(), alt_pubkey)
+            .write_alt_entry(
+                message_id.clone(),
+                alt_pubkey,
+                authority_keypair_str.clone(),
+            )
             .await
             .unwrap();
 
         let all_keys = redis_conn.get_all_alt_keys().await.unwrap();
         let entry = all_keys
             .iter()
-            .find(|(msg_id, _, _, _, _)| msg_id == &message_id)
+            .find(|(msg_id, _, _, _, _, _)| msg_id == &message_id)
             .unwrap();
-        assert!(entry.4, "ALT should be active by default");
-        let original_timestamp = entry.2;
+        assert!(entry.5, "ALT should be active by default");
+        let original_timestamp = entry.3;
 
         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
@@ -949,17 +1006,17 @@ mod tests {
         let all_keys = redis_conn.get_all_alt_keys().await.unwrap();
         let entry = all_keys
             .iter()
-            .find(|(msg_id, _, _, _, _)| msg_id == &message_id)
+            .find(|(msg_id, _, _, _, _, _)| msg_id == &message_id)
             .unwrap();
-        assert!(!entry.4, "ALT should be inactive after set_alt_inactive");
+        assert!(!entry.5, "ALT should be inactive after set_alt_inactive");
 
         assert!(
-            entry.2 > original_timestamp,
+            entry.3 > original_timestamp,
             "Timestamp should be updated when setting to inactive"
         );
 
-        let result = redis_conn.get_alt_pubkey(message_id.clone()).await.unwrap();
-        assert_eq!(result, Some(alt_pubkey));
+        let result = redis_conn.get_alt_entry(message_id.clone()).await.unwrap();
+        assert_eq!(result.map(|(p, _)| p), Some(alt_pubkey));
     }
 
     #[tokio::test]
@@ -982,16 +1039,17 @@ mod tests {
 
         let message_id = "test-message-failed".to_string();
         let alt_pubkey = Pubkey::new_unique();
+        let authority_keypair_str = create_test_authority_keypair_str();
 
         // First create an ALT entry
         redis_conn
-            .write_alt_pubkey(message_id.clone(), alt_pubkey)
+            .write_alt_entry(message_id.clone(), alt_pubkey, authority_keypair_str)
             .await
             .unwrap();
 
         // Verify it exists
-        let result = redis_conn.get_alt_pubkey(message_id.clone()).await.unwrap();
-        assert_eq!(result, Some(alt_pubkey));
+        let result = redis_conn.get_alt_entry(message_id.clone()).await.unwrap();
+        assert_eq!(result.map(|(p, _)| p), Some(alt_pubkey));
 
         // Now remove and set as failed
         redis_conn
@@ -1009,9 +1067,9 @@ mod tests {
         let all_keys = redis_conn.get_all_alt_keys().await.unwrap();
         assert!(!all_keys
             .iter()
-            .any(|(msg_id, _, _, _, _)| msg_id == &message_id));
+            .any(|(msg_id, _, _, _, _, _)| msg_id == &message_id));
 
-        let result = redis_conn.get_alt_pubkey(message_id.clone()).await.unwrap();
+        let result = redis_conn.get_alt_entry(message_id.clone()).await.unwrap();
         assert_eq!(result, None);
     }
 
@@ -1023,14 +1081,16 @@ mod tests {
         let message_id_2 = "test-failed-2".to_string();
         let alt_pubkey_1 = Pubkey::new_unique();
         let alt_pubkey_2 = Pubkey::new_unique();
+        let authority_keypair_str_1 = create_test_authority_keypair_str();
+        let authority_keypair_str_2 = create_test_authority_keypair_str();
 
         // Create ALT entries first
         redis_conn
-            .write_alt_pubkey(message_id_1.clone(), alt_pubkey_1)
+            .write_alt_entry(message_id_1.clone(), alt_pubkey_1, authority_keypair_str_1)
             .await
             .unwrap();
         redis_conn
-            .write_alt_pubkey(message_id_2.clone(), alt_pubkey_2)
+            .write_alt_entry(message_id_2.clone(), alt_pubkey_2, authority_keypair_str_2)
             .await
             .unwrap();
 

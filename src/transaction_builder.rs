@@ -86,7 +86,7 @@ pub trait TransactionBuilderTrait<IC: IncluderClientTrait>: ThreadSafe {
         &self,
         recent_slot: u64,
         execute_accounts: &[AccountMeta],
-    ) -> Result<(Instruction, Instruction, Pubkey), TransactionBuilderError>;
+    ) -> Result<(Instruction, Instruction, Pubkey, String), TransactionBuilderError>;
 }
 
 impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
@@ -352,7 +352,7 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
                 "Using existing ALT pubkey from Redis: {}",
                 existing_alt_pubkey
             );
-            Some(ALTInfo::new(None, None, Some(existing_alt_pubkey)))
+            Some(ALTInfo::new(None, None, Some(existing_alt_pubkey), None))
         } else {
             // Create new ALT
             let recent_slot = self
@@ -363,13 +363,18 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
 
             let alt_accounts: Vec<Pubkey> = accounts.iter().map(|acc| acc.pubkey).collect();
 
-            let (alt_ix_create, alt_ix_extend, alt_pubkey) = self
+            let (alt_ix_create, alt_ix_extend, alt_pubkey, authority_keypair_str) = self
                 .build_lookup_table_instructions(recent_slot, &accounts)
                 .await
                 .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
             Some(
-                ALTInfo::new(Some(alt_ix_create), Some(alt_ix_extend), Some(alt_pubkey))
-                    .with_addresses(alt_accounts),
+                ALTInfo::new(
+                    Some(alt_ix_create),
+                    Some(alt_ix_extend),
+                    Some(alt_pubkey),
+                    Some(authority_keypair_str),
+                )
+                .with_addresses(alt_accounts),
             )
         };
 
@@ -483,29 +488,41 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
         &self,
         recent_slot: u64,
         execute_accounts: &[AccountMeta],
-    ) -> Result<(Instruction, Instruction, Pubkey), TransactionBuilderError> {
-        let (ix_alt_create, alt_pubkey) =
-            create_lookup_table(self.keypair.pubkey(), self.keypair.pubkey(), recent_slot);
+    ) -> Result<(Instruction, Instruction, Pubkey, String), TransactionBuilderError> {
+        // create a new keypair as the authority to avoid conflicts with concurrent ALT creations using the same recent hash
+        let authority_keypair = Keypair::new();
+        let (ix_alt_create, alt_pubkey) = create_lookup_table(
+            authority_keypair.pubkey(),
+            self.keypair.pubkey(),
+            recent_slot,
+        );
 
         let alt_accounts = execute_accounts.iter().map(|acc| acc.pubkey).collect();
 
         let ix_alt_extend = extend_lookup_table(
             alt_pubkey,
-            self.keypair.pubkey(),
+            authority_keypair.pubkey(),
             Some(self.keypair.pubkey()),
             alt_accounts,
         );
-        Ok((ix_alt_create, ix_alt_extend, alt_pubkey))
+
+        let authority_keypair_str = authority_keypair.to_base58_string();
+        Ok((
+            ix_alt_create,
+            ix_alt_extend,
+            alt_pubkey,
+            authority_keypair_str,
+        ))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use crate::gas_calculator::MockGasCalculatorTrait;
-    //use crate::includer::ALTInfo;
+    use crate::includer::ALTInfo;
     use crate::includer_client::MockIncluderClientTrait;
     use crate::transaction_builder::{TransactionBuilder, TransactionBuilderTrait};
-    // use crate::transaction_type::SolanaTransactionType;
+    use crate::transaction_type::SolanaTransactionType;
     use anchor_lang::prelude::AccountMeta;
     use base64::prelude::BASE64_STANDARD;
     use base64::Engine;
@@ -516,124 +533,136 @@ mod tests {
     use solana_axelar_governance;
     use solana_axelar_its;
     use solana_axelar_std::{CrossChainId, Message};
-    // use solana_sdk::hash::Hash;
-    // use solana_sdk::instruction::Instruction;
-    // use solana_sdk::message::VersionedMessage;
+    use solana_sdk::hash::Hash;
+    use solana_sdk::instruction::Instruction;
+    use solana_sdk::message::VersionedMessage;
     use solana_sdk::pubkey::Pubkey;
     use solana_sdk::signature::Keypair;
-    // use solana_sdk::signer::Signer;
+    use solana_sdk::signer::Signer;
     use std::sync::Arc;
 
-    // #[tokio::test]
-    // async fn test_transaction_builder_build_with_alt_produces_versioned_tx() {
-    //     let keypair = Arc::new(Keypair::new());
-    //     let mut mock_gas = MockGasCalculatorTrait::new();
-    //     let mock_client = Arc::new(MockIncluderClientTrait::new());
+    #[tokio::test]
+    async fn test_transaction_builder_build_with_alt_produces_versioned_tx() {
+        let keypair = Arc::new(Keypair::new());
+        let mut mock_gas = MockGasCalculatorTrait::new();
+        let mut mock_client = MockIncluderClientTrait::new();
 
-    //     let alt_pubkey = Pubkey::new_unique();
-    //     let alt_account_1 = Pubkey::new_unique();
-    //     let alt_account_2 = Pubkey::new_unique();
-    //     let alt_addresses = vec![alt_account_1, alt_account_2];
+        let alt_pubkey = Pubkey::new_unique();
+        let alt_account_1 = Pubkey::new_unique();
+        let alt_account_2 = Pubkey::new_unique();
+        let alt_addresses = vec![alt_account_1, alt_account_2];
 
-    //     let user_program = Pubkey::new_unique();
-    //     let user_ix = Instruction::new_with_bytes(
-    //         user_program,
-    //         &[1, 2, 3],
-    //         vec![
-    //             AccountMeta::new(keypair.pubkey(), true),
-    //             AccountMeta::new_readonly(alt_account_1, false),
-    //         ],
-    //     );
+        let user_program = Pubkey::new_unique();
+        let user_ix = Instruction::new_with_bytes(
+            user_program,
+            &[1, 2, 3],
+            vec![
+                AccountMeta::new(keypair.pubkey(), true),
+                AccountMeta::new_readonly(alt_account_1, false),
+            ],
+        );
 
-    //     let compute_unit_price_ix = Instruction::new_with_bytes(Pubkey::new_unique(), &[9], vec![]);
-    //     let compute_budget_ix = Instruction::new_with_bytes(Pubkey::new_unique(), &[8], vec![]);
-    //     let recent_blockhash = Hash::new_unique();
+        let recent_blockhash = Hash::new_unique();
 
-    //     let cup_ix_clone = compute_unit_price_ix.clone();
-    //     mock_gas
-    //         .expect_compute_unit_price()
-    //         .times(1)
-    //         .returning(move |_| Ok(100_000u64));
+        mock_gas
+            .expect_compute_unit_price()
+            .times(1)
+            .returning(|_| Ok(100_000u64));
 
-    //     let cb_ix_clone = compute_budget_ix.clone();
-    //     mock_gas
-    //         .expect_compute_budget()
-    //         .times(1)
-    //         .returning(move |_| Ok(100_000u64));
+        mock_gas
+            .expect_compute_budget()
+            .times(1)
+            .returning(|_| Ok(100_000u64));
 
-    //     let alt_info = ALTInfo::new(None, None, Some(alt_pubkey)).with_addresses(alt_addresses);
+        mock_client
+            .expect_get_latest_blockhash()
+            .times(1)
+            .returning(move || {
+                let hash = recent_blockhash;
+                Box::pin(async move { Ok(hash) })
+            });
 
-    //     let builder = TransactionBuilder::new(Arc::clone(&keypair), mock_gas, mock_client);
+        let authority_keypair = Keypair::new();
+        let authority_keypair_str = authority_keypair.to_base58_string();
 
-    //     // TODO: add assertions for cost
-    //     let (tx, cost) = builder
-    //         .build(std::slice::from_ref(&user_ix), Some(alt_info))
-    //         .await
-    //         .expect("build with ALT should succeed");
+        let alt_info = ALTInfo::new(None, None, Some(alt_pubkey), Some(authority_keypair_str))
+            .with_addresses(alt_addresses);
 
-    //     match tx {
-    //         SolanaTransactionType::Versioned(versioned_tx) => match versioned_tx.message {
-    //             VersionedMessage::V0(msg) => {
-    //                 assert_eq!(msg.instructions.len(), 3);
+        let builder =
+            TransactionBuilder::new(Arc::clone(&keypair), mock_gas, Arc::new(mock_client));
 
-    //                 assert_eq!(msg.address_table_lookups.len(), 1);
-    //                 assert_eq!(msg.address_table_lookups[0].account_key, alt_pubkey);
+        let (tx, _cost) = builder
+            .build(std::slice::from_ref(&user_ix), Some(alt_info))
+            .await
+            .expect("build with ALT should succeed");
 
-    //                 assert_eq!(versioned_tx.signatures.len(), 1);
-    //             }
-    //             _ => panic!("expected v0 message for ALT-backed build"),
-    //         },
-    //         _ => panic!("expected Versioned transaction when ALTInfo is provided"),
-    //     }
-    // }
+        match tx {
+            SolanaTransactionType::Versioned(versioned_tx) => match versioned_tx.message {
+                VersionedMessage::V0(msg) => {
+                    assert_eq!(msg.instructions.len(), 3);
 
-    // #[tokio::test]
-    // async fn test_transaction_builder_build_without_alt_produces_legacy_tx() {
-    //     let keypair = Arc::new(Keypair::new());
-    //     let mut mock_gas = MockGasCalculatorTrait::new();
-    //     let mock_client = Arc::new(MockIncluderClientTrait::new());
+                    assert_eq!(msg.address_table_lookups.len(), 1);
+                    assert_eq!(msg.address_table_lookups[0].account_key, alt_pubkey);
 
-    //     let user_program = Pubkey::new_unique();
-    //     let user_ix = Instruction::new_with_bytes(
-    //         user_program,
-    //         &[4, 5, 6],
-    //         vec![AccountMeta::new(keypair.pubkey(), true)],
-    //     );
+                    assert_eq!(versioned_tx.signatures.len(), 1);
+                }
+                _ => panic!("expected v0 message for ALT-backed build"),
+            },
+            _ => panic!("expected Versioned transaction when ALTInfo is provided"),
+        }
+    }
 
-    //     let compute_unit_price_ix = Instruction::new_with_bytes(Pubkey::new_unique(), &[7], vec![]);
-    //     let compute_budget_ix = Instruction::new_with_bytes(Pubkey::new_unique(), &[8], vec![]);
-    //     let recent_blockhash = Hash::new_unique();
+    #[tokio::test]
+    async fn test_transaction_builder_build_without_alt_produces_legacy_tx() {
+        let keypair = Arc::new(Keypair::new());
+        let mut mock_gas = MockGasCalculatorTrait::new();
+        let mut mock_client = MockIncluderClientTrait::new();
 
-    //     let cup_ix_clone = compute_unit_price_ix.clone();
-    //     mock_gas
-    //         .expect_compute_unit_price()
-    //         .times(1)
-    //         .returning(move |_| Ok(100_000u64));
+        let user_program = Pubkey::new_unique();
+        let user_ix = Instruction::new_with_bytes(
+            user_program,
+            &[4, 5, 6],
+            vec![AccountMeta::new(keypair.pubkey(), true)],
+        );
 
-    //     let cb_ix_clone = compute_budget_ix.clone();
-    //     mock_gas
-    //         .expect_compute_budget()
-    //         .times(1)
-    //         .returning(move |_| Ok(100_000u64));
+        let recent_blockhash = Hash::new_unique();
 
-    //     let builder = TransactionBuilder::new(Arc::clone(&keypair), mock_gas, mock_client);
+        mock_gas
+            .expect_compute_unit_price()
+            .times(1)
+            .returning(|_| Ok(100_000u64));
 
-    //     // TODO: add assertions for cost
-    //     let (tx, cost) = builder
-    //         .build(std::slice::from_ref(&user_ix), None)
-    //         .await
-    //         .expect("build without ALT should succeed");
+        mock_gas
+            .expect_compute_budget()
+            .times(1)
+            .returning(|_| Ok(100_000u64));
 
-    //     match tx {
-    //         SolanaTransactionType::Legacy(tx) => {
-    //             assert_eq!(tx.message.instructions.len(), 3);
-    //             assert_eq!(tx.message.account_keys[0], keypair.pubkey());
-    //             assert_eq!(tx.message.recent_blockhash, recent_blockhash);
-    //             assert_eq!(tx.signatures.len(), 1);
-    //         }
-    //         _ => panic!("expected Legacy transaction when no ALTInfo is provided"),
-    //     }
-    // }
+        mock_client
+            .expect_get_latest_blockhash()
+            .times(1)
+            .returning(move || {
+                let hash = recent_blockhash;
+                Box::pin(async move { Ok(hash) })
+            });
+
+        let builder =
+            TransactionBuilder::new(Arc::clone(&keypair), mock_gas, Arc::new(mock_client));
+
+        let (tx, _cost) = builder
+            .build(std::slice::from_ref(&user_ix), None)
+            .await
+            .expect("build without ALT should succeed");
+
+        match tx {
+            SolanaTransactionType::Legacy(legacy_tx) => {
+                assert_eq!(legacy_tx.message.instructions.len(), 3);
+                assert_eq!(legacy_tx.message.account_keys[0], keypair.pubkey());
+                assert_eq!(legacy_tx.message.recent_blockhash, recent_blockhash);
+                assert_eq!(legacy_tx.signatures.len(), 1);
+            }
+            _ => panic!("expected Legacy transaction when no ALTInfo is provided"),
+        }
+    }
 
     #[tokio::test]
     async fn test_build_execute_instruction_with_three_addresses() {
@@ -663,9 +692,11 @@ mod tests {
         // ITS address should return Some(ALTInfo)
         let its_destination = solana_axelar_its::ID;
 
+        // Use a valid Pubkey for destination address (32 bytes)
+        let destination_pubkey = Pubkey::new_unique();
+        let destination_address_bytes = destination_pubkey.as_ref().to_vec();
         let token_id = [1u8; 32];
-        let destination_address_bytes = [2u8; 32];
-        let gmp_payload =
+        let inner_payload =
             GMPPayload::InterchainTransfer(interchain_token_transfer_gmp::InterchainTransfer {
                 token_id: FixedBytes::from(token_id),
                 destination_address: Bytes::from(destination_address_bytes),
@@ -674,7 +705,23 @@ mod tests {
                 selector: Uint::from(0),
                 source_address: Bytes::from(vec![3u8; 20]),
             });
-        let its_payload = gmp_payload.encode();
+        // Wrap in ReceiveFromHub as expected by build_its_instruction
+        let inner_payload_bytes: Vec<u8> = inner_payload.encode();
+        let gmp_payload =
+            GMPPayload::ReceiveFromHub(interchain_token_transfer_gmp::ReceiveFromHub {
+                payload: Bytes::from(inner_payload_bytes),
+                source_chain: "ethereum".to_string(),
+                selector: Uint::from(
+                    interchain_token_transfer_gmp::ReceiveFromHub::MESSAGE_TYPE_ID as u64,
+                ),
+            });
+        // Encode the GMPPayload to bytes for passing to build_execute_instruction
+        // build_execute_instruction expects raw bytes (not base64) that can be decoded as GMPPayload
+        let its_payload: Vec<u8> = gmp_payload.encode();
+
+        // Verify the payload can be decoded (this helps catch encoding issues early)
+        let _decoded =
+            GMPPayload::decode(&its_payload).expect("Encoded GMPPayload should be decodable");
 
         let (its_instruction, its_alt_info) = builder
             .build_execute_instruction(&message, &its_payload, its_destination, None)
@@ -700,6 +747,18 @@ mod tests {
             its_alt.alt_addresses.is_some(),
             "ALTInfo should have alt_addresses"
         );
+        assert!(
+            its_alt.authority_keypair_str.is_some(),
+            "ALTInfo should have authority_keypair_str from build_lookup_table_instructions"
+        );
+        // Verify authority_keypair_str is a valid base58 string and can be parsed back to a keypair
+        // This ensures build_lookup_table_instructions correctly returns (Instruction, Instruction, Pubkey, String)
+        let authority_str = its_alt.authority_keypair_str.unwrap();
+        assert!(
+            !authority_str.is_empty(),
+            "authority_keypair_str should not be empty"
+        );
+        let _authority_keypair = Keypair::from_base58_string(&authority_str);
 
         // Governance address should return None
         let governance_destination = solana_axelar_governance::ID;
@@ -725,15 +784,14 @@ mod tests {
         let executable_payload = ExecutablePayload::new::<AccountMeta>(
             &[1, 2, 3, 4, 5],
             &[AccountMeta::new(arbitrary_destination, false)],
-            EncodingScheme::Borsh,
+            EncodingScheme::AbiEncoding,
         );
         let executable_payload_bytes = executable_payload.encode().unwrap();
-        let executable_payload_b64 = BASE64_STANDARD.encode(&executable_payload_bytes);
 
         let (arbitrary_instruction, arbitrary_alt_info) = builder
             .build_execute_instruction(
                 &message,
-                executable_payload_b64.as_bytes(),
+                &executable_payload_bytes,
                 arbitrary_destination,
                 None,
             )
