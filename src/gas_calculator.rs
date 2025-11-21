@@ -8,27 +8,19 @@ use crate::includer_client::IncluderClientTrait;
 use crate::transaction_type::SolanaTransactionType;
 use async_trait::async_trait;
 use relayer_core::utils::ThreadSafe;
-use solana_sdk::compute_budget::ComputeBudgetInstruction;
-use solana_sdk::hash::Hash;
 use solana_sdk::instruction::Instruction;
-use solana_sdk::signer::keypair::Keypair;
-use solana_sdk::signer::Signer;
-use solana_sdk::transaction::Transaction;
-use std::sync::Arc;
 use tracing::debug;
 
 #[derive(Clone)]
 pub struct GasCalculator<IC: IncluderClientTrait, FC: FeesClientTrait> {
     includer_client: IC,
-    solana_keypair: Arc<Keypair>,
     fees_client: FC,
 }
 
 impl<IC: IncluderClientTrait, FC: FeesClientTrait> GasCalculator<IC, FC> {
-    pub fn new(includer_client: IC, solana_keypair: Arc<Keypair>, fees_client: FC) -> Self {
+    pub fn new(includer_client: IC, fees_client: FC) -> Self {
         Self {
             includer_client,
-            solana_keypair,
             fees_client,
         }
     }

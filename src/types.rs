@@ -3,9 +3,7 @@ use chrono::{offset::Utc, DateTime};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use solana_sdk::signature::Signature;
-use solana_transaction_status::{
-    option_serializer::OptionSerializer, UiLoadedAddresses, UiMessage,
-};
+use solana_transaction_status::{option_serializer::OptionSerializer, UiMessage};
 use solana_transaction_status_client_types::{
     EncodedConfirmedTransactionWithStatusMeta, EncodedTransaction, UiInnerInstructions,
 };

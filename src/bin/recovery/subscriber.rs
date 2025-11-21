@@ -47,11 +47,12 @@ async fn main() -> anyhow::Result<()> {
     let signatures = vec![
         "4eA2mB9QG984eivKj67YdVLCcZsy4NaU6Pg4zn4KXNir2Ki6oFJ7daGjM3P7dVP8td9bqY7yUyM7VEpLC8jkvLkb",
     ];
+
     solana_poller
         .recover_txs(
             signatures
                 .into_iter()
-                .map(|s| Signature::from_str(s).unwrap())
+                .map(|s| Signature::from_str(s).unwrap_or(Signature::default()))
                 .collect(),
         )
         .await?;

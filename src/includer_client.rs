@@ -138,11 +138,9 @@ impl IncluderClientTrait for IncluderClient {
                     // TODO: we can reach this point even if the transaction was sent and confirmed successfully,
                     // and we'll fail to account for the fee.
                     // We might have to manually implement send_and_confirm()
-                    if e.get_transaction_error().is_some() {
+                    if let Some(transaction_error) = e.get_transaction_error() {
                         // TODO: should maybe do different actions depending on the error?
-                        return Err(IncluderClientError::TransactionError(
-                            e.get_transaction_error().unwrap(),
-                        ));
+                        return Err(IncluderClientError::TransactionError(transaction_error));
                     }
                     if retries >= self.max_retries {
                         warn!(

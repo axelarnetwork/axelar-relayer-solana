@@ -28,17 +28,15 @@ use relayer_core::{
     payload_cache::PayloadCache, queue::Queue,
 };
 use solana_axelar_gas_service;
-use solana_axelar_its::instruction;
 use solana_axelar_std::execute_data::{ExecuteData, MerklizedPayload};
 use solana_axelar_std::MerklizedMessage;
 use solana_axelar_std::{CrossChainId, Message};
 use solana_sdk::address_lookup_table::state::AddressLookupTable;
 use solana_sdk::clock::Slot;
-use solana_sdk::instruction::{Instruction, InstructionError};
+use solana_sdk::instruction::Instruction;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Signature;
 use solana_sdk::signer::{keypair::Keypair, Signer};
-use solana_sdk::transaction::TransactionError;
 use solana_transaction_parser::gmp_types::{
     Amount, CannotExecuteMessageReason, Event, ExecuteTask, GatewayTxTask, MessageExecutionStatus,
     RefundTask,
@@ -139,11 +137,8 @@ impl<
 
         let keypair = Arc::new(config.signing_keypair());
 
-        let gas_calculator = GasCalculator::new(
-            client.as_ref().clone(),
-            Arc::clone(&keypair),
-            fees_client.as_ref().clone(),
-        );
+        let gas_calculator =
+            GasCalculator::new(client.as_ref().clone(), fees_client.as_ref().clone());
 
         let transaction_builder =
             TransactionBuilder::new(Arc::clone(&keypair), gas_calculator, Arc::clone(&client));
@@ -464,11 +459,9 @@ impl<
                     signature,
                     gas_cost
                 );
-                return Ok((signature, gas_cost));
+                Ok((signature, gas_cost))
             }
-            Err(e) => {
-                return Err(IncluderError::GenericError(e.to_string()));
-            }
+            Err(e) => Err(IncluderError::GenericError(e.to_string())),
         }
     }
 
@@ -653,7 +646,7 @@ impl<
             }
         }
 
-        return Ok((successful_messages, failed_messages));
+        Ok((successful_messages, failed_messages))
     }
 }
 

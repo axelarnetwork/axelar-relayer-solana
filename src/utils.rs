@@ -433,7 +433,7 @@ pub fn not_enough_gas_event<G: GmpApiTrait>(
     let event = gmp_api.cannot_execute_message(
         task.common.id.clone(),
         task.task.message.message_id.clone(),
-        task.task.message.source_chain.clone(),
+        task.task.message.source_chain,
         error_message,
         CannotExecuteMessageReason::InsufficientGas,
     );
