@@ -49,6 +49,7 @@ pub trait TransactionBuilderTrait<IC: IncluderClientTrait>: ThreadSafe {
         &self,
         ixs: &[Instruction],
         alt_info: Option<ALTInfo>,
+        extra_signing_keypairs: Option<Vec<Keypair>>,
     ) -> Result<(SolanaTransactionType, u64), TransactionBuilderError>;
 
     async fn build_execute_instruction(
@@ -109,6 +110,7 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
         &self,
         ixs: &[Instruction],
         alt_info: Option<ALTInfo>,
+        extra_signing_keypairs: Option<Vec<Keypair>>,
     ) -> Result<(SolanaTransactionType, u64), TransactionBuilderError> {
         let alt_addresses = if let Some(alt_info) = alt_info.clone() {
             let alt_pubkey = alt_info.alt_pubkey.ok_or_else(|| {
@@ -145,6 +147,11 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
             .await
             .map_err(|e| TransactionBuilderError::ClientError(e.to_string()))?;
 
+        let mut signing_keypairs: Vec<&Keypair> = vec![&self.keypair];
+        if let Some(keypairs) = &extra_signing_keypairs {
+            signing_keypairs.extend(keypairs);
+        }
+
         // Proto transaction where the compute budget is set to a high value to ensure the transaction is simulated successfully
         // We will override the compute budget in the final transaction.
         let proto_transaction = create_transaction(
@@ -154,6 +161,7 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
             unit_price,
             500_0000,
             &self.keypair,
+            signing_keypairs.clone(),
             recent_hash,
         )
         .await
@@ -174,6 +182,7 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
             unit_price,
             compute_budget,
             &self.keypair,
+            signing_keypairs,
             recent_hash,
         )
         .await
