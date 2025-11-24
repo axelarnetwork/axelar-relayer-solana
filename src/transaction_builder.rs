@@ -533,8 +533,6 @@ mod tests {
     use crate::transaction_builder::{TransactionBuilder, TransactionBuilderTrait};
     use crate::transaction_type::SolanaTransactionType;
     use anchor_lang::prelude::AccountMeta;
-    use base64::prelude::BASE64_STANDARD;
-    use base64::Engine;
     use interchain_token_transfer_gmp::alloy_primitives::{Bytes, FixedBytes, Uint};
     use interchain_token_transfer_gmp::GMPPayload;
     use solana_axelar_gateway::executable::ExecutablePayload;
@@ -601,7 +599,7 @@ mod tests {
             TransactionBuilder::new(Arc::clone(&keypair), mock_gas, Arc::new(mock_client));
 
         let (tx, _cost) = builder
-            .build(std::slice::from_ref(&user_ix), Some(alt_info))
+            .build(std::slice::from_ref(&user_ix), Some(alt_info), None)
             .await
             .expect("build with ALT should succeed");
 
@@ -658,7 +656,7 @@ mod tests {
             TransactionBuilder::new(Arc::clone(&keypair), mock_gas, Arc::new(mock_client));
 
         let (tx, _cost) = builder
-            .build(std::slice::from_ref(&user_ix), None)
+            .build(std::slice::from_ref(&user_ix), None, None)
             .await
             .expect("build without ALT should succeed");
 
@@ -668,6 +666,73 @@ mod tests {
                 assert_eq!(legacy_tx.message.account_keys[0], keypair.pubkey());
                 assert_eq!(legacy_tx.message.recent_blockhash, recent_blockhash);
                 assert_eq!(legacy_tx.signatures.len(), 1);
+            }
+            _ => panic!("expected Legacy transaction when no ALTInfo is provided"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_transaction_builder_build_with_extra_signing_keypairs() {
+        let keypair = Arc::new(Keypair::new());
+        let mut mock_gas = MockGasCalculatorTrait::new();
+        let mut mock_client = MockIncluderClientTrait::new();
+
+        let extra_keypair1 = Keypair::new();
+        let extra_keypair2 = Keypair::new();
+        let extra_keypair1_pubkey = extra_keypair1.pubkey();
+        let extra_keypair2_pubkey = extra_keypair2.pubkey();
+        let extra_signing_keypairs = vec![extra_keypair1, extra_keypair2];
+
+        let user_program = Pubkey::new_unique();
+        let user_ix = Instruction::new_with_bytes(
+            user_program,
+            &[7, 8, 9],
+            vec![
+                AccountMeta::new(keypair.pubkey(), true),
+                AccountMeta::new(extra_keypair1_pubkey, true),
+                AccountMeta::new(extra_keypair2_pubkey, true),
+            ],
+        );
+
+        let recent_blockhash = Hash::new_unique();
+
+        mock_gas
+            .expect_compute_unit_price()
+            .times(1)
+            .returning(|_| Ok(100_000u64));
+
+        mock_gas
+            .expect_compute_budget()
+            .times(1)
+            .returning(|_| Ok(100_000u64));
+
+        mock_client
+            .expect_get_latest_blockhash()
+            .times(1)
+            .returning(move || {
+                let hash = recent_blockhash;
+                Box::pin(async move { Ok(hash) })
+            });
+
+        let builder =
+            TransactionBuilder::new(Arc::clone(&keypair), mock_gas, Arc::new(mock_client));
+
+        let (tx, _cost) = builder
+            .build(
+                std::slice::from_ref(&user_ix),
+                None,
+                Some(extra_signing_keypairs),
+            )
+            .await
+            .expect("build with extra signing keypairs should succeed");
+
+        match tx {
+            SolanaTransactionType::Legacy(legacy_tx) => {
+                assert_eq!(legacy_tx.message.instructions.len(), 3);
+                assert_eq!(legacy_tx.message.account_keys[0], keypair.pubkey());
+                assert_eq!(legacy_tx.message.recent_blockhash, recent_blockhash);
+                // Should have 3 signatures: main keypair + 2 extra keypairs
+                assert_eq!(legacy_tx.signatures.len(), 3);
             }
             _ => panic!("expected Legacy transaction when no ALTInfo is provided"),
         }

@@ -373,6 +373,7 @@ pub fn calculate_total_cost_lamports(
     Ok(base_fee.saturating_add(priority_lamports))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn create_transaction(
     mut instructions: Vec<Instruction>,
     alt_info: Option<ALTInfo>,
