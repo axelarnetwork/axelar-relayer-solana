@@ -8,10 +8,10 @@ use crate::redis::RedisConnectionTrait;
 use crate::refund_manager::SolanaRefundManager;
 use crate::transaction_builder::{TransactionBuilder, TransactionBuilderTrait};
 use crate::utils::{
-    get_gas_service_event_authority_pda, get_gateway_event_authority_pda,
-    get_gateway_root_config_internal, get_incoming_message_pda, get_operator_pda,
-    get_signature_verification_pda, get_treasury_pda, get_verifier_set_tracker_pda,
-    not_enough_gas_event,
+    get_cannot_execute_events_from_execute_data, get_gas_service_event_authority_pda,
+    get_gateway_event_authority_pda, get_gateway_root_config_internal, get_incoming_message_pda,
+    get_operator_pda, get_signature_verification_pda, get_treasury_pda,
+    get_verifier_set_tracker_pda, not_enough_gas_event,
 };
 use anchor_lang::{InstructionData, ToAccountMetas};
 use async_trait::async_trait;
@@ -193,8 +193,8 @@ impl<
                 Ok((signature, gas_cost))
             }
             Err(e) => match e {
-                IncluderClientError::TransactionError(e) => {
-                    Err(SolanaIncluderError::TransactionError(e))
+                IncluderClientError::UnrecoverableTransactionError(e) => {
+                    Err(SolanaIncluderError::UnrecoverableError(e.to_string()))
                 }
                 _ => Err(SolanaIncluderError::GenericError(e.to_string())),
             },
@@ -313,7 +313,7 @@ impl<
                 Ok(vec![])
             }
             Err(e) => match e {
-                IncluderClientError::TransactionError(e) => {
+                IncluderClientError::UnrecoverableTransactionError(e) => {
                     warn!("Transaction reverted: {}", e);
                     // Include ALT cost if ALT transaction was sent successfully
                     // TODO: this might be off. We need to know the actual cost of the transaction
@@ -521,7 +521,6 @@ impl<
 
         // Wait for all verification txs to complete and collect the results
         while let Some(result) = verifier_set_verification_futures.next().await {
-            // TODO: should send CannotExecuteMessage on unrecoverable errors
             let (signature, gas_cost) = result?;
             total_cost += gas_cost.unwrap_or(0);
             debug!(
@@ -701,12 +700,28 @@ impl<
             verification_cost.saturating_add(init_verification_session_cost.unwrap_or(0));
 
         // Verify signatures
-        let verify_signatures_cost = self
-            .verify_signatures(&execute_data)
-            .await
-            .map_err(|e| IncluderError::GenericError(e.to_string()))?;
-
-        verification_cost = verification_cost.saturating_add(verify_signatures_cost);
+        let verify_signatures_result = self.verify_signatures(&execute_data).await;
+        match verify_signatures_result {
+            Ok(verify_signatures_cost) => {
+                verification_cost = verification_cost.saturating_add(verify_signatures_cost);
+            }
+            Err(e) => match e {
+                SolanaIncluderError::UnrecoverableError(e) => {
+                    return get_cannot_execute_events_from_execute_data(
+                        &execute_data,
+                        CannotExecuteMessageReason::Error,
+                        e.to_string(),
+                        task.common.id.clone(),
+                        Arc::clone(&self.gmp_api),
+                    )
+                    .await
+                    .map_err(|e| IncluderError::GenericError(e.to_string()));
+                }
+                _ => {
+                    return Err(IncluderError::GenericError(e.to_string()));
+                }
+            },
+        }
 
         let mut gmp_events = vec![];
         match &execute_data.payload_items {
@@ -2240,7 +2255,7 @@ mod tests {
                         payload_hash: payload_hash.clone(),
                         source_address: Pubkey::new_unique().to_string(),
                     },
-                    payload: "malformed-payload".to_string(),
+                    payload: BASE64_STANDARD.encode(b"malformed-payload"),
                     available_gas_balance: Amount {
                         amount: "1000".to_string(),
                         token_id: None,
@@ -2822,7 +2837,7 @@ mod tests {
                     Box::pin(async move { Ok((alt_signature_clone, Some(6_000u64))) })
                 } else {
                     Box::pin(async move {
-                        Err(IncluderClientError::TransactionError(
+                        Err(IncluderClientError::UnrecoverableTransactionError(
                             TransactionError::AccountNotFound,
                         ))
                     })
@@ -4021,8 +4036,8 @@ mod tests {
                 match idx {
                     0 => Box::pin(async move { Ok((init_sig, Some(10u64))) }),
                     1 => Box::pin(async move {
-                        Err(IncluderClientError::GenericError(
-                            "verify failed".to_string(),
+                        Err(IncluderClientError::UnrecoverableTransactionError(
+                            TransactionError::AccountNotFound,
                         ))
                     }),
                     _ => panic!("unexpected send_transaction call"),
@@ -4039,20 +4054,22 @@ mod tests {
                 got_task_id == &task_id
                     && expected_ids.contains(msg_id)
                     && *src_chain == "test-chain"
-                    && details.contains("verify failed")
+                    && !details.is_empty() // Details come from TransactionError::to_string()
                     && matches!(reason, CannotExecuteMessageReason::Error)
             })
-            .returning(|_, msg_id, src_chain, _, _| Event::CannotExecuteMessageV2 {
-                common: CommonEventFields {
-                    r#type: "CANNOT_EXECUTE_MESSAGE/V2".to_string(),
-                    event_id: format!("evt-{}", msg_id),
-                    meta: None,
+            .returning(
+                |_, msg_id, src_chain, details, _| Event::CannotExecuteMessageV2 {
+                    common: CommonEventFields {
+                        r#type: "CANNOT_EXECUTE_MESSAGE/V2".to_string(),
+                        event_id: format!("evt-{}", msg_id),
+                        meta: None,
+                    },
+                    message_id: msg_id,
+                    source_chain: src_chain,
+                    reason: CannotExecuteMessageReason::Error,
+                    details,
                 },
-                message_id: msg_id,
-                source_chain: src_chain,
-                reason: CannotExecuteMessageReason::Error,
-                details: "verify failed".to_string(),
-            });
+            );
 
         let includer = SolanaIncluder::new(
             Arc::new(mock_client),

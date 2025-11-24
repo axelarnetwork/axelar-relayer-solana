@@ -22,7 +22,7 @@ use solana_sdk::{
     pubkey::Pubkey,
     signature::{Keypair, Signature},
     signer::Signer,
-    transaction::{Transaction, VersionedTransaction},
+    transaction::{Transaction, TransactionError, VersionedTransaction},
 };
 use std::sync::Arc;
 
@@ -469,4 +469,15 @@ pub async fn get_cannot_execute_events_from_execute_data<G: GmpApiTrait>(
         }
     }
     Ok(cannot_execute_events)
+}
+
+pub fn is_recoverable(transaction_error: &TransactionError) -> bool {
+    !matches!(
+        transaction_error,
+        TransactionError::InstructionError(_, _)
+            | TransactionError::InvalidProgramForExecution
+            | TransactionError::InvalidWritableAccount
+            | TransactionError::TooManyAccountLocks
+            | TransactionError::ProgramCacheHitMaxLimit
+    )
 }

@@ -10,9 +10,11 @@ use solana_sdk::{
     signature::Signature,
 };
 use std::{sync::Arc, time::Duration};
-use tracing::warn;
+use tracing::{error, warn};
 
-use crate::{error::IncluderClientError, transaction_type::SolanaTransactionType};
+use crate::{
+    error::IncluderClientError, transaction_type::SolanaTransactionType, utils::is_recoverable,
+};
 
 #[async_trait]
 #[cfg_attr(test, mockall::automock)]
@@ -149,7 +151,17 @@ impl IncluderClientTrait for IncluderClient {
                     // We might have to manually implement send_and_confirm()
                     if let Some(transaction_error) = e.get_transaction_error() {
                         // TODO: should maybe do different actions depending on the error?
-                        return Err(IncluderClientError::TransactionError(transaction_error));
+                        if is_recoverable(&transaction_error) {
+                            error!("Recoverable transaction error: {}", transaction_error);
+                            return Err(IncluderClientError::RecoverableTransactionError(
+                                transaction_error,
+                            ));
+                        } else {
+                            error!("Unrecoverable transaction error: {}", transaction_error);
+                            return Err(IncluderClientError::UnrecoverableTransactionError(
+                                transaction_error,
+                            ));
+                        }
                     }
                     if retries >= self.max_retries {
                         warn!(
