@@ -379,7 +379,8 @@ pub async fn create_transaction(
     alt_addresses: Vec<Pubkey>,
     unit_price: u64,
     compute_budget: u64,
-    keypair: &Keypair,
+    payer: &Keypair,
+    signing_keypairs: Vec<&Keypair>,
     recent_hash: solana_sdk::hash::Hash,
 ) -> Result<SolanaTransactionType, anyhow::Error> {
     let set_compute_unit_price_ix = ComputeBudgetInstruction::set_compute_unit_price(unit_price);
@@ -402,18 +403,18 @@ pub async fn create_transaction(
                 addresses: alt_addresses,
             };
             let v0_msg =
-                v0::Message::try_compile(&keypair.pubkey(), &instructions, &[alt_ref], recent_hash)
+                v0::Message::try_compile(&payer.pubkey(), &instructions, &[alt_ref], recent_hash)
                     .map_err(|e| anyhow::anyhow!(e.to_string()))?;
             let message = VersionedMessage::V0(v0_msg);
-            let versioned_tx = VersionedTransaction::try_new(message, &[&keypair])
+            let versioned_tx = VersionedTransaction::try_new(message, &signing_keypairs)
                 .map_err(|e| anyhow::anyhow!(e.to_string()))?;
             Ok(SolanaTransactionType::Versioned(versioned_tx))
         }
         None => Ok(SolanaTransactionType::Legacy(
             Transaction::new_signed_with_payer(
                 &instructions,
-                Some(&keypair.pubkey()),
-                &[&keypair],
+                Some(&payer.pubkey()),
+                &signing_keypairs,
                 recent_hash,
             ),
         )),

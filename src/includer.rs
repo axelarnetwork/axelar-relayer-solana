@@ -175,7 +175,7 @@ impl<
         &self,
         ixs: Vec<Instruction>,
     ) -> Result<(Signature, Option<u64>), SolanaIncluderError> {
-        let (tx, _) = match self.transaction_builder.build(&ixs, None).await {
+        let (tx, _) = match self.transaction_builder.build(&ixs, None, None).await {
             Ok((tx, cost)) => (tx, cost),
             Err(e) => {
                 return Err(SolanaIncluderError::GenericError(e.to_string()));
@@ -223,7 +223,11 @@ impl<
             // ALT doesn't exist, create it
             let (alt_tx_build, estimated_alt_cost) = self
                 .transaction_builder
-                .build(&[alt_ix_create.clone(), alt_ix_extend.clone()], None)
+                .build(
+                    &[alt_ix_create.clone(), alt_ix_extend.clone()],
+                    None,
+                    Some(vec![Keypair::from_base58_string(authority_keypair_str)]),
+                )
                 .await
                 .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
@@ -278,7 +282,7 @@ impl<
 
         let (transaction, estimated_tx_cost) = self
             .transaction_builder
-            .build(std::slice::from_ref(&instruction), alt_info.clone())
+            .build(std::slice::from_ref(&instruction), alt_info.clone(), None)
             .await
             .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
@@ -452,7 +456,7 @@ impl<
 
         let (tx, _) = self
             .transaction_builder
-            .build(&[ix], None)
+            .build(&[ix], None, None)
             .await
             .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
@@ -894,7 +898,7 @@ impl<
 
         let (tx, estimated_tx_cost) = self
             .transaction_builder
-            .build(&[ix], None)
+            .build(&[ix], None, None)
             .await
             .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
