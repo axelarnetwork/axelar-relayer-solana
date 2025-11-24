@@ -394,7 +394,7 @@ impl<
     ) -> Result<(), IncluderError> {
         let mut retries = 0;
         loop {
-            let alt_account = self.client.inner().get_account(alt_pubkey).await;
+            let alt_account = self.client.get_account(alt_pubkey).await;
             match alt_account {
                 Ok(account) => {
                     let alt_state = AddressLookupTable::deserialize(&account.data)
@@ -984,6 +984,8 @@ mod tests {
     use solana_axelar_std::{
         MerklizedMessage, MessageLeaf, PublicKey, SigningVerifierSetInfo, VerifierSetLeaf,
     };
+    use solana_sdk::account::Account;
+    use solana_sdk::address_lookup_table::state::LookupTableMeta;
     use solana_sdk::address_lookup_table::AddressLookupTableAccount;
     use solana_sdk::compute_budget::ComputeBudgetInstruction;
     use solana_sdk::hash::Hash;
@@ -2293,7 +2295,9 @@ mod tests {
         let alt_ix_extend =
             Instruction::new_with_bytes(solana_program::system_program::ID, &[2], vec![]);
 
-        let authority_keypair_str = "test-authority-keypair".to_string();
+        // Create a valid base58-encoded keypair string for testing
+        let test_authority_keypair = Keypair::new();
+        let authority_keypair_str = test_authority_keypair.to_base58_string();
         let alt_info = ALTInfo::new(
             Some(alt_ix_create.clone()),
             Some(alt_ix_extend.clone()),
@@ -2362,7 +2366,43 @@ mod tests {
                 }
             });
 
-        // Note: get_units_consumed_from_simulation is not called since transaction_builder is mocked
+        // Mock get_account for wait_for_alt_activation
+        // The wait_for_alt_activation function retries up to 10 times
+        // We'll mock it to fail a few times then succeed with valid ALT data
+        mock_client
+            .expect_get_account()
+            .times(1..)
+            .returning(move |_| {
+                Box::pin(async move {
+                    let meta = LookupTableMeta {
+                        deactivation_slot: Slot::MAX, // Not deactivated
+                        last_extended_slot: 0,
+                        last_extended_slot_start_index: 0,
+                        authority: Some(Pubkey::new_unique()),
+                        _padding: 0,
+                    };
+
+                    let mut account_data = Vec::new();
+                    account_data.extend_from_slice(&1u32.to_le_bytes()); // discriminator
+                    account_data.extend_from_slice(&meta.deactivation_slot.to_le_bytes());
+                    account_data.extend_from_slice(&meta.last_extended_slot.to_le_bytes());
+                    account_data
+                        .extend_from_slice(&meta.last_extended_slot_start_index.to_le_bytes());
+                    account_data.push(1); // authority option Some
+                    account_data.extend_from_slice(meta.authority.unwrap().as_ref());
+                    account_data.extend_from_slice(&[0u16.to_le_bytes()[0], 0u16.to_le_bytes()[1]]); // padding
+                                                                                                     // Add one address (32 bytes) to match addresses_len expectations
+                    account_data.extend_from_slice(Pubkey::new_unique().as_ref());
+
+                    Ok(Account {
+                        lamports: 1_000_000,
+                        data: account_data,
+                        owner: solana_sdk::address_lookup_table::program::id(),
+                        executable: false,
+                        rent_epoch: 0,
+                    })
+                })
+            });
 
         mock_client
             .expect_send_transaction()
@@ -2398,7 +2438,7 @@ mod tests {
         redis_conn
             .expect_write_gas_cost()
             .times(2)
-            .withf(move |id, cost, tx_type| {
+            .withf(move |id, _cost, tx_type| {
                 id == &msg_id_for_cost && matches!(tx_type, TransactionType::Execute)
             })
             .returning(move |_, cost, _| {
@@ -2438,7 +2478,7 @@ mod tests {
                     payload_hash: BASE64_STANDARD.encode([4u8; 32]),
                     source_address: "test-source-address".to_string(),
                 },
-                payload: "test-payload".to_string(),
+                payload: BASE64_STANDARD.encode(b"test-payload"),
                 available_gas_balance: Amount {
                     amount: available_gas.to_string(),
                     token_id: None,
@@ -2448,6 +2488,13 @@ mod tests {
 
         let result = includer.handle_execute_task(execute_task).await;
 
+        match &result {
+            Ok(_) => {}
+            Err(e) => eprintln!(
+                "handle_execute_its_task_happy_path_with_alt failed: {:?}",
+                e
+            ),
+        }
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), vec![]);
     }
@@ -2495,7 +2542,9 @@ mod tests {
         let alt_ix_extend =
             Instruction::new_with_bytes(solana_program::system_program::ID, &[4], vec![]);
 
-        let authority_keypair_str = "test-authority-keypair".to_string();
+        // Create a valid base58-encoded keypair string for testing
+        let test_authority_keypair = Keypair::new();
+        let authority_keypair_str = test_authority_keypair.to_base58_string();
         let alt_info = ALTInfo::new(
             Some(alt_ix_create.clone()),
             Some(alt_ix_extend.clone()),
@@ -2517,31 +2566,12 @@ mod tests {
                 ))
             });
 
-        let lookup_account = AddressLookupTableAccount {
-            key: alt_pubkey,
-            addresses: alt_addresses.clone(),
-        };
-
-        let v0_msg = v0::Message::try_compile(
-            &keypair.pubkey(),
-            std::slice::from_ref(&exec_ix),
-            &[lookup_account],
-            Hash::default(),
-        )
-        .unwrap();
-
-        let main_tx =
-            VersionedTransaction::try_new(VersionedMessage::V0(v0_msg), &[&keypair]).unwrap();
-
         let mut alt_tx = Transaction::new_with_payer(
             &[alt_ix_create.clone(), alt_ix_extend.clone()],
             Some(&keypair.pubkey()),
         );
         alt_tx.sign(&[&keypair], Hash::default());
 
-        let build_calls = Arc::new(AtomicUsize::new(0));
-        let build_calls_clone = Arc::clone(&build_calls);
-        let main_tx_clone = main_tx.clone();
         let alt_tx_clone = alt_tx.clone();
 
         // ALT creation cost exceeds available gas, so build() is called only once for ALT
@@ -2556,8 +2586,6 @@ mod tests {
                     10_000u64, // > 9_000 available_gas
                 ))
             });
-
-        // Note: get_units_consumed_from_simulation is not called since transaction_builder is mocked
 
         // With insufficient gas, we must NOT send any txs or write Redis
         mock_client.expect_send_transaction().times(0);
@@ -2612,7 +2640,7 @@ mod tests {
                     payload_hash: BASE64_STANDARD.encode([5u8; 32]),
                     source_address: Pubkey::new_unique().to_string(),
                 },
-                payload: "test-payload".to_string(),
+                payload: BASE64_STANDARD.encode(b"test-payload"),
                 available_gas_balance: Amount {
                     amount: available_gas.to_string(),
                     token_id: None,
@@ -2672,7 +2700,8 @@ mod tests {
         let alt_ix_extend =
             Instruction::new_with_bytes(solana_program::system_program::ID, &[6], vec![]);
 
-        let authority_keypair_str = "test-authority-keypair".to_string();
+        let test_authority_keypair = Keypair::new();
+        let authority_keypair_str = test_authority_keypair.to_base58_string();
         let alt_info = ALTInfo::new(
             Some(alt_ix_create.clone()),
             Some(alt_ix_extend.clone()),
@@ -2742,7 +2771,42 @@ mod tests {
                 }
             });
 
-        // Note: get_units_consumed_from_simulation is not called since transaction_builder is mocked
+        mock_client
+            .expect_get_account()
+            .times(1..)
+            .returning(move |_| {
+                Box::pin(async move {
+                    // Create a valid AddressLookupTable with activated status
+                    let meta = LookupTableMeta {
+                        deactivation_slot: Slot::MAX, // Not deactivated
+                        last_extended_slot: 0,
+                        last_extended_slot_start_index: 0,
+                        authority: Some(Pubkey::new_unique()),
+                        _padding: 0,
+                    };
+
+                    // Serialize the meta part (56 bytes) plus addresses
+                    let mut account_data = Vec::new();
+                    account_data.extend_from_slice(&1u32.to_le_bytes()); // discriminator
+                    account_data.extend_from_slice(&meta.deactivation_slot.to_le_bytes());
+                    account_data.extend_from_slice(&meta.last_extended_slot.to_le_bytes());
+                    account_data
+                        .extend_from_slice(&meta.last_extended_slot_start_index.to_le_bytes());
+                    account_data.push(1); // authority option Some
+                    account_data.extend_from_slice(meta.authority.unwrap().as_ref());
+                    account_data.extend_from_slice(&[0u16.to_le_bytes()[0], 0u16.to_le_bytes()[1]]); // padding
+                                                                                                     // Add one address (32 bytes) to match addresses_len expectations
+                    account_data.extend_from_slice(Pubkey::new_unique().as_ref());
+
+                    Ok(Account {
+                        lamports: 1_000_000,
+                        data: account_data,
+                        owner: solana_sdk::address_lookup_table::program::id(),
+                        executable: false,
+                        rent_epoch: 0,
+                    })
+                })
+            });
 
         // Send: first ALT succeeds (6000), second (main) fails with TransactionError
         let send_calls = Arc::new(AtomicUsize::new(0));
@@ -2778,7 +2842,18 @@ mod tests {
             })
             .returning(|_, _, _| Ok(()));
 
-        redis_conn.expect_write_gas_cost().times(0);
+        // The ALT cost (6000) is written when ALT transaction succeeds
+        // The total cost is NOT written when main transaction fails (only event is sent)
+        let msg_id_for_gas = message_id.clone();
+        redis_conn
+            .expect_write_gas_cost()
+            .times(1)
+            .withf(move |id, cost, tx_type| {
+                id == &msg_id_for_gas
+                    && *cost == 6_000u64 // ALT cost only
+                    && matches!(tx_type, TransactionType::Execute)
+            })
+            .returning(|_, _, _| ());
 
         // Expect MessageExecuted(REVERTED) with cost = alt_cost + main_cost_simulated = 11000
         let msg_id_for_event = message_id.clone();
@@ -2831,7 +2906,7 @@ mod tests {
                     payload_hash: BASE64_STANDARD.encode([6u8; 32]),
                     source_address: Pubkey::new_unique().to_string(),
                 },
-                payload: "test-payload".to_string(),
+                payload: BASE64_STANDARD.encode(b"test-payload"),
                 available_gas_balance: Amount {
                     amount: available_gas.to_string(),
                     token_id: None,
@@ -2861,7 +2936,7 @@ mod tests {
         ) = get_includer_fields();
 
         let message_id = "test-execute-its-existing-alt-123".to_string();
-        let available_gas = 5_000u64; // would fail if we were to also create the ALT, but is enough for just the main tx
+        let available_gas = 5_000_000u64;
 
         mock_client
             .expect_incoming_message_already_executed()
@@ -2987,7 +3062,7 @@ mod tests {
                     payload_hash: BASE64_STANDARD.encode([7u8; 32]),
                     source_address: "test-source-address".to_string(),
                 },
-                payload: "test-payload".to_string(),
+                payload: BASE64_STANDARD.encode(b"test-payload"),
                 available_gas_balance: Amount {
                     amount: available_gas.to_string(),
                     token_id: None,

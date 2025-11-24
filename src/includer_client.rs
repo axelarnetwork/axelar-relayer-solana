@@ -6,7 +6,8 @@ use solana_axelar_gateway::IncomingMessage;
 use solana_client::rpc_response::RpcPrioritizationFee;
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{
-    commitment_config::CommitmentConfig, hash::Hash, pubkey::Pubkey, signature::Signature,
+    account::Account, commitment_config::CommitmentConfig, hash::Hash, pubkey::Pubkey,
+    signature::Signature,
 };
 use std::{sync::Arc, time::Duration};
 use tracing::warn;
@@ -19,6 +20,7 @@ pub trait IncluderClientTrait: ThreadSafe {
     fn inner(&self) -> &RpcClient;
     async fn get_latest_blockhash(&self) -> Result<Hash, IncluderClientError>;
     async fn get_account_data(&self, pubkey: &Pubkey) -> Result<Vec<u8>, IncluderClientError>;
+    async fn get_account(&self, pubkey: &Pubkey) -> Result<Account, IncluderClientError>;
     async fn get_slot(&self) -> Result<u64, IncluderClientError>;
     async fn get_recent_prioritization_fees(
         &self,
@@ -83,6 +85,13 @@ impl IncluderClientTrait for IncluderClient {
     async fn get_account_data(&self, pubkey: &Pubkey) -> Result<Vec<u8>, IncluderClientError> {
         self.inner()
             .get_account_data(pubkey)
+            .await
+            .map_err(|e| IncluderClientError::GenericError(e.to_string()))
+    }
+
+    async fn get_account(&self, pubkey: &Pubkey) -> Result<Account, IncluderClientError> {
+        self.inner()
+            .get_account(pubkey)
             .await
             .map_err(|e| IncluderClientError::GenericError(e.to_string()))
     }
