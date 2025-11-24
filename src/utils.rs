@@ -524,4 +524,22 @@ mod tests {
         let result = keypair_from_base58_string(&short_pubkey_base58);
         assert!(result.is_err());
     }
+
+    #[test]
+    fn test_is_recoverable() {
+        let transaction_error = TransactionError::InvalidWritableAccount;
+        assert!(!is_recoverable(&transaction_error));
+
+        let transaction_error = TransactionError::TooManyAccountLocks;
+        assert!(!is_recoverable(&transaction_error));
+
+        let transaction_error = TransactionError::ProgramCacheHitMaxLimit;
+        assert!(!is_recoverable(&transaction_error));
+
+        let transaction_error = TransactionError::InvalidProgramForExecution;
+        assert!(!is_recoverable(&transaction_error));
+
+        let transaction_error = TransactionError::AccountNotFound;
+        assert!(is_recoverable(&transaction_error));
+    }
 }
