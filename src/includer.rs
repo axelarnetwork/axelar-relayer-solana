@@ -11,7 +11,7 @@ use crate::utils::{
     get_cannot_execute_events_from_execute_data, get_gas_service_event_authority_pda,
     get_gateway_event_authority_pda, get_gateway_root_config_internal, get_incoming_message_pda,
     get_operator_pda, get_signature_verification_pda, get_treasury_pda,
-    get_verifier_set_tracker_pda, not_enough_gas_event,
+    get_verifier_set_tracker_pda, keypair_from_base58_string, not_enough_gas_event,
 };
 use anchor_lang::{InstructionData, ToAccountMetas};
 use async_trait::async_trait;
@@ -221,12 +221,14 @@ impl<
         }) = alt_info
         {
             // ALT doesn't exist, create it
+            let authority_keypair = keypair_from_base58_string(authority_keypair_str)
+                .map_err(|e| IncluderError::GenericError(e.to_string()))?;
             let (alt_tx_build, estimated_alt_cost) = self
                 .transaction_builder
                 .build(
                     &[alt_ix_create.clone(), alt_ix_extend.clone()],
                     None,
-                    Some(vec![Keypair::from_base58_string(authority_keypair_str)]),
+                    Some(vec![authority_keypair]),
                 )
                 .await
                 .map_err(|e| IncluderError::GenericError(e.to_string()))?;

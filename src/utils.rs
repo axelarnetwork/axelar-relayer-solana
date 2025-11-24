@@ -481,3 +481,47 @@ pub fn is_recoverable(transaction_error: &TransactionError) -> bool {
             | TransactionError::ProgramCacheHitMaxLimit
     )
 }
+
+pub fn keypair_to_base58_string(keypair: &Keypair) -> String {
+    keypair.to_base58_string()
+}
+
+pub fn keypair_from_base58_string(s: &str) -> Result<Keypair, anyhow::Error> {
+    let mut buf = [0u8; 64]; // Ed25519 keypair length
+    bs58::decode(s)
+        .onto(&mut buf)
+        .map_err(|e| anyhow!("Failed to decode base58 keypair: {}", e))?;
+    Keypair::try_from(&buf[..]).map_err(|e| anyhow!("Failed to create keypair from bytes: {}", e))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::signature::Keypair;
+
+    #[test]
+    fn test_keypair_roundtrip() {
+        let original_keypair = Keypair::new();
+        let base58_string = keypair_to_base58_string(&original_keypair);
+        let reconstructed_keypair = keypair_from_base58_string(&base58_string).unwrap();
+
+        // Verify the public keys match (since we can't compare private keys directly)
+        assert_eq!(original_keypair.pubkey(), reconstructed_keypair.pubkey());
+    }
+
+    #[test]
+    fn test_keypair_from_invalid_base58() {
+        let result = keypair_from_base58_string("invalid-base58-string");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_keypair_from_wrong_length() {
+        // Create a valid base58 string but for a shorter key
+        let short_keypair = Keypair::new();
+        let short_pubkey_base58 = short_keypair.pubkey().to_string();
+
+        let result = keypair_from_base58_string(&short_pubkey_base58);
+        assert!(result.is_err());
+    }
+}
