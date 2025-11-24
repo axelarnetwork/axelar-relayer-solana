@@ -7,6 +7,7 @@ use relayer_core::{
     queue::{QueueItem, QueueTrait},
 };
 use serde_json::json;
+use solana_axelar_std::execute_data::{ExecuteData, MerklizedPayload};
 use solana_transaction_parser::gmp_types::{CannotExecuteMessageReason, Event};
 use std::str::FromStr;
 use tracing::{debug, error};
@@ -440,4 +441,32 @@ pub fn not_enough_gas_event<G: GmpApiTrait>(
         CannotExecuteMessageReason::InsufficientGas,
     );
     vec![event]
+}
+
+pub async fn get_cannot_execute_events_from_execute_data<G: GmpApiTrait>(
+    execute_data: &ExecuteData,
+    reason: CannotExecuteMessageReason,
+    details: String,
+    task_id: String,
+    gmp_api: Arc<G>,
+) -> Result<Vec<Event>, anyhow::Error> {
+    let mut cannot_execute_events = vec![];
+    let payload_items = execute_data.payload_items.clone();
+    match payload_items {
+        MerklizedPayload::VerifierSetRotation { .. } => {
+            // skipping set rotation as it is not a message
+        }
+        MerklizedPayload::NewMessages { messages } => {
+            for message in messages {
+                cannot_execute_events.push(gmp_api.cannot_execute_message(
+                    task_id.clone(),
+                    message.leaf.message.cc_id.id.clone(),
+                    message.leaf.message.cc_id.chain.clone(),
+                    details.clone(),
+                    reason.clone(),
+                ));
+            }
+        }
+    }
+    Ok(cannot_execute_events)
 }
