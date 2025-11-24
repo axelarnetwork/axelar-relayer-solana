@@ -4092,4 +4092,240 @@ mod tests {
             assert!(matches!(ev, Event::CannotExecuteMessageV2 { .. }));
         }
     }
+
+    #[tokio::test]
+    async fn test_handle_gateway_tx_task_approve_message_all_messages_fail_no_division_by_zero() {
+        let (
+            mut mock_gmp_api,
+            keypair,
+            chain_name,
+            mut redis_conn,
+            mock_refunds_model,
+            mut mock_client,
+            mut transaction_builder,
+        ) = get_includer_fields();
+
+        let payload_merkle_root = [5u8; 32];
+        let signing_verifier_set_merkle_root = [6u8; 32];
+
+        let verifier_info_1 = SigningVerifierSetInfo {
+            leaf: VerifierSetLeaf {
+                nonce: 0,
+                quorum: 0,
+                signer_pubkey: PublicKey([5; 33]),
+                signer_weight: 0,
+                position: 0,
+                set_size: 1,
+                domain_separator: [0; 32],
+            },
+            merkle_proof: vec![0xEE],
+            signature: solana_axelar_std::Signature([5; 65]),
+        };
+
+        let msg_id_1 = "all-fail-msg-1".to_string();
+        let msg_id_2 = "all-fail-msg-2".to_string();
+
+        let merkle_msg_1 = MerklizedMessage {
+            leaf: MessageLeaf {
+                message: Message {
+                    cc_id: CrossChainId {
+                        chain: "test-chain".to_string(),
+                        id: msg_id_1.clone(),
+                    },
+                    source_address: "test-source-address-1".to_string(),
+                    destination_chain: "test-destination-chain-1".to_string(),
+                    destination_address: "test-destination-address-1".to_string(),
+                    payload_hash: [51; 32],
+                },
+                position: 0,
+                set_size: 2,
+                domain_separator: [0; 32],
+            },
+            proof: vec![0x05],
+        };
+
+        let merkle_msg_2 = MerklizedMessage {
+            leaf: MessageLeaf {
+                message: Message {
+                    cc_id: CrossChainId {
+                        chain: "test-chain".to_string(),
+                        id: msg_id_2.clone(),
+                    },
+                    source_address: "test-source-address-2".to_string(),
+                    destination_chain: "test-destination-chain-2".to_string(),
+                    destination_address: "test-destination-address-2".to_string(),
+                    payload_hash: [52; 32],
+                },
+                position: 1,
+                set_size: 2,
+                domain_separator: [0; 32],
+            },
+            proof: vec![0x06],
+        };
+
+        let execute_data = ExecuteData {
+            payload_merkle_root,
+            signing_verifier_set_merkle_root,
+            signing_verifier_set_leaves: vec![verifier_info_1],
+            payload_items: MerklizedPayload::NewMessages {
+                messages: vec![merkle_msg_1, merkle_msg_2],
+            },
+        };
+
+        let execute_data_b64 =
+            base64::prelude::BASE64_STANDARD.encode(execute_data.try_to_vec().unwrap());
+
+        let task = GatewayTxTask {
+            common: CommonTaskFields {
+                id: "approve-message-all-fail".into(),
+                chain: "test-chain".into(),
+                timestamp: Utc::now().to_string(),
+                r#type: "gateway_tx".into(),
+                meta: None,
+            },
+            task: GatewayTxTaskFields {
+                execute_data: execute_data_b64,
+            },
+        };
+
+        let mut init_tx = Transaction::new_with_payer(&[], Some(&keypair.pubkey()));
+        init_tx.sign(&[&keypair], Hash::default());
+        let init_sig = init_tx.signatures[0];
+
+        let mut verify_tx = Transaction::new_with_payer(&[], Some(&keypair.pubkey()));
+        verify_tx.sign(&[&keypair], Hash::default());
+        let verify_sig = verify_tx.signatures[0];
+
+        let mut approve_tx_1 = Transaction::new_with_payer(&[], Some(&keypair.pubkey()));
+        approve_tx_1.sign(&[&keypair], Hash::default());
+
+        let mut approve_tx_2 = Transaction::new_with_payer(&[], Some(&keypair.pubkey()));
+        approve_tx_2.sign(&[&keypair], Hash::default());
+
+        let init_tx_clone = init_tx.clone();
+        let verify_tx_clone = verify_tx.clone();
+        let approve_tx_1_clone = approve_tx_1.clone();
+        let approve_tx_2_clone = approve_tx_2.clone();
+
+        // 4 builds: init, verify, approve1, approve2
+        let build_calls = Arc::new(AtomicUsize::new(0));
+        let build_calls_clone = Arc::clone(&build_calls);
+        transaction_builder
+            .expect_build()
+            .times(4)
+            .returning(move |_, _, _| {
+                let idx = build_calls_clone.fetch_add(1, Ordering::SeqCst);
+                match idx {
+                    0 => Ok((
+                        crate::transaction_type::SolanaTransactionType::Legacy(
+                            init_tx_clone.clone(),
+                        ),
+                        100_000u64,
+                    )),
+                    1 => Ok((
+                        crate::transaction_type::SolanaTransactionType::Legacy(
+                            verify_tx_clone.clone(),
+                        ),
+                        100_000u64,
+                    )),
+                    2 => Ok((
+                        crate::transaction_type::SolanaTransactionType::Legacy(
+                            approve_tx_1_clone.clone(),
+                        ),
+                        100_000u64,
+                    )),
+                    3 => Ok((
+                        crate::transaction_type::SolanaTransactionType::Legacy(
+                            approve_tx_2_clone.clone(),
+                        ),
+                        100_000u64,
+                    )),
+                    _ => panic!("unexpected build call"),
+                }
+            });
+
+        // Costs:
+        // init:    10
+        // verify:  20
+        // approve1: (fails)
+        // approve2: (fails)
+        //
+        // overhead = 10 + 20 = 30
+        // successful_messages.len() = 0 (all fail)
+        // Tests that we avoid dividing by zero as well since 0 messages succeed
+        let send_calls = Arc::new(AtomicUsize::new(0));
+        let send_calls_clone = Arc::clone(&send_calls);
+        mock_client
+            .expect_send_transaction()
+            .times(4)
+            .returning(move |_| {
+                let idx = send_calls_clone.fetch_add(1, Ordering::SeqCst);
+                match idx {
+                    0 => Box::pin(async move { Ok((init_sig, Some(10u64))) }),
+                    1 => Box::pin(async move { Ok((verify_sig, Some(20u64))) }),
+                    2 => Box::pin(async move {
+                        Err(IncluderClientError::GenericError(
+                            "approve-1 failed".to_string(),
+                        ))
+                    }),
+                    3 => Box::pin(async move {
+                        Err(IncluderClientError::GenericError(
+                            "approve-2 failed".to_string(),
+                        ))
+                    }),
+                    _ => panic!("unexpected send_transaction call"),
+                }
+            });
+
+        // No write_gas_cost should be called since all messages failed
+        redis_conn.expect_write_gas_cost().times(0);
+
+        // Expect cannot_execute_message for both failed messages
+        let expected_ids = [msg_id_1.clone(), msg_id_2.clone()];
+        mock_gmp_api
+            .expect_cannot_execute_message()
+            .times(2)
+            .withf(move |task_id, msg_id, src_chain, details, reason| {
+                *task_id == "approve-message-all-fail"
+                    && expected_ids.contains(msg_id)
+                    && *src_chain == "test-chain"
+                    && (details.contains("approve-1 failed")
+                        || details.contains("approve-2 failed"))
+                    && matches!(reason, CannotExecuteMessageReason::Error)
+            })
+            .returning(
+                |_, msg_id, src_chain, details, _| Event::CannotExecuteMessageV2 {
+                    common: CommonEventFields {
+                        r#type: "CANNOT_EXECUTE_MESSAGE/V2".to_string(),
+                        event_id: format!("evt-{}", msg_id),
+                        meta: None,
+                    },
+                    message_id: msg_id,
+                    source_chain: src_chain,
+                    reason: CannotExecuteMessageReason::Error,
+                    details: details.clone(),
+                },
+            );
+
+        let includer = SolanaIncluder::new(
+            Arc::new(mock_client),
+            Arc::new(keypair),
+            chain_name,
+            transaction_builder,
+            Arc::new(mock_gmp_api),
+            redis_conn,
+            Arc::new(mock_refunds_model),
+        );
+
+        let result = includer.handle_gateway_tx_task(task).await;
+
+        // Should not panic - verify it completes successfully
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        // Should have 2 cannot_execute events (one for each failed message)
+        assert_eq!(events.len(), 2);
+        for ev in events {
+            assert!(matches!(ev, Event::CannotExecuteMessageV2 { .. }));
+        }
+    }
 }
