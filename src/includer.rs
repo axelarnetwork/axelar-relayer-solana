@@ -725,8 +725,9 @@ impl<
 
                 // The overhead cost is the initialize payload verification session and the total cost of verifying all signatures
                 // divided by the number of messages. The total cost for the message is the overhead plus its own cost.
-                let overhead_cost =
-                    verification_cost.saturating_div(successful_messages.len() as u64);
+                let overhead_cost = verification_cost
+                    .checked_div(successful_messages.len() as u64)
+                    .unwrap_or(0);
                 for (cc_id, gas_cost) in &successful_messages {
                     self.redis_conn
                         .write_gas_cost(
