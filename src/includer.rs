@@ -4303,7 +4303,7 @@ mod tests {
                     message_id: msg_id,
                     source_chain: src_chain,
                     reason: CannotExecuteMessageReason::Error,
-                    details: details.clone(),
+                    details,
                 },
             );
 

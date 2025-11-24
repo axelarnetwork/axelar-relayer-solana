@@ -44,7 +44,7 @@ anchor-spl = "0.31.1"
 mpl-token-metadata = "5.1.1"
 ed25519-zebra = "=4.0.3"
 
-solana-transaction-parser = { git = "https://github.com/commonprefix/solana-transaction-parser", branch = "main", features = [
+solana-transaction-parser = { git = "https://github.com/commonprefix/solana-transaction-parser", rev = "bdf6e2f", features = [
     "mocks",
 ] }
 
