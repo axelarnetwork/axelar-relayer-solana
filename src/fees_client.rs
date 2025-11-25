@@ -9,11 +9,7 @@ use crate::{error::FeesClientError, includer_client::IncluderClientTrait};
 #[async_trait]
 #[cfg_attr(test, mockall::automock)]
 pub trait FeesClientTrait: ThreadSafe {
-    async fn get_prioritization_fee(&self, addresses: &[Pubkey]) -> Result<u64, FeesClientError>;
-    async fn get_recent_prioritization_fees(
-        &self,
-        addresses: &[Pubkey],
-    ) -> Result<u64, FeesClientError>;
+    async fn get_recent_prioritization_fees(&self, addresses: &[Pubkey], percentile: f64) -> u64;
     async fn get_prioritization_fee_percentile(
         &self,
         addresses: &[Pubkey],
@@ -38,18 +34,10 @@ impl<IC: IncluderClientTrait> FeesClient<IC> {
 
 #[async_trait]
 impl<IC: IncluderClientTrait> FeesClientTrait for FeesClient<IC> {
-    async fn get_prioritization_fee(&self, addresses: &[Pubkey]) -> Result<u64, FeesClientError> {
-        // For backward compatibility, use 75th percentile
-        self.get_prioritization_fee_percentile(addresses, 75.0)
+    async fn get_recent_prioritization_fees(&self, addresses: &[Pubkey], percentile: f64) -> u64 {
+        self.get_prioritization_fee_percentile(addresses, percentile)
             .await
-    }
-
-    async fn get_recent_prioritization_fees(
-        &self,
-        addresses: &[Pubkey],
-    ) -> Result<u64, FeesClientError> {
-        self.get_prioritization_fee_percentile(addresses, 75.0)
-            .await
+            .unwrap_or(0)
     }
 
     async fn get_prioritization_fee_percentile(

@@ -137,7 +137,7 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
 
         let unit_price = self
             .gas_calculator
-            .compute_unit_price(ixs)
+            .compute_unit_price(ixs, 75.0)
             .await
             .map_err(|e| TransactionBuilderError::ClientError(e.to_string()))?;
 
@@ -575,7 +575,7 @@ mod tests {
         mock_gas
             .expect_compute_unit_price()
             .times(1)
-            .returning(|_| Ok(100_000u64));
+            .return_once(|_a, _b| Ok(100_000u64));
 
         mock_gas
             .expect_compute_budget()
@@ -638,7 +638,7 @@ mod tests {
         mock_gas
             .expect_compute_unit_price()
             .times(1)
-            .returning(|_| Ok(100_000u64));
+            .return_once(|_a, _b| Ok(100_000u64));
 
         mock_gas
             .expect_compute_budget()
@@ -700,7 +700,7 @@ mod tests {
         mock_gas
             .expect_compute_unit_price()
             .times(1)
-            .returning(|_| Ok(100_000u64));
+            .return_once(|_a, _b| Ok(100_000u64));
 
         mock_gas
             .expect_compute_budget()
