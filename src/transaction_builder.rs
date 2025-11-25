@@ -303,6 +303,18 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
                     destination_ata,
                     Some(!transfer.data.is_empty()),
                 ));
+                if !transfer.data.is_empty() {
+                    match ExecutablePayload::decode(transfer.data.as_ref()) {
+                        Ok(executable_payload) => {
+                            let gmp_accounts = executable_payload.account_meta();
+                            accounts.extend(gmp_accounts);
+                        }
+                        Err(e) => {
+                            error!("Failed to decode ExecutablePayload: {:?}", e);
+                            return Err(TransactionBuilderError::PayloadDecodeError(e.to_string()));
+                        }
+                    }
+                }
             }
 
             GMPPayload::DeployInterchainToken(ref deploy) => {
@@ -528,6 +540,7 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
 
 #[cfg(test)]
 mod tests {
+    use crate::error::TransactionBuilderError;
     use crate::gas_calculator::MockGasCalculatorTrait;
     use crate::includer::ALTInfo;
     use crate::includer_client::MockIncluderClientTrait;
@@ -878,5 +891,174 @@ mod tests {
             arbitrary_alt_info.is_none(),
             "Arbitrary program should return None for ALTInfo"
         );
+    }
+
+    #[tokio::test]
+    async fn test_build_its_instruction_interchain_transfer_with_executable_payload() {
+        let keypair = Arc::new(Keypair::new());
+        let mock_gas = MockGasCalculatorTrait::new();
+        let mut mock_client = MockIncluderClientTrait::new();
+
+        let message = Message {
+            cc_id: CrossChainId {
+                chain: "ethereum".to_string(),
+                id: "test-message-id-executable-payload".to_string(),
+            },
+            source_address: "0x1234567890123456789012345678901234567890".to_string(),
+            destination_chain: "solana".to_string(),
+            destination_address: "test-destination".to_string(),
+            payload_hash: [0u8; 32],
+        };
+
+        mock_client
+            .expect_get_slot()
+            .times(1)
+            .returning(|| Box::pin(async { Ok(1000u64) }));
+
+        let builder =
+            TransactionBuilder::new(Arc::clone(&keypair), mock_gas, Arc::new(mock_client));
+
+        let its_destination = solana_axelar_its::ID;
+        let destination_pubkey = Pubkey::new_unique();
+        let destination_address_bytes = destination_pubkey.as_ref().to_vec();
+        let token_id = [2u8; 32];
+
+        // Create an ExecutablePayload with some accounts
+        let gmp_account1 = Pubkey::new_unique();
+        let gmp_account2 = Pubkey::new_unique();
+        let executable_payload = ExecutablePayload::new::<AccountMeta>(
+            &[10, 20, 30, 40], // payload data
+            &[
+                AccountMeta::new(gmp_account1, false),
+                AccountMeta::new_readonly(gmp_account2, false),
+            ],
+            EncodingScheme::Borsh,
+        );
+        let executable_payload_bytes = executable_payload.encode().unwrap();
+
+        // Create InterchainTransfer with ExecutablePayload in data field
+        let inner_payload =
+            GMPPayload::InterchainTransfer(interchain_token_transfer_gmp::InterchainTransfer {
+                token_id: FixedBytes::from(token_id),
+                destination_address: Bytes::from(destination_address_bytes),
+                amount: Uint::from(1000u64),
+                data: Bytes::from(executable_payload_bytes.clone()),
+                selector: Uint::from(0),
+                source_address: Bytes::from(vec![4u8; 20]),
+            });
+
+        // Wrap in ReceiveFromHub as expected by build_its_instruction
+        let inner_payload_bytes: Vec<u8> = inner_payload.encode();
+        let gmp_payload =
+            GMPPayload::ReceiveFromHub(interchain_token_transfer_gmp::ReceiveFromHub {
+                payload: Bytes::from(inner_payload_bytes),
+                source_chain: "ethereum".to_string(),
+                selector: Uint::from(
+                    interchain_token_transfer_gmp::ReceiveFromHub::MESSAGE_TYPE_ID as u64,
+                ),
+            });
+        let its_payload: Vec<u8> = gmp_payload.encode();
+
+        let (its_instruction, its_alt_info) = builder
+            .build_execute_instruction(&message, &its_payload, its_destination, None)
+            .await
+            .expect("ITS build_execute_instruction with ExecutablePayload should succeed");
+
+        assert_eq!(its_instruction.program_id, solana_axelar_its::ID);
+
+        // Verify that the accounts from ExecutablePayload were added
+        // The accounts should include: ITS accounts + transfer accounts + ExecutablePayload accounts
+        let instruction_accounts = &its_instruction.accounts;
+
+        // Check that gmp_account1 and gmp_account2 are in the accounts list
+        let account_pubkeys: Vec<Pubkey> =
+            instruction_accounts.iter().map(|acc| acc.pubkey).collect();
+        assert!(
+            account_pubkeys.contains(&gmp_account1),
+            "gmp_account1 should be in the instruction accounts"
+        );
+        assert!(
+            account_pubkeys.contains(&gmp_account2),
+            "gmp_account2 should be in the instruction accounts"
+        );
+
+        // Verify ALTInfo is present
+        assert!(its_alt_info.is_some(), "ITS should return Some(ALTInfo)");
+        let its_alt = its_alt_info.unwrap();
+        assert!(
+            its_alt.alt_pubkey.is_some(),
+            "ALTInfo should have alt_pubkey"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_build_its_instruction_interchain_transfer_with_malformed_data() {
+        let keypair = Arc::new(Keypair::new());
+        let mock_gas = MockGasCalculatorTrait::new();
+        let mock_client = MockIncluderClientTrait::new();
+
+        let message = Message {
+            cc_id: CrossChainId {
+                chain: "ethereum".to_string(),
+                id: "test-message-id-malformed".to_string(),
+            },
+            source_address: "0x1234567890123456789012345678901234567890".to_string(),
+            destination_chain: "solana".to_string(),
+            destination_address: "test-destination".to_string(),
+            payload_hash: [0u8; 32],
+        };
+
+        let builder =
+            TransactionBuilder::new(Arc::clone(&keypair), mock_gas, Arc::new(mock_client));
+
+        let its_destination = solana_axelar_its::ID;
+        let destination_pubkey = Pubkey::new_unique();
+        let destination_address_bytes = destination_pubkey.as_ref().to_vec();
+        let token_id = [3u8; 32];
+
+        // Create InterchainTransfer with malformed/random bytes in data field
+        let malformed_data = vec![0xFF, 0xEE, 0xDD, 0xCC, 0xBB, 0xAA]; // Random bytes that won't decode as ExecutablePayload
+        let inner_payload =
+            GMPPayload::InterchainTransfer(interchain_token_transfer_gmp::InterchainTransfer {
+                token_id: FixedBytes::from(token_id),
+                destination_address: Bytes::from(destination_address_bytes),
+                amount: Uint::from(2000u64),
+                data: Bytes::from(malformed_data),
+                selector: Uint::from(0),
+                source_address: Bytes::from(vec![5u8; 20]),
+            });
+
+        // Wrap in ReceiveFromHub as expected by build_its_instruction
+        let inner_payload_bytes: Vec<u8> = inner_payload.encode();
+        let gmp_payload =
+            GMPPayload::ReceiveFromHub(interchain_token_transfer_gmp::ReceiveFromHub {
+                payload: Bytes::from(inner_payload_bytes),
+                source_chain: "ethereum".to_string(),
+                selector: Uint::from(
+                    interchain_token_transfer_gmp::ReceiveFromHub::MESSAGE_TYPE_ID as u64,
+                ),
+            });
+        let its_payload: Vec<u8> = gmp_payload.encode();
+
+        // This should fail with PayloadDecodeError because the data field contains malformed bytes
+        let result = builder
+            .build_execute_instruction(&message, &its_payload, its_destination, None)
+            .await;
+
+        assert!(
+            result.is_err(),
+            "build_execute_instruction should fail with malformed ExecutablePayload"
+        );
+
+        match result {
+            Err(TransactionBuilderError::PayloadDecodeError(_)) => {
+                // Expected error type
+            }
+            Err(e) => panic!(
+                "Expected PayloadDecodeError, but got different error: {:?}",
+                e
+            ),
+            Ok(_) => panic!("Expected error but got success"),
+        }
     }
 }

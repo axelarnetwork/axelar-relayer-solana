@@ -45,6 +45,10 @@ pub enum GatewayTxError {
 
 #[derive(Error, Debug)]
 pub enum IncluderClientError {
+    #[error("SlotAlreadyVerifiedError: {0}")]
+    SlotAlreadyVerifiedError(String),
+    #[error("AccountInUseError: {0}")]
+    AccountInUseError(String),
     #[error("MaxRetriesExceededError: {0}")]
     MaxRetriesExceededError(String),
     #[error("UnrecoverableTransactionError: {0}")]
