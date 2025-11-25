@@ -454,9 +454,10 @@ pub async fn get_cannot_execute_events_from_execute_data<G: GmpApiTrait>(
     let payload_items = execute_data.payload_items.clone();
     match payload_items {
         MerklizedPayload::VerifierSetRotation { .. } => {
-            // skipping set rotation as it is not a message
+            error!("Skipping verifier set rotation");
         }
         MerklizedPayload::NewMessages { messages } => {
+            error!("Getting cannot execute events from all messages");
             for message in messages {
                 cannot_execute_events.push(gmp_api.cannot_execute_message(
                     task_id.clone(),
