@@ -100,7 +100,16 @@ async fn process_active_alts(
     let current_timestamp = chrono::Utc::now().timestamp();
 
     for (message_id, alt_pubkey, authority_keypair_str, created_at, retry_count, _) in active_alts {
-        let authority_keypair = keypair_from_base58_string(&authority_keypair_str)?;
+        let authority_keypair = match keypair_from_base58_string(&authority_keypair_str) {
+            Ok(keypair) => keypair,
+            Err(e) => {
+                error!(
+                    "Failed to parse authority keypair for message id: {}: {}",
+                    message_id, e
+                );
+                continue;
+            }
+        };
 
         let seconds_since_creation = current_timestamp - created_at;
         if seconds_since_creation >= ALT_LIFETIME_SECONDS {
