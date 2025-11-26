@@ -12,9 +12,10 @@ use solana::{
     subscriber_listener::SolanaListener,
     subscriber_poller::SolanaPoller,
 };
-use solana_sdk::pubkey::Pubkey;
+use solana_axelar_gas_service::ID as GAS_SERVICE_ID;
+use solana_axelar_gateway::ID as GATEWAY_ID;
+use solana_axelar_its::ID as ITS_ID;
 use sqlx::PgPool;
-use std::str::FromStr;
 use std::sync::Arc;
 use tokio::signal::unix::{signal, SignalKind};
 use tokio_util::sync::CancellationToken;
@@ -79,9 +80,9 @@ async fn main() -> anyhow::Result<()> {
     let listener_cloned_token = cancellation_token.clone();
     let poller_cloned_token = cancellation_token.clone();
 
-    let gas_service_account = Pubkey::from_str(&config.solana_gas_service)?;
-    let gateway_account = Pubkey::from_str(&config.solana_gateway)?;
-    let its_account = Pubkey::from_str(&config.solana_its)?;
+    let gas_service_account = GAS_SERVICE_ID;
+    let gateway_account = GATEWAY_ID;
+    let its_account = ITS_ID;
 
     let mut handle_poller = tokio::spawn(async move {
         solana_poller

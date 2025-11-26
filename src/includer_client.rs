@@ -6,12 +6,17 @@ use solana_axelar_gateway::IncomingMessage;
 use solana_client::rpc_response::RpcPrioritizationFee;
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{
-    commitment_config::CommitmentConfig, hash::Hash, pubkey::Pubkey, signature::Signature,
+    account::Account, commitment_config::CommitmentConfig, hash::Hash, pubkey::Pubkey,
+    signature::Signature,
 };
 use std::{sync::Arc, time::Duration};
-use tracing::warn;
+use tracing::{error, warn};
 
-use crate::{error::IncluderClientError, transaction_type::SolanaTransactionType};
+use crate::{
+    error::IncluderClientError,
+    transaction_type::SolanaTransactionType,
+    utils::{is_addr_in_use, is_recoverable},
+};
 
 #[async_trait]
 #[cfg_attr(test, mockall::automock)]
@@ -19,6 +24,7 @@ pub trait IncluderClientTrait: ThreadSafe {
     fn inner(&self) -> &RpcClient;
     async fn get_latest_blockhash(&self) -> Result<Hash, IncluderClientError>;
     async fn get_account_data(&self, pubkey: &Pubkey) -> Result<Vec<u8>, IncluderClientError>;
+    async fn get_account(&self, pubkey: &Pubkey) -> Result<Account, IncluderClientError>;
     async fn get_slot(&self) -> Result<u64, IncluderClientError>;
     async fn get_recent_prioritization_fees(
         &self,
@@ -87,6 +93,13 @@ impl IncluderClientTrait for IncluderClient {
             .map_err(|e| IncluderClientError::GenericError(e.to_string()))
     }
 
+    async fn get_account(&self, pubkey: &Pubkey) -> Result<Account, IncluderClientError> {
+        self.inner()
+            .get_account(pubkey)
+            .await
+            .map_err(|e| IncluderClientError::GenericError(e.to_string()))
+    }
+
     async fn get_slot(&self) -> Result<u64, IncluderClientError> {
         self.inner()
             .get_slot()
@@ -138,9 +151,21 @@ impl IncluderClientTrait for IncluderClient {
                     // TODO: we can reach this point even if the transaction was sent and confirmed successfully,
                     // and we'll fail to account for the fee.
                     // We might have to manually implement send_and_confirm()
+                    if is_addr_in_use(&e.to_string()) {
+                        return Err(IncluderClientError::AccountInUseError(e.to_string()));
+                    }
                     if let Some(transaction_error) = e.get_transaction_error() {
-                        // TODO: should maybe do different actions depending on the error?
-                        return Err(IncluderClientError::TransactionError(transaction_error));
+                        if is_recoverable(&transaction_error) {
+                            error!("Recoverable transaction error: {}", transaction_error);
+                            return Err(IncluderClientError::RecoverableTransactionError(
+                                transaction_error,
+                            ));
+                        } else {
+                            error!("Unrecoverable transaction error: {}", transaction_error);
+                            return Err(IncluderClientError::UnrecoverableTransactionError(
+                                transaction_error,
+                            ));
+                        }
                     }
                     if retries >= self.max_retries {
                         warn!(

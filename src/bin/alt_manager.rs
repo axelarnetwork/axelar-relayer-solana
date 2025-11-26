@@ -7,8 +7,10 @@ use solana::config::SolanaConfig;
 use solana::includer_client::{IncluderClient, IncluderClientTrait};
 use solana::redis::{RedisConnection, RedisConnectionTrait};
 use solana::transaction_type::SolanaTransactionType;
+use solana::utils::keypair_from_base58_string;
 use solana_sdk::address_lookup_table::instruction::{close_lookup_table, deactivate_lookup_table};
 use solana_sdk::pubkey::Pubkey;
+use solana_sdk::signature::Keypair;
 use solana_sdk::signer::Signer as _;
 use solana_sdk::transaction::Transaction;
 use std::time::Duration;
@@ -36,9 +38,8 @@ async fn main() -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("Failed to create includer client: {}", e))?;
 
     let keypair = config.signing_keypair();
-    let authority_pubkey = keypair.pubkey();
 
-    info!("ALT Manager started. Authority: {}", authority_pubkey);
+    info!("ALT Manager started. Authority: {}", keypair.pubkey());
 
     let mut interval = time::interval(Duration::from_secs(ALT_MANAGEMENT_INTERVAL_SECS));
     interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
@@ -46,7 +47,7 @@ async fn main() -> anyhow::Result<()> {
     loop {
         interval.tick().await;
 
-        match manage_alts(&redis_conn, &includer_client, &keypair, authority_pubkey).await {
+        match manage_alts(&redis_conn, &includer_client, &keypair).await {
             Ok(_) => {
                 info!("ALT management cycle completed successfully");
             }
@@ -62,7 +63,6 @@ async fn manage_alts(
     redis_conn: &RedisConnection,
     includer_client: &IncluderClient,
     keypair: &solana_sdk::signer::keypair::Keypair,
-    authority_pubkey: Pubkey,
 ) -> anyhow::Result<()> {
     let alt_keys = redis_conn
         .get_all_alt_keys()
@@ -72,11 +72,11 @@ async fn manage_alts(
     debug!("Found {} ALT(s) in Redis", alt_keys.len());
 
     let (active_alts, deactivated_alts): (
-        Vec<(String, Pubkey, i64, u32, bool)>,
-        Vec<(String, Pubkey, i64, u32, bool)>,
+        Vec<(String, Pubkey, String, i64, u32, bool)>,
+        Vec<(String, Pubkey, String, i64, u32, bool)>,
     ) = alt_keys
         .into_iter()
-        .partition(|(_, _, _, _, active)| *active);
+        .partition(|(_, _, _, _, _, active)| *active);
 
     debug!(
         "Processing {} active ALT(s) and {} deactivated ALT(s)",
@@ -84,40 +84,27 @@ async fn manage_alts(
         deactivated_alts.len()
     );
 
-    process_active_alts(
-        active_alts,
-        includer_client,
-        keypair,
-        authority_pubkey,
-        redis_conn,
-    )
-    .await?;
+    process_active_alts(active_alts, includer_client, keypair, redis_conn).await?;
 
-    process_deactivated_alts(
-        deactivated_alts,
-        includer_client,
-        keypair,
-        authority_pubkey,
-        redis_conn,
-    )
-    .await?;
+    process_deactivated_alts(deactivated_alts, includer_client, keypair, redis_conn).await?;
 
     Ok(())
 }
 
 async fn process_active_alts(
-    active_alts: Vec<(String, Pubkey, i64, u32, bool)>,
+    active_alts: Vec<(String, Pubkey, String, i64, u32, bool)>,
     includer_client: &IncluderClient,
     keypair: &solana_sdk::signer::keypair::Keypair,
-    authority_pubkey: Pubkey,
     redis_conn: &RedisConnection,
 ) -> anyhow::Result<()> {
     let current_timestamp = chrono::Utc::now().timestamp();
 
-    for (message_id, alt_pubkey, created_at, retry_count, _) in active_alts {
+    for (message_id, alt_pubkey, authority_keypair_str, created_at, retry_count, _) in active_alts {
+        let authority_keypair = keypair_from_base58_string(&authority_keypair_str)?;
+
         let seconds_since_creation = current_timestamp - created_at;
         if seconds_since_creation >= ALT_LIFETIME_SECONDS {
-            if let Err(e) = deactivate_alt(alt_pubkey, includer_client, keypair, authority_pubkey)
+            if let Err(e) = deactivate_alt(alt_pubkey, includer_client, keypair, &authority_keypair)
                 .and_then(|_| {
                     redis_conn
                         .set_alt_inactive(message_id.to_string())
@@ -141,15 +128,17 @@ async fn process_active_alts(
 }
 
 async fn process_deactivated_alts(
-    deactivated_alts: Vec<(String, Pubkey, i64, u32, bool)>,
+    deactivated_alts: Vec<(String, Pubkey, String, i64, u32, bool)>,
     includer_client: &IncluderClient,
     keypair: &solana_sdk::signer::keypair::Keypair,
-    authority_pubkey: Pubkey,
     redis_conn: &RedisConnection,
 ) -> anyhow::Result<()> {
     let current_timestamp = chrono::Utc::now().timestamp();
 
-    for (message_id, alt_pubkey, deactivated_at, retry_count, _) in deactivated_alts {
+    for (message_id, alt_pubkey, authority_keypair_str, deactivated_at, retry_count, _) in
+        deactivated_alts
+    {
+        let authority_keypair = keypair_from_base58_string(&authority_keypair_str)?;
         let seconds_since_creation = current_timestamp - deactivated_at;
         if seconds_since_creation >= ALT_LIFETIME_SECONDS {
             debug!(
@@ -161,7 +150,7 @@ async fn process_deactivated_alts(
                 alt_pubkey,
                 includer_client,
                 keypair,
-                authority_pubkey,
+                &authority_keypair,
                 redis_conn,
                 0,
             )
@@ -222,11 +211,11 @@ async fn deactivate_alt(
     alt_pubkey: Pubkey,
     includer_client: &IncluderClient,
     keypair: &solana_sdk::signer::keypair::Keypair,
-    authority_pubkey: Pubkey,
+    authority_keypair: &Keypair,
 ) -> anyhow::Result<()> {
     debug!("Deactivating ALT: {}", alt_pubkey);
 
-    let deactivate_ix = deactivate_lookup_table(alt_pubkey, authority_pubkey);
+    let deactivate_ix = deactivate_lookup_table(alt_pubkey, authority_keypair.pubkey());
 
     let recent_blockhash = includer_client
         .get_latest_blockhash()
@@ -236,7 +225,7 @@ async fn deactivate_alt(
     let transaction = Transaction::new_signed_with_payer(
         &[deactivate_ix],
         Some(&keypair.pubkey()),
-        &[keypair],
+        &[keypair, authority_keypair],
         recent_blockhash,
     );
 
@@ -261,14 +250,14 @@ async fn close_alt(
     alt_pubkey: Pubkey,
     includer_client: &IncluderClient,
     keypair: &solana_sdk::signer::keypair::Keypair,
-    authority_pubkey: Pubkey,
+    authority_keypair: &Keypair,
     redis_conn: &RedisConnection,
     close_attempts: u32,
 ) -> anyhow::Result<()> {
     debug!("Closing ALT: {}", alt_pubkey);
 
-    let recipient_pubkey = authority_pubkey; // Close to the authority wallet
-    let close_ix = close_lookup_table(alt_pubkey, authority_pubkey, recipient_pubkey);
+    let recipient_pubkey = authority_keypair.pubkey(); // Close to the authority wallet
+    let close_ix = close_lookup_table(alt_pubkey, authority_keypair.pubkey(), recipient_pubkey);
 
     let recent_blockhash = includer_client
         .get_latest_blockhash()
@@ -278,7 +267,7 @@ async fn close_alt(
     let transaction = Transaction::new_signed_with_payer(
         &[close_ix],
         Some(&keypair.pubkey()),
-        &[keypair],
+        &[keypair, authority_keypair],
         recent_blockhash,
     );
 
@@ -316,7 +305,7 @@ async fn close_alt(
                     alt_pubkey,
                     includer_client,
                     keypair,
-                    authority_pubkey,
+                    authority_keypair,
                     redis_conn,
                     close_attempts + 1,
                 ))
@@ -325,3 +314,134 @@ async fn close_alt(
         }
     }
 }
+
+// #[cfg(test)]
+// mod tests {
+//     use std::{str::FromStr, thread::sleep};
+
+//     use super::*;
+//     use solana_sdk::{
+//         address_lookup_table::{
+//             instruction::{create_lookup_table, extend_lookup_table},
+//             state::AddressLookupTable,
+//         },
+//         signer::keypair::Keypair,
+//     };
+
+//     #[tokio::test]
+//     async fn test_new_keypair_as_authority() -> anyhow::Result<()> {
+//         dotenv().ok();
+//         let network = std::env::var("NETWORK").expect("NETWORK must be set");
+//         let config: SolanaConfig = config_from_yaml(&format!("config.{network}.yaml"))?;
+
+//         let payer = config.signing_keypair();
+//         let authority = Keypair::new();
+
+//         let includer_client =
+//             IncluderClient::new(&config.solana_poll_rpc, config.solana_commitment, 3)
+//                 .map_err(|e| anyhow::anyhow!("Failed to create includer client: {}", e))?;
+
+//         let recent_slot = includer_client
+//             .get_slot()
+//             .await
+//             .map_err(|e| anyhow::anyhow!("Failed to fetch slot: {}", e))?;
+
+//         let (create_ix, alt_pubkey) =
+//             create_lookup_table(authority.pubkey(), payer.pubkey(), recent_slot);
+
+//         info!(
+//             "Creating ALT: authority={}, payer={}, slot={}, alt_pubkey={}",
+//             authority.pubkey(),
+//             payer.pubkey(),
+//             recent_slot,
+//             alt_pubkey
+//         );
+
+//         let alt_addresses: Vec<Pubkey> = (0..5).map(|_| Pubkey::new_unique()).collect();
+//         let extend_ix = extend_lookup_table(
+//             alt_pubkey,
+//             authority.pubkey(),
+//             Some(payer.pubkey()),
+//             alt_addresses.clone(),
+//         );
+
+//         let recent_blockhash = includer_client
+//             .get_latest_blockhash()
+//             .await
+//             .map_err(|e| anyhow::anyhow!("Failed to get recent blockhash: {}", e))?;
+
+//         info!(
+//             "Transaction signers: payer={}, authority={}",
+//             payer.pubkey(),
+//             authority.pubkey()
+//         );
+//         info!(
+//             "Create instruction: program_id={}, accounts={:?}",
+//             create_ix.program_id,
+//             create_ix.accounts.len()
+//         );
+
+//         let transaction = Transaction::new_signed_with_payer(
+//             &[create_ix, extend_ix],
+//             Some(&payer.pubkey()),
+//             &[&payer, &authority],
+//             recent_blockhash,
+//         );
+
+//         let (signature, _) = includer_client
+//             .send_transaction(SolanaTransactionType::Legacy(transaction))
+//             .await
+//             .map_err(|e| {
+//                 anyhow::anyhow!(
+//                     "Failed to send ALT transaction: {}. Authority: {}, Payer: {}, Slot: {}, ALT: {}",
+//                     e,
+//                     authority.pubkey(),
+//                     payer.pubkey(),
+//                     recent_slot,
+//                     alt_pubkey
+//                 )
+//             })?;
+
+//         info!("Created ALT {alt_pubkey} with signature {signature}");
+
+//         sleep(Duration::from_secs(2));
+
+//         let account_data = includer_client
+//             .get_account_data(&alt_pubkey)
+//             .await
+//             .map_err(|e| anyhow::anyhow!("Failed to fetch ALT account data: {}", e))?;
+
+//         let alt_state = AddressLookupTable::deserialize(&account_data)
+//             .map_err(|e| anyhow::anyhow!("Failed to deserialize ALT state: {}", e))?;
+
+//         assert_eq!(alt_state.meta.authority, Some(authority.pubkey()));
+//         assert_eq!(alt_state.addresses.as_ref(), alt_addresses.as_slice());
+
+//         println!("pubkey: {:?}", alt_pubkey);
+
+//         sleep(Duration::from_secs(600));
+
+//         let deactivate_ix = deactivate_lookup_table(alt_pubkey, authority.pubkey());
+
+//         let recent_blockhash = includer_client
+//             .get_latest_blockhash()
+//             .await
+//             .map_err(|e| anyhow::anyhow!("Failed to get recent blockhash: {}", e))?;
+
+//         let transaction = Transaction::new_signed_with_payer(
+//             &[deactivate_ix],
+//             Some(&payer.pubkey()),
+//             &[&payer, &authority],
+//             recent_blockhash,
+//         );
+
+//         let (signature, _) = includer_client
+//             .send_transaction(SolanaTransactionType::Legacy(transaction))
+//             .await
+//             .map_err(|e| anyhow::anyhow!("Failed to send transaction: {}", e))?;
+
+//         println!("signature: {:?}", signature);
+
+//         Ok(())
+//     }
+// }

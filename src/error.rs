@@ -45,18 +45,24 @@ pub enum GatewayTxError {
 
 #[derive(Error, Debug)]
 pub enum IncluderClientError {
+    #[error("SlotAlreadyVerifiedError: {0}")]
+    SlotAlreadyVerifiedError(String),
+    #[error("AccountInUseError: {0}")]
+    AccountInUseError(String),
     #[error("MaxRetriesExceededError: {0}")]
     MaxRetriesExceededError(String),
-    #[error("TransactionError: {0}")]
-    TransactionError(TransactionError),
+    #[error("UnrecoverableTransactionError: {0}")]
+    UnrecoverableTransactionError(TransactionError),
+    #[error("RecoverableTransactionError: {0}")]
+    RecoverableTransactionError(TransactionError),
     #[error("GenericError: {0}")]
     GenericError(String),
 }
 
 #[derive(Error, Debug, Clone)]
 pub enum SolanaIncluderError {
-    #[error("TransactionError: {0}")]
-    TransactionError(TransactionError),
+    #[error("UnrecoverableError: {0}")]
+    UnrecoverableError(String),
     #[error("GenericError: {0}")]
     GenericError(String),
 }
@@ -75,10 +81,10 @@ pub enum TransactionBuilderError {
 
 #[derive(Error, Debug)]
 pub enum RedisInterfaceError {
-    #[error("GetAltPubkeyError: {0}")]
-    GetAltPubkeyError(String),
-    #[error("WriteAltPubkeyError: {0}")]
-    WriteAltPubkeyError(String),
+    #[error("GetAltEntryError: {0}")]
+    GetAltEntryError(String),
+    #[error("WriteAltEntryError: {0}")]
+    WriteAltEntryError(String),
     #[error("SetAltInactiveError: {0}")]
     SetAltInactiveError(String),
     #[error("SetAltFailedError: {0}")]

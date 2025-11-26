@@ -44,32 +44,38 @@ anchor-spl = "0.31.1"
 mpl-token-metadata = "5.1.1"
 ed25519-zebra = "=4.0.3"
 
-solana-transaction-parser = { git = "https://github.com/commonprefix/solana-transaction-parser", branch = "v2-parsing", features = [
+solana-transaction-parser = { git = "https://github.com/commonprefix/solana-transaction-parser", branch = "main", features = [
     "mocks",
 ] }
 
-interchain-token-transfer-gmp = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "std-crate", package = "interchain-token-transfer-gmp" }
-solana-axelar-its = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "std-crate", package = "solana-axelar-its", features = [
+interchain-token-transfer-gmp = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "main", package = "interchain-token-transfer-gmp" }
+solana-axelar-its = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "main", package = "solana-axelar-its", features = [
     "no-entrypoint",
+    "devnet-amplifier",
 ] }
-solana-axelar-gateway = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "std-crate", package = "solana-axelar-gateway", features = [
+solana-axelar-gateway = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "main", package = "solana-axelar-gateway", features = [
     "no-entrypoint",
+    "devnet-amplifier",
 ] }
-solana-axelar-governance = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "std-crate", package = "solana-axelar-governance", features = [
+solana-axelar-governance = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "main", package = "solana-axelar-governance", features = [
     "no-entrypoint",
+    "devnet-amplifier",
 ] }
-solana-axelar-gas-service = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "std-crate", package = "solana-axelar-gas-service", features = [
+solana-axelar-gas-service = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "main", package = "solana-axelar-gas-service", features = [
     "no-entrypoint",
+    "devnet-amplifier",
 ] }
-solana-axelar-operators = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "std-crate", package = "solana-axelar-operators", features = [
+solana-axelar-operators = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "main", package = "solana-axelar-operators", features = [
     "no-entrypoint",
+    "devnet-amplifier",
 ] }
-solana-axelar-std = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "std-crate" }
+solana-axelar-std = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "main" }
 bytemuck = "1.24.0"
 bincode = "1"
 reqwest = "0.12.24"
 mockall = "0.13.1"
 statrs = "0.16"
+regex = "1.10"
 
 
 [dev-dependencies]
