@@ -193,8 +193,8 @@ impl<
                 Ok((signature, gas_cost))
             }
             Err(e) => match e {
-                IncluderClientError::UnrecoverableTransactionError(e) => {
-                    Err(SolanaIncluderError::UnrecoverableError(e.to_string()))
+                IncluderClientError::SlotAlreadyVerifiedError(e) => {
+                    Err(SolanaIncluderError::SlotAlreadyVerifiedError(e))
                 }
                 _ => Err(SolanaIncluderError::GenericError(e.to_string())),
             },
@@ -426,7 +426,7 @@ impl<
     async fn initialize_payload_verification_session(
         &self,
         execute_data: &ExecuteData,
-    ) -> Result<(Signature, Option<u64>), IncluderError> {
+    ) -> Result<Option<u64>, SolanaIncluderError> {
         let (verification_session_tracker_pda, _) = get_signature_verification_pda(
             &execute_data.payload_merkle_root,
             &execute_data.signing_verifier_set_merkle_root,
@@ -460,7 +460,7 @@ impl<
             .transaction_builder
             .build(&[ix], None, None)
             .await
-            .map_err(|e| IncluderError::GenericError(e.to_string()))?;
+            .map_err(|e| SolanaIncluderError::GenericError(e.to_string()))?;
 
         let res = self.client.send_transaction(tx).await;
         match res {
@@ -470,14 +470,13 @@ impl<
                     signature,
                     gas_cost
                 );
-                Ok((signature, gas_cost))
+                Ok(gas_cost)
             }
             Err(e) => match e {
                 IncluderClientError::AccountInUseError(e) => {
-                    // TODO: Proper error checking
-                    Err(IncluderError::GenericError(e))
+                    Err(SolanaIncluderError::AccountInUseError(e))
                 }
-                _ => Err(IncluderError::GenericError(e.to_string())),
+                _ => Err(SolanaIncluderError::GenericError(e.to_string())),
             },
         }
     }
@@ -529,7 +528,16 @@ impl<
 
         // Wait for all verification txs to complete and collect the results
         while let Some(result) = verifier_set_verification_futures.next().await {
-            let (signature, gas_cost) = result?;
+            let (signature, gas_cost) = match result {
+                Ok((signature, gas_cost)) => (signature, gas_cost),
+                Err(e) => match e {
+                    SolanaIncluderError::SlotAlreadyVerifiedError(e) => {
+                        debug!("Signature already verified: {}", e);
+                        continue;
+                    }
+                    _ => return Err(e),
+                },
+            };
             total_cost += gas_cost.unwrap_or(0);
             debug!(
                 "Transaction for verifying signature successfully: {}. Cost: {:?}",
@@ -649,10 +657,16 @@ impl<
                         signature, gas_cost
                     );
                 }
-                Err(e) => {
-                    // TODO: check type of error. If message already approved, push to approved_messages with cost 0
-                    error!("Failed to approve message: {}: {}", cc_id.id, e);
-                }
+                Err(e) => match e {
+                    SolanaIncluderError::AccountInUseError(e) => {
+                        debug!("Message already approved: {}", e);
+                        approved_messages.push((cc_id, 0));
+                        continue;
+                    }
+                    _ => {
+                        error!("Failed to approve message: {}: {}", cc_id.id, e);
+                    }
+                },
             }
         }
 
@@ -682,15 +696,18 @@ impl<
             .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
         // Initialize payload verification session
-        let (_, init_verification_session_cost) = match self
+        let init_verification_session_cost = match self
             .initialize_payload_verification_session(&execute_data)
             .await
-            .map_err(|e| IncluderError::GenericError(e.to_string()))
         {
-            Ok((verification_signature, verification)) => (verification_signature, verification),
-            Err(e) => {
-                return Err(IncluderError::GenericError(e.to_string()));
-            }
+            Ok(verification) => verification,
+            Err(e) => match e {
+                SolanaIncluderError::AccountInUseError(e) => {
+                    debug!("Account already in use: {}", e);
+                    Some(0)
+                }
+                _ => return Err(IncluderError::GenericError(e.to_string())),
+            },
         };
 
         self.redis_conn
@@ -713,13 +730,18 @@ impl<
                     )
                     .await;
             }
-            Err(e) => {
-                error!(
-                    "Failed to verify signatures for task id: {}: {}",
-                    task.common.id, e
-                );
-                return Err(IncluderError::GenericError(e.to_string()));
-            }
+            Err(e) => match e {
+                SolanaIncluderError::SlotAlreadyVerifiedError(e) => {
+                    debug!("Signature already verified: {}", e);
+                }
+                _ => {
+                    error!(
+                        "Failed to verify signatures for task id: {}: {}",
+                        task.common.id, e
+                    );
+                    return Err(IncluderError::GenericError(e.to_string()));
+                }
+            },
         }
 
         match &execute_data.payload_items {

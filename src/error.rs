@@ -61,6 +61,10 @@ pub enum IncluderClientError {
 
 #[derive(Error, Debug, Clone)]
 pub enum SolanaIncluderError {
+    #[error("AccountInUseError: {0}")]
+    AccountInUseError(String),
+    #[error("SlotAlreadyVerifiedError: {0}")]
+    SlotAlreadyVerifiedError(String),
     #[error("UnrecoverableError: {0}")]
     UnrecoverableError(String),
     #[error("GenericError: {0}")]
