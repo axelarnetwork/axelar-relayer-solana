@@ -730,18 +730,13 @@ impl<
                     )
                     .await;
             }
-            Err(e) => match e {
-                SolanaIncluderError::SlotAlreadyVerifiedError(e) => {
-                    debug!("Signature already verified: {}", e);
-                }
-                _ => {
-                    error!(
-                        "Failed to verify signatures for task id: {}: {}",
-                        task.common.id, e
-                    );
-                    return Err(IncluderError::GenericError(e.to_string()));
-                }
-            },
+            Err(e) => {
+                error!(
+                    "Failed to verify signatures for task id: {}: {}",
+                    task.common.id, e
+                );
+                return Err(IncluderError::GenericError(e.to_string()));
+            }
         }
 
         match &execute_data.payload_items {
