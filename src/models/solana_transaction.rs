@@ -27,7 +27,7 @@ pub struct SolanaTransactionData {
     pub created_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct EventSummary {
     pub event_id: String,
     pub message_id: Option<String>,
@@ -57,7 +57,7 @@ impl PgSolanaTransactionModel {
 }
 
 #[cfg_attr(test, mockall::automock)]
-pub trait UpdateEvents {
+pub trait UpdateEvents: ThreadSafe {
     fn update_events(
         &self,
         signature: String,

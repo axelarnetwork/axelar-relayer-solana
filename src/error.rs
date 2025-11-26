@@ -1,3 +1,4 @@
+use solana_sdk::transaction::TransactionError;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -44,18 +45,32 @@ pub enum GatewayTxError {
 
 #[derive(Error, Debug)]
 pub enum IncluderClientError {
-    #[error("GasExceededError: {0}")]
-    GasExceededError(String),
+    #[error("SlotAlreadyVerifiedError: {0}")]
+    SlotAlreadyVerifiedError(String),
+    #[error("AccountInUseError: {0}")]
+    AccountInUseError(String),
     #[error("MaxRetriesExceededError: {0}")]
     MaxRetriesExceededError(String),
-    #[error("TransactionError: {0}")]
-    TransactionError(String),
+    #[error("UnrecoverableTransactionError: {0}")]
+    UnrecoverableTransactionError(TransactionError),
+    #[error("RecoverableTransactionError: {0}")]
+    RecoverableTransactionError(TransactionError),
+    #[error("GenericError: {0}")]
+    GenericError(String),
+}
+
+#[derive(Error, Debug, Clone)]
+pub enum SolanaIncluderError {
+    #[error("UnrecoverableError: {0}")]
+    UnrecoverableError(String),
     #[error("GenericError: {0}")]
     GenericError(String),
 }
 
 #[derive(Error, Debug)]
 pub enum TransactionBuilderError {
+    #[error("PayloadDecodeError: {0}")]
+    PayloadDecodeError(String),
     #[error("SimulationError: {0}")]
     SimulationError(String),
     #[error("ClientError: {0}")]
@@ -66,10 +81,10 @@ pub enum TransactionBuilderError {
 
 #[derive(Error, Debug)]
 pub enum RedisInterfaceError {
-    #[error("GetAltPubkeyError: {0}")]
-    GetAltPubkeyError(String),
-    #[error("WriteAltPubkeyError: {0}")]
-    WriteAltPubkeyError(String),
+    #[error("GetAltEntryError: {0}")]
+    GetAltEntryError(String),
+    #[error("WriteAltEntryError: {0}")]
+    WriteAltEntryError(String),
     #[error("SetAltInactiveError: {0}")]
     SetAltInactiveError(String),
     #[error("SetAltFailedError: {0}")]
@@ -78,6 +93,12 @@ pub enum RedisInterfaceError {
     RemoveAltKeyError(String),
     #[error("UpdateAltRetryCountError: {0}")]
     UpdateAltRetryCountError(String),
+    #[error("GenericError: {0}")]
+    GenericError(String),
+}
+
+#[derive(Error, Debug)]
+pub enum FeesClientError {
     #[error("GenericError: {0}")]
     GenericError(String),
 }

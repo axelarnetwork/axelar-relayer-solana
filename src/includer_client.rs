@@ -1,24 +1,30 @@
 use anchor_lang::AccountDeserialize;
 use async_trait::async_trait;
 
-use axelar_solana_gateway_v2::IncomingMessage;
 use relayer_core::{error::ClientError, utils::ThreadSafe};
+use solana_axelar_gateway::IncomingMessage;
 use solana_client::rpc_response::RpcPrioritizationFee;
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{
-    commitment_config::CommitmentConfig, hash::Hash, pubkey::Pubkey, signature::Signature,
+    account::Account, commitment_config::CommitmentConfig, hash::Hash, pubkey::Pubkey,
+    signature::Signature,
 };
 use std::{sync::Arc, time::Duration};
-use tracing::warn;
+use tracing::{error, warn};
 
-use crate::{error::IncluderClientError, transaction_type::SolanaTransactionType};
+use crate::{
+    error::IncluderClientError,
+    transaction_type::SolanaTransactionType,
+    utils::{is_addr_in_use, is_recoverable},
+};
 
 #[async_trait]
-#[cfg_attr(any(test), mockall::automock)]
+#[cfg_attr(test, mockall::automock)]
 pub trait IncluderClientTrait: ThreadSafe {
     fn inner(&self) -> &RpcClient;
     async fn get_latest_blockhash(&self) -> Result<Hash, IncluderClientError>;
     async fn get_account_data(&self, pubkey: &Pubkey) -> Result<Vec<u8>, IncluderClientError>;
+    async fn get_account(&self, pubkey: &Pubkey) -> Result<Account, IncluderClientError>;
     async fn get_slot(&self) -> Result<u64, IncluderClientError>;
     async fn get_recent_prioritization_fees(
         &self,
@@ -87,6 +93,13 @@ impl IncluderClientTrait for IncluderClient {
             .map_err(|e| IncluderClientError::GenericError(e.to_string()))
     }
 
+    async fn get_account(&self, pubkey: &Pubkey) -> Result<Account, IncluderClientError> {
+        self.inner()
+            .get_account(pubkey)
+            .await
+            .map_err(|e| IncluderClientError::GenericError(e.to_string()))
+    }
+
     async fn get_slot(&self) -> Result<u64, IncluderClientError> {
         self.inner()
             .get_slot()
@@ -120,20 +133,39 @@ impl IncluderClientTrait for IncluderClient {
                     self.client.send_and_confirm_transaction(tx).await
                 }
             };
+
             match res {
                 Ok(signature) => {
+                    // At this point, the transaction has been sent and confirmed. We need to return the signature,
+                    // even if we fail to get the cost.
                     let cost = match self.get_transaction_cost_from_signature(&signature).await {
                         Ok(cost) => cost,
-                        Err(e) => return Err(IncluderClientError::GenericError(e.to_string())),
+                        Err(e) => {
+                            warn!("Failed to get transaction cost from signature: {}", e);
+                            return Ok((signature, None));
+                        }
                     };
                     return Ok((signature, cost));
                 }
                 Err(e) => {
-                    if e.to_string().contains("Computational budget exceeded") {
-                        return Err(IncluderClientError::GasExceededError(e.to_string()));
+                    // TODO: we can reach this point even if the transaction was sent and confirmed successfully,
+                    // and we'll fail to account for the fee.
+                    // We might have to manually implement send_and_confirm()
+                    if is_addr_in_use(&e.to_string()) {
+                        return Err(IncluderClientError::AccountInUseError(e.to_string()));
                     }
-                    if e.get_transaction_error().is_some() {
-                        return Err(IncluderClientError::TransactionError(e.to_string()));
+                    if let Some(transaction_error) = e.get_transaction_error() {
+                        if is_recoverable(&transaction_error) {
+                            error!("Recoverable transaction error: {}", transaction_error);
+                            return Err(IncluderClientError::RecoverableTransactionError(
+                                transaction_error,
+                            ));
+                        } else {
+                            error!("Unrecoverable transaction error: {}", transaction_error);
+                            return Err(IncluderClientError::UnrecoverableTransactionError(
+                                transaction_error,
+                            ));
+                        }
                     }
                     if retries >= self.max_retries {
                         warn!(

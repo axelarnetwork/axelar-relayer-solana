@@ -1,92 +1,67 @@
 // Estimates the gas required to make a transaction on Solana
 // https://solana.com/developers/guides/advanced/exchange
 // Read about prioritization fees in the corresponding section in the guide
+// Updated to support configurable percentiles
 
 use crate::error::GasCalculatorError;
+use crate::fees_client::FeesClientTrait;
 use crate::includer_client::IncluderClientTrait;
 use crate::transaction_type::SolanaTransactionType;
 use async_trait::async_trait;
-use solana_sdk::compute_budget::ComputeBudgetInstruction;
-use solana_sdk::hash::Hash;
+use relayer_core::utils::ThreadSafe;
 use solana_sdk::instruction::Instruction;
-use solana_sdk::signer::keypair::Keypair;
-use solana_sdk::signer::Signer;
-use solana_sdk::transaction::Transaction;
-use std::sync::Arc;
+use tracing::debug;
 
 #[derive(Clone)]
-pub struct GasCalculator<IC: IncluderClientTrait> {
+pub struct GasCalculator<IC: IncluderClientTrait, FC: FeesClientTrait> {
     includer_client: IC,
-    solana_keypair: Arc<Keypair>,
+    fees_client: FC,
 }
 
-impl<IC: IncluderClientTrait> GasCalculator<IC> {
-    pub fn new(includer_client: IC, solana_keypair: Arc<Keypair>) -> Self {
+impl<IC: IncluderClientTrait, FC: FeesClientTrait> GasCalculator<IC, FC> {
+    pub fn new(includer_client: IC, fees_client: FC) -> Self {
         Self {
             includer_client,
-            solana_keypair,
+            fees_client,
         }
     }
 }
 
 #[cfg_attr(test, mockall::automock)]
 #[async_trait]
-pub trait GasCalculatorTrait {
-    async fn compute_budget(
-        &self,
-        ixs: &[Instruction],
-    ) -> Result<(Instruction, Hash), GasCalculatorError>;
+pub trait GasCalculatorTrait: ThreadSafe {
+    async fn compute_budget(&self, tx: SolanaTransactionType) -> Result<u64, GasCalculatorError>;
     async fn compute_unit_price(
         &self,
         ixs: &[Instruction],
-        gas_exceeded_count: u64,
-    ) -> Result<Instruction, GasCalculatorError>;
+        percentile: f64,
+    ) -> Result<u64, GasCalculatorError>;
 }
 
 #[async_trait]
-impl<IC: IncluderClientTrait> GasCalculatorTrait for GasCalculator<IC> {
-    async fn compute_budget(
-        &self,
-        ixs: &[Instruction],
-    ) -> Result<(Instruction, Hash), GasCalculatorError> {
-        const PERCENT_POINTS_TO_TOP_UP: u64 = 10;
+impl<IC: IncluderClientTrait, FC: FeesClientTrait> GasCalculatorTrait for GasCalculator<IC, FC> {
+    async fn compute_budget(&self, tx: SolanaTransactionType) -> Result<u64, GasCalculatorError> {
+        const PERCENT_POINTS_TO_TOP_UP: u64 = 20;
 
-        let hash = self
-            .includer_client
-            .get_latest_blockhash()
-            .await
-            .map_err(|e| GasCalculatorError::Generic(e.to_string()))?;
-        let tx_to_simulate = Transaction::new_signed_with_payer(
-            ixs,
-            Some(&self.solana_keypair.pubkey()),
-            &[&self.solana_keypair],
-            hash,
-        );
         let computed_units = self
             .includer_client
-            .get_units_consumed_from_simulation(SolanaTransactionType::Legacy(tx_to_simulate))
+            .get_units_consumed_from_simulation(tx)
             .await
             .map_err(|e| GasCalculatorError::Generic(e.to_string()))?;
 
         let safety_margin = computed_units
             .saturating_mul(PERCENT_POINTS_TO_TOP_UP)
             .saturating_div(100);
-        let compute_budget = computed_units.saturating_add(safety_margin);
 
-        let ix =
-            ComputeBudgetInstruction::set_compute_unit_limit(compute_budget.try_into().map_err(
-                |e: std::num::TryFromIntError| GasCalculatorError::Generic(e.to_string()),
-            )?);
-        Ok((ix, hash))
+        Ok(computed_units.saturating_add(safety_margin))
     }
 
     async fn compute_unit_price(
         &self,
         ixs: &[Instruction],
-        gas_exceeded_count: u64,
-    ) -> Result<Instruction, GasCalculatorError> {
+        percentile: f64,
+    ) -> Result<u64, GasCalculatorError> {
         const MAX_ACCOUNTS: usize = 128;
-        const N_SLOTS_TO_CHECK: usize = 10;
 
         let all_touched_accounts = ixs
             .iter()
@@ -94,32 +69,14 @@ impl<IC: IncluderClientTrait> GasCalculatorTrait for GasCalculator<IC> {
             .take(MAX_ACCOUNTS)
             .map(|x| x.pubkey)
             .collect::<Vec<_>>();
+
         let fees = self
-            .includer_client
-            .get_recent_prioritization_fees(&all_touched_accounts)
-            .await
-            .map_err(|e| GasCalculatorError::Generic(e.to_string()))?;
-        let (sum, count) = fees
-            .into_iter()
-            .rev()
-            .take(N_SLOTS_TO_CHECK)
-            .map(|x| x.prioritization_fee)
-            // Simple rolling average of the last `N_SLOTS_TO_CHECK` items.
-            .fold((0_u64, 0_u64), |(sum, count), fee| {
-                (sum.saturating_add(fee), count.saturating_add(1))
-            });
-        let average = if count > 0 {
-            sum.saturating_div(count)
-        } else {
-            0
-        };
+            .fees_client
+            .get_recent_prioritization_fees(&all_touched_accounts, percentile)
+            .await;
 
-        let retry_multiplier = gas_exceeded_count.saturating_mul(10); // 0, 10, 20, 30
-        let retry_adjustment = average.saturating_mul(retry_multiplier).saturating_div(100);
-        let adjusted_unit_price = average.saturating_add(retry_adjustment);
+        debug!("Got prioritization fees: {}", fees);
 
-        Ok(ComputeBudgetInstruction::set_compute_unit_price(
-            adjusted_unit_price,
-        ))
+        Ok(fees)
     }
 }
