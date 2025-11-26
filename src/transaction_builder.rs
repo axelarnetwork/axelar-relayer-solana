@@ -301,6 +301,7 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
                 accounts.extend(execute_interchain_transfer_extra_accounts(
                     destination_address,
                     destination_ata,
+                    Some(!transfer.data.is_empty()),
                 ));
             }
 
