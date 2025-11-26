@@ -736,23 +736,26 @@ impl<
 
                 // The overhead cost is the initialize payload verification session and the total cost of verifying all signatures
                 // divided by the number of messages. The total cost for the message is the overhead plus its own cost.
-                let overhead_cost = self
-                    .redis_conn
-                    .get_gas_cost_for_task_id(task.common.id.clone(), TransactionType::Approve)
-                    .await
-                    .map_err(|e| IncluderError::GenericError(e.to_string()))?;
-                let overhead_cost_per_message = overhead_cost
-                    .checked_div(messages.len() as u64)
-                    .unwrap_or(0);
-                for (cc_id, gas_cost) in &approved_messages {
-                    self.redis_conn
-                        .write_gas_cost_for_message_id(
-                            cc_id.id.clone(),
-                            gas_cost.saturating_add(overhead_cost_per_message),
-                            TransactionType::Approve,
-                        )
-                        .await;
+                if !approved_messages.is_empty() {
+                    let overhead_cost = self
+                        .redis_conn
+                        .get_gas_cost_for_task_id(task.common.id.clone(), TransactionType::Approve)
+                        .await
+                        .map_err(|e| IncluderError::GenericError(e.to_string()))?;
+                    let overhead_cost_per_message = overhead_cost
+                        .checked_div(messages.len() as u64)
+                        .unwrap_or(0);
+                    for (cc_id, gas_cost) in &approved_messages {
+                        self.redis_conn
+                            .write_gas_cost_for_message_id(
+                                cc_id.id.clone(),
+                                gas_cost.saturating_add(overhead_cost_per_message),
+                                TransactionType::Approve,
+                            )
+                            .await;
+                    }
                 }
+
                 if approved_messages.len() != messages.len() {
                     error!("Failed to approve all messages for task id: {}. Approved: {}, Expected: {}", task.common.id, approved_messages.len(), messages.len());
                     return Err(IncluderError::GenericError(format!("Failed to approve all messages for task id: {}. Approved: {}, Expected: {}", task.common.id, approved_messages.len(), messages.len())));
