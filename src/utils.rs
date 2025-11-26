@@ -2,12 +2,12 @@ use crate::{includer::ALTInfo, transaction_type::SolanaTransactionType, types::S
 use anchor_lang::Key;
 use anchor_spl::{associated_token::spl_associated_token_account, token_2022::spl_token_2022};
 use anyhow::anyhow;
+use regex::Regex;
 use relayer_core::{
     gmp_api::{gmp_types::ExecuteTask, GmpApiTrait},
     queue::{QueueItem, QueueTrait},
 };
 use serde_json::json;
-use solana_axelar_std::execute_data::{ExecuteData, MerklizedPayload};
 use solana_transaction_parser::gmp_types::{CannotExecuteMessageReason, Event};
 use std::str::FromStr;
 use tracing::{debug, error};
@@ -443,35 +443,6 @@ pub fn not_enough_gas_event<G: GmpApiTrait>(
     vec![event]
 }
 
-pub async fn get_cannot_execute_events_from_execute_data<G: GmpApiTrait>(
-    execute_data: &ExecuteData,
-    reason: CannotExecuteMessageReason,
-    details: String,
-    task_id: String,
-    gmp_api: Arc<G>,
-) -> Result<Vec<Event>, anyhow::Error> {
-    let mut cannot_execute_events = vec![];
-    let payload_items = execute_data.payload_items.clone();
-    match payload_items {
-        MerklizedPayload::VerifierSetRotation { .. } => {
-            error!("Skipping verifier set rotation");
-        }
-        MerklizedPayload::NewMessages { messages } => {
-            error!("Getting cannot execute events from all messages");
-            for message in messages {
-                cannot_execute_events.push(gmp_api.cannot_execute_message(
-                    task_id.clone(),
-                    message.leaf.message.cc_id.id.clone(),
-                    message.leaf.message.cc_id.chain.clone(),
-                    details.clone(),
-                    reason.clone(),
-                ));
-            }
-        }
-    }
-    Ok(cannot_execute_events)
-}
-
 pub fn is_recoverable(transaction_error: &TransactionError) -> bool {
     !matches!(
         transaction_error,
@@ -481,6 +452,18 @@ pub fn is_recoverable(transaction_error: &TransactionError) -> bool {
             | TransactionError::TooManyAccountLocks
             | TransactionError::ProgramCacheHitMaxLimit
     )
+}
+
+/// Checks if a string contains the "account already in use" error pattern.
+/// Matches: "Allocate: account Address { address: <address>, base: None } already in use"
+pub fn is_addr_in_use(s: &str) -> bool {
+    // Pattern matches: "Allocate: account Address { address: " followed by a base58 address
+    // (32-44 characters, excluding 0, O, I, l) followed by ", base: None } already in use"
+    // Base58 characters: 123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz
+    let pattern = r"Allocate: account Address \{ address: [1-9A-HJ-NP-Za-km-z]{32,44}, base: None \} already in use";
+    Regex::new(pattern)
+        .map(|re| re.is_match(s))
+        .unwrap_or(false)
 }
 
 pub fn keypair_to_base58_string(keypair: &Keypair) -> String {
@@ -542,5 +525,40 @@ mod tests {
 
         let transaction_error = TransactionError::AccountNotFound;
         assert!(is_recoverable(&transaction_error));
+    }
+
+    #[test]
+    fn test_is_addr_in_use() {
+        let error_msg = "Allocate: account Address { address: FAVDxWyV1GcvRxaDjv12jo1foDbU7uDYfrbuky68JGHK, base: None } already in use";
+        assert!(is_addr_in_use(error_msg));
+
+        let error_msg2 = "Allocate: account Address { address: 11111111111111111111111111111111, base: None } already in use";
+        assert!(is_addr_in_use(error_msg2));
+
+        let normal_msg = "Some other error message";
+        assert!(!is_addr_in_use(normal_msg));
+
+        let partial_msg =
+            "Allocate: account Address { address: FAVDxWyV1GcvRxaDjv12jo1foDbU7uDYfrbuky68JGHK";
+        assert!(!is_addr_in_use(partial_msg));
+
+        let embedded_msg = "Error: Allocate: account Address { address: FAVDxWyV1GcvRxaDjv12jo1foDbU7uDYfrbuky68JGHK, base: None } already in use - transaction failed";
+        assert!(is_addr_in_use(embedded_msg));
+
+        let full_message = r#"2025-11-25T18:02:30.415586Z DEBUG solana_rpc_client::nonblocking::rpc_client: -32002 Transaction simulation failed: Error processing Instruction 2: custom program error: 0x0
+2025-11-25T18:02:30.415641Z DEBUG solana_rpc_client::nonblocking::rpc_client:   1: Program ComputeBudget111111111111111111111111111111 invoke [1]
+2025-11-25T18:02:30.415672Z DEBUG solana_rpc_client::nonblocking::rpc_client:   2: Program ComputeBudget111111111111111111111111111111 success
+2025-11-25T18:02:30.415700Z DEBUG solana_rpc_client::nonblocking::rpc_client:   3: Program ComputeBudget111111111111111111111111111111 invoke [1]
+2025-11-25T18:02:30.415727Z DEBUG solana_rpc_client::nonblocking::rpc_client:   4: Program ComputeBudget111111111111111111111111111111 success
+2025-11-25T18:02:30.415754Z DEBUG solana_rpc_client::nonblocking::rpc_client:   5: Program gtw3LYHmSe3y1cRqCeBuTpyB4KDQHfaqqHQs6Rw19DX invoke [1]
+2025-11-25T18:02:30.415781Z DEBUG solana_rpc_client::nonblocking::rpc_client:   6: Program log: Instruction: InitializePayloadVerificationSession
+2025-11-25T18:02:30.415808Z DEBUG solana_rpc_client::nonblocking::rpc_client:   7: Program 11111111111111111111111111111111 invoke [2]
+2025-11-25T18:02:30.415835Z DEBUG solana_rpc_client::nonblocking::rpc_client:   8: Allocate: account Address { address: FAVDxWyV1GcvRxaDjv12jo1foDbU7uDYfrbuky68JGHK, base: None } already in use
+2025-11-25T18:02:30.415864Z DEBUG solana_rpc_client::nonblocking::rpc_client:   9: Program 11111111111111111111111111111111 failed: custom program error: 0x0
+2025-11-25T18:02:30.415891Z DEBUG solana_rpc_client::nonblocking::rpc_client:  10: Program gtw3LYHmSe3y1cRqCeBuTpyB4KDQHfaqqHQs6Rw19DX consumed 5909 of 7150 compute units
+2025-11-25T18:02:30.415919Z DEBUG solana_rpc_client::nonblocking::rpc_client:  11: Program gtw3LYHmSe3y1cRqCeBuTpyB4KDQHfaqqHQs6Rw19DX failed: custom program error: 0x0
+2025-11-25T18:02:30.415947Z DEBUG solana_rpc_client::nonblocking::rpc_client: 
+2025-11-25T18:02:30.416016Z ERROR relayer_core::includer: Failed to consume delivery: GatewayTxTaskError("Generic error: Generic error: Generic error: TransactionError: Error processing Instruction 2: custom program error: 0x0")"#;
+        assert!(is_addr_in_use(full_message));
     }
 }

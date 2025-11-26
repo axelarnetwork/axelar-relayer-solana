@@ -5,7 +5,7 @@ use relayer_core::utils::ThreadSafe;
 use serde::{Deserialize, Serialize};
 use solana_sdk::pubkey::Pubkey;
 use solana_transaction_parser::redis::TransactionType;
-use tracing::{debug, warn};
+use tracing::{debug, error, warn};
 
 use redis::aio::ConnectionManager;
 
@@ -31,7 +31,18 @@ fn default_true() -> bool {
 #[async_trait]
 pub trait RedisConnectionTrait: ThreadSafe {
     fn inner(&self) -> &ConnectionManager;
-    async fn write_gas_cost(
+    async fn add_gas_cost_for_task_id(
+        &self,
+        task_id: String,
+        gas_cost: u64,
+        transaction_type: TransactionType,
+    );
+    async fn get_gas_cost_for_task_id(
+        &self,
+        task_id: String,
+        transaction_type: TransactionType,
+    ) -> Result<u64, RedisInterfaceError>;
+    async fn write_gas_cost_for_message_id(
         &self,
         message_id: String,
         gas_cost: u64,
@@ -90,7 +101,82 @@ impl RedisConnectionTrait for RedisConnection {
         &self.conn
     }
 
-    async fn write_gas_cost(
+    async fn add_gas_cost_for_task_id(
+        &self,
+        task_id: String,
+        gas_cost: u64,
+        transaction_type: TransactionType,
+    ) {
+        debug!("Adding gas cost for task id: {} to Redis", task_id);
+        let mut redis_conn = self.conn.clone();
+        let set_opts = SetOptions::default().with_expiration(SetExpiry::EX(GAS_COST_EXPIRATION));
+        let key = format!("task_cost:{}:{}", transaction_type, task_id);
+
+        // Get existing cost, default to 0 if not found
+        let existing_cost =
+            match redis::AsyncCommands::get::<_, Option<String>>(&mut redis_conn, &key).await {
+                Ok(Some(serialized)) => serialized.parse::<u64>().unwrap_or(0),
+                Ok(None) => 0,
+                Err(_) => 0, // If there's an error reading, assume 0
+            };
+
+        let total_cost = existing_cost + gas_cost;
+
+        let result = redis_conn
+            .set_options(key.clone(), total_cost, set_opts)
+            .await;
+
+        match result {
+            Ok(_) => {
+                debug!(
+                    "Gas cost for added to Redis successfully, key: {}, existing: {}, added: {}, total: {}",
+                    key, existing_cost, gas_cost, total_cost
+                );
+            }
+            Err(e) => {
+                warn!("Failed to write gas cost to Redis: {}", e);
+            }
+        }
+    }
+
+    async fn get_gas_cost_for_task_id(
+        &self,
+        task_id: String,
+        transaction_type: TransactionType,
+    ) -> Result<u64, RedisInterfaceError> {
+        let key = format!("task_cost:{}:{}", transaction_type, task_id);
+        let mut conn = self.conn.clone();
+        match redis::AsyncCommands::get::<_, Option<String>>(&mut conn, &key).await {
+            Ok(Some(serialized)) => {
+                if let Ok(cost) = serialized.parse::<u64>() {
+                    debug!("Cost for key {} is {}", key, cost);
+                    return Ok(cost);
+                } else {
+                    error!("Failed to parse cost for key {}: {}", key, serialized);
+                    return Err(RedisInterfaceError::GenericError(format!(
+                        "Failed to parse cost for key {}: {}",
+                        key, serialized
+                    )));
+                }
+            }
+            Ok(None) => {
+                error!("Failed to get cost for key {}: Key not found in Redis", key);
+                return Err(RedisInterfaceError::GenericError(format!(
+                    "Failed to get cost for key {}: Key not found in Redis",
+                    key
+                )));
+            }
+            Err(e) => {
+                error!("Failed to get cost for key {}: {}", key, e);
+                return Err(RedisInterfaceError::GenericError(format!(
+                    "Failed to get cost for key {}: {}",
+                    key, e
+                )));
+            }
+        }
+    }
+
+    async fn write_gas_cost_for_message_id(
         &self,
         message_id: String,
         gas_cost: u64,
@@ -504,7 +590,7 @@ mod tests {
         let gas_cost = 50000u64;
 
         redis_conn
-            .write_gas_cost(message_id.clone(), gas_cost, TransactionType::Execute)
+            .write_gas_cost_for_message_id(message_id.clone(), gas_cost, TransactionType::Execute)
             .await;
 
         let mut conn = redis_conn.inner().clone();
@@ -522,7 +608,7 @@ mod tests {
         let gas_cost = 30000u64;
 
         redis_conn
-            .write_gas_cost(message_id.clone(), gas_cost, TransactionType::Approve)
+            .write_gas_cost_for_message_id(message_id.clone(), gas_cost, TransactionType::Approve)
             .await;
 
         let mut conn = redis_conn.inner().clone();
@@ -825,7 +911,7 @@ mod tests {
         let gas_cost = 75000u64;
 
         redis_conn
-            .write_gas_cost(message_id.clone(), gas_cost, TransactionType::Execute)
+            .write_gas_cost_for_message_id(message_id.clone(), gas_cost, TransactionType::Execute)
             .await;
 
         let mut conn = redis_conn.inner().clone();
@@ -846,10 +932,18 @@ mod tests {
         let approve_cost = 30000u64;
 
         redis_conn
-            .write_gas_cost(message_id.clone(), execute_cost, TransactionType::Execute)
+            .write_gas_cost_for_message_id(
+                message_id.clone(),
+                execute_cost,
+                TransactionType::Execute,
+            )
             .await;
         redis_conn
-            .write_gas_cost(message_id.clone(), approve_cost, TransactionType::Approve)
+            .write_gas_cost_for_message_id(
+                message_id.clone(),
+                approve_cost,
+                TransactionType::Approve,
+            )
             .await;
 
         let mut conn = redis_conn.inner().clone();
@@ -1112,5 +1206,189 @@ mod tests {
 
         assert_eq!(value_1, alt_pubkey_1.to_string());
         assert_eq!(value_2, alt_pubkey_2.to_string());
+    }
+
+    #[tokio::test]
+    async fn test_add_gas_cost_for_task_id_first_time() {
+        let (_container, redis_conn) = create_redis_connection().await;
+
+        let task_id = "test-task-123".to_string();
+        let gas_cost = 50000u64;
+
+        redis_conn
+            .add_gas_cost_for_task_id(task_id.clone(), gas_cost, TransactionType::Execute)
+            .await;
+
+        let mut conn = redis_conn.inner().clone();
+        let key = format!("task_cost:{}:{}", TransactionType::Execute, task_id);
+        let stored_value: Option<String> = redis::AsyncCommands::get(&mut conn, key).await.unwrap();
+
+        assert_eq!(stored_value, Some(gas_cost.to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_add_gas_cost_for_task_id_accumulates() {
+        let (_container, redis_conn) = create_redis_connection().await;
+
+        let task_id = "test-task-456".to_string();
+        let gas_cost_1 = 30000u64;
+        let gas_cost_2 = 20000u64;
+        let expected_total = gas_cost_1 + gas_cost_2;
+
+        // First addition
+        redis_conn
+            .add_gas_cost_for_task_id(task_id.clone(), gas_cost_1, TransactionType::Execute)
+            .await;
+
+        // Second addition - should accumulate
+        redis_conn
+            .add_gas_cost_for_task_id(task_id.clone(), gas_cost_2, TransactionType::Execute)
+            .await;
+
+        let mut conn = redis_conn.inner().clone();
+        let key = format!("task_cost:{}:{}", TransactionType::Execute, task_id);
+        let stored_value: Option<String> = redis::AsyncCommands::get(&mut conn, key).await.unwrap();
+
+        assert_eq!(stored_value, Some(expected_total.to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_add_gas_cost_for_task_id_multiple_additions() {
+        let (_container, redis_conn) = create_redis_connection().await;
+
+        let task_id = "test-task-789".to_string();
+        let costs = vec![10000u64, 20000u64, 30000u64, 40000u64];
+        let expected_total: u64 = costs.iter().sum();
+
+        for cost in costs {
+            redis_conn
+                .add_gas_cost_for_task_id(task_id.clone(), cost, TransactionType::Execute)
+                .await;
+        }
+
+        let mut conn = redis_conn.inner().clone();
+        let key = format!("task_cost:{}:{}", TransactionType::Execute, task_id);
+        let stored_value: Option<String> = redis::AsyncCommands::get(&mut conn, key).await.unwrap();
+
+        assert_eq!(stored_value, Some(expected_total.to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_get_gas_cost_for_task_id_exists() {
+        let (_container, redis_conn) = create_redis_connection().await;
+
+        let task_id = "test-task-get-123".to_string();
+        let gas_cost = 75000u64;
+
+        // First add the cost
+        redis_conn
+            .add_gas_cost_for_task_id(task_id.clone(), gas_cost, TransactionType::Execute)
+            .await;
+
+        // Then retrieve it
+        let retrieved_cost = redis_conn
+            .get_gas_cost_for_task_id(task_id.clone(), TransactionType::Execute)
+            .await
+            .unwrap();
+
+        assert_eq!(retrieved_cost, gas_cost);
+    }
+
+    #[tokio::test]
+    async fn test_get_gas_cost_for_task_id_not_found() {
+        let (_container, redis_conn) = create_redis_connection().await;
+
+        let task_id = "non-existent-task".to_string();
+
+        let result = redis_conn
+            .get_gas_cost_for_task_id(task_id, TransactionType::Execute)
+            .await;
+
+        assert!(result.is_err());
+        if let Err(RedisInterfaceError::GenericError(msg)) = result {
+            assert!(msg.contains("Key not found in Redis"));
+        } else {
+            panic!("Expected GenericError with 'Key not found' message");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_gas_cost_for_task_id_different_transaction_types() {
+        let (_container, redis_conn) = create_redis_connection().await;
+
+        let task_id = "test-task-types".to_string();
+        let execute_cost = 50000u64;
+        let approve_cost = 30000u64;
+
+        redis_conn
+            .add_gas_cost_for_task_id(task_id.clone(), execute_cost, TransactionType::Execute)
+            .await;
+        redis_conn
+            .add_gas_cost_for_task_id(task_id.clone(), approve_cost, TransactionType::Approve)
+            .await;
+
+        let retrieved_execute = redis_conn
+            .get_gas_cost_for_task_id(task_id.clone(), TransactionType::Execute)
+            .await
+            .unwrap();
+        let retrieved_approve = redis_conn
+            .get_gas_cost_for_task_id(task_id.clone(), TransactionType::Approve)
+            .await
+            .unwrap();
+
+        assert_eq!(retrieved_execute, execute_cost);
+        assert_eq!(retrieved_approve, approve_cost);
+    }
+
+    #[tokio::test]
+    async fn test_add_gas_cost_for_task_id_different_transaction_types() {
+        let (_container, redis_conn) = create_redis_connection().await;
+
+        let task_id = "test-task-multi-type".to_string();
+        let execute_cost_1 = 25000u64;
+        let execute_cost_2 = 15000u64;
+        let approve_cost = 10000u64;
+
+        redis_conn
+            .add_gas_cost_for_task_id(task_id.clone(), execute_cost_1, TransactionType::Execute)
+            .await;
+        redis_conn
+            .add_gas_cost_for_task_id(task_id.clone(), execute_cost_2, TransactionType::Execute)
+            .await;
+        redis_conn
+            .add_gas_cost_for_task_id(task_id.clone(), approve_cost, TransactionType::Approve)
+            .await;
+
+        let retrieved_execute = redis_conn
+            .get_gas_cost_for_task_id(task_id.clone(), TransactionType::Execute)
+            .await
+            .unwrap();
+        let retrieved_approve = redis_conn
+            .get_gas_cost_for_task_id(task_id.clone(), TransactionType::Approve)
+            .await
+            .unwrap();
+
+        assert_eq!(retrieved_execute, execute_cost_1 + execute_cost_2);
+        assert_eq!(retrieved_approve, approve_cost);
+    }
+
+    #[tokio::test]
+    async fn test_add_gas_cost_for_task_id_expiration() {
+        let (_container, redis_conn) = create_redis_connection().await;
+
+        let task_id = "test-task-expiration".to_string();
+        let gas_cost = 60000u64;
+
+        redis_conn
+            .add_gas_cost_for_task_id(task_id.clone(), gas_cost, TransactionType::Execute)
+            .await;
+
+        let mut conn = redis_conn.inner().clone();
+        let key = format!("task_cost:{}:{}", TransactionType::Execute, task_id);
+        let ttl: i64 = redis::AsyncCommands::ttl(&mut conn, key).await.unwrap();
+
+        assert!(ttl > 0, "TTL should be positive");
+        assert!(ttl <= GAS_COST_EXPIRATION as i64);
+        assert!(ttl > (GAS_COST_EXPIRATION as i64 - 10));
     }
 }

@@ -5,7 +5,6 @@ use relayer_core::{error::ClientError, utils::ThreadSafe};
 use solana_axelar_gateway::IncomingMessage;
 use solana_client::rpc_response::RpcPrioritizationFee;
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
-use solana_sdk::transaction::TransactionError;
 use solana_sdk::{
     account::Account, commitment_config::CommitmentConfig, hash::Hash, pubkey::Pubkey,
     signature::Signature,
@@ -14,7 +13,9 @@ use std::{sync::Arc, time::Duration};
 use tracing::{error, warn};
 
 use crate::{
-    error::IncluderClientError, transaction_type::SolanaTransactionType, utils::is_recoverable,
+    error::IncluderClientError,
+    transaction_type::SolanaTransactionType,
+    utils::{is_addr_in_use, is_recoverable},
 };
 
 #[async_trait]
@@ -150,36 +151,20 @@ impl IncluderClientTrait for IncluderClient {
                     // TODO: we can reach this point even if the transaction was sent and confirmed successfully,
                     // and we'll fail to account for the fee.
                     // We might have to manually implement send_and_confirm()
+                    if is_addr_in_use(&e.to_string()) {
+                        return Err(IncluderClientError::AccountInUseError(e.to_string()));
+                    }
                     if let Some(transaction_error) = e.get_transaction_error() {
-                        match transaction_error {
-                            TransactionError::AccountInUse => {
-                                error!("Account in use error: {}", transaction_error);
-                                return Err(IncluderClientError::AccountInUseError(e.to_string()));
-                            }
-                            TransactionError::AlreadyProcessed => {
-                                error!("Slot already verified error: {}", transaction_error);
-                                return Err(IncluderClientError::SlotAlreadyVerifiedError(
-                                    e.to_string(),
-                                ));
-                            }
-                            _ => {
-                                if is_recoverable(&transaction_error) {
-                                    error!("Recoverable transaction error: {}", transaction_error);
-                                    return Err(IncluderClientError::RecoverableTransactionError(
-                                        transaction_error,
-                                    ));
-                                } else {
-                                    error!(
-                                        "Unrecoverable transaction error: {}",
-                                        transaction_error
-                                    );
-                                    return Err(
-                                        IncluderClientError::UnrecoverableTransactionError(
-                                            transaction_error,
-                                        ),
-                                    );
-                                }
-                            }
+                        if is_recoverable(&transaction_error) {
+                            error!("Recoverable transaction error: {}", transaction_error);
+                            return Err(IncluderClientError::RecoverableTransactionError(
+                                transaction_error,
+                            ));
+                        } else {
+                            error!("Unrecoverable transaction error: {}", transaction_error);
+                            return Err(IncluderClientError::UnrecoverableTransactionError(
+                                transaction_error,
+                            ));
                         }
                     }
                     if retries >= self.max_retries {
