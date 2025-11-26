@@ -594,7 +594,7 @@ impl<
         &self,
         messages: Vec<MerklizedMessage>,
         execute_data: &ExecuteData,
-    ) -> Result<Vec<(CrossChainId, u64)>, SolanaIncluderError> {
+    ) -> Vec<(CrossChainId, u64)> {
         // Collect PDAs
         let (gateway_root_pda, _) = get_gateway_root_config_internal();
 
@@ -639,24 +639,24 @@ impl<
             })
             .collect::<FuturesUnordered<_>>();
 
-        let mut messages = vec![];
+        let mut approved_messages = vec![];
         while let Some((cc_id, result)) = merkelised_message_futures.next().await {
             match result {
                 Ok((signature, gas_cost)) => {
-                    messages.push((cc_id, gas_cost.unwrap_or(0)));
+                    approved_messages.push((cc_id, gas_cost.unwrap_or(0)));
                     debug!(
                         "Message approved successfully, signature: {}, cost: {:?}",
                         signature, gas_cost
                     );
                 }
                 Err(e) => {
+                    // TODO: check type of error. If message already approved, push to approved_messages with cost 0
                     error!("Failed to approve message: {}: {}", cc_id.id, e);
-                    return Err(SolanaIncluderError::GenericError(e.to_string()));
                 }
             }
         }
 
-        Ok(messages)
+        approved_messages
     }
 }
 
@@ -731,10 +731,8 @@ impl<
                     .map_err(|e| IncluderError::GenericError(e.to_string()))?;
             }
             MerklizedPayload::NewMessages { messages } => {
-                let messages = self
-                    .approve_messages(messages.clone(), &execute_data)
-                    .await
-                    .map_err(|e| IncluderError::GenericError(e.to_string()))?;
+                let approved_messages =
+                    self.approve_messages(messages.clone(), &execute_data).await;
 
                 // The overhead cost is the initialize payload verification session and the total cost of verifying all signatures
                 // divided by the number of messages. The total cost for the message is the overhead plus its own cost.
@@ -746,7 +744,7 @@ impl<
                 let overhead_cost_per_message = overhead_cost
                     .checked_div(messages.len() as u64)
                     .unwrap_or(0);
-                for (cc_id, gas_cost) in &messages {
+                for (cc_id, gas_cost) in &approved_messages {
                     self.redis_conn
                         .write_gas_cost_for_message_id(
                             cc_id.id.clone(),
@@ -754,6 +752,10 @@ impl<
                             TransactionType::Approve,
                         )
                         .await;
+                }
+                if approved_messages.len() != messages.len() {
+                    error!("Failed to approve all messages for task id: {}. Approved: {}, Expected: {}", task.common.id, approved_messages.len(), messages.len());
+                    return Err(IncluderError::GenericError(format!("Failed to approve all messages for task id: {}. Approved: {}, Expected: {}", task.common.id, approved_messages.len(), messages.len())));
                 }
             }
         };

@@ -182,7 +182,17 @@ impl RedisConnectionTrait for RedisConnection {
         gas_cost: u64,
         transaction_type: TransactionType,
     ) {
-        debug!("Writing gas cost to Redis");
+        if gas_cost == 0 {
+            debug!(
+                "Gas cost is 0 for message id: {}, skipping write",
+                message_id
+            );
+            return;
+        }
+        debug!(
+            "Writing gas cost for message id: {}, gas cost: {}",
+            message_id, gas_cost
+        );
         let mut redis_conn = self.conn.clone();
         let set_opts = SetOptions::default().with_expiration(SetExpiry::EX(GAS_COST_EXPIRATION));
         let key = format!("cost:{}:{}", transaction_type, message_id);
