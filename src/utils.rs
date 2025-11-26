@@ -2,6 +2,7 @@ use crate::{includer::ALTInfo, transaction_type::SolanaTransactionType, types::S
 use anchor_lang::Key;
 use anchor_spl::{associated_token::spl_associated_token_account, token_2022::spl_token_2022};
 use anyhow::anyhow;
+use regex::Regex;
 use relayer_core::{
     gmp_api::{gmp_types::ExecuteTask, GmpApiTrait},
     queue::{QueueItem, QueueTrait},
@@ -21,7 +22,7 @@ use solana_sdk::{
     pubkey::Pubkey,
     signature::{Keypair, Signature},
     signer::Signer,
-    transaction::{Transaction, VersionedTransaction},
+    transaction::{Transaction, TransactionError, VersionedTransaction},
 };
 use std::sync::Arc;
 
@@ -440,4 +441,124 @@ pub fn not_enough_gas_event<G: GmpApiTrait>(
         CannotExecuteMessageReason::InsufficientGas,
     );
     vec![event]
+}
+
+pub fn is_recoverable(transaction_error: &TransactionError) -> bool {
+    !matches!(
+        transaction_error,
+        TransactionError::InstructionError(_, _)
+            | TransactionError::InvalidProgramForExecution
+            | TransactionError::InvalidWritableAccount
+            | TransactionError::TooManyAccountLocks
+            | TransactionError::ProgramCacheHitMaxLimit
+    )
+}
+
+/// Checks if a string contains the "account already in use" error pattern.
+/// Matches: "Allocate: account Address { address: <address>, base: None } already in use"
+pub fn is_addr_in_use(s: &str) -> bool {
+    // Pattern matches: "Allocate: account Address { address: " followed by a base58 address
+    // (32-44 characters, excluding 0, O, I, l) followed by ", base: None } already in use"
+    // Base58 characters: 123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz
+    let pattern = r"Allocate: account Address \{ address: [1-9A-HJ-NP-Za-km-z]{32,44}, base: None \} already in use";
+    Regex::new(pattern)
+        .map(|re| re.is_match(s))
+        .unwrap_or(false)
+}
+
+pub fn keypair_to_base58_string(keypair: &Keypair) -> String {
+    keypair.to_base58_string()
+}
+
+pub fn keypair_from_base58_string(s: &str) -> Result<Keypair, anyhow::Error> {
+    let mut buf = [0u8; 64]; // Ed25519 keypair length
+    bs58::decode(s)
+        .onto(&mut buf)
+        .map_err(|e| anyhow!("Failed to decode base58 keypair: {}", e))?;
+    Keypair::try_from(&buf[..]).map_err(|e| anyhow!("Failed to create keypair from bytes: {}", e))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::signature::Keypair;
+
+    #[test]
+    fn test_keypair_roundtrip() {
+        let original_keypair = Keypair::new();
+        let base58_string = keypair_to_base58_string(&original_keypair);
+        let reconstructed_keypair = keypair_from_base58_string(&base58_string).unwrap();
+
+        // Verify the public keys match (since we can't compare private keys directly)
+        assert_eq!(original_keypair.pubkey(), reconstructed_keypair.pubkey());
+    }
+
+    #[test]
+    fn test_keypair_from_invalid_base58() {
+        let result = keypair_from_base58_string("invalid-base58-string");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_keypair_from_wrong_length() {
+        // Create a valid base58 string but for a shorter key
+        let short_keypair = Keypair::new();
+        let short_pubkey_base58 = short_keypair.pubkey().to_string();
+
+        let result = keypair_from_base58_string(&short_pubkey_base58);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_is_recoverable() {
+        let transaction_error = TransactionError::InvalidWritableAccount;
+        assert!(!is_recoverable(&transaction_error));
+
+        let transaction_error = TransactionError::TooManyAccountLocks;
+        assert!(!is_recoverable(&transaction_error));
+
+        let transaction_error = TransactionError::ProgramCacheHitMaxLimit;
+        assert!(!is_recoverable(&transaction_error));
+
+        let transaction_error = TransactionError::InvalidProgramForExecution;
+        assert!(!is_recoverable(&transaction_error));
+
+        let transaction_error = TransactionError::AccountNotFound;
+        assert!(is_recoverable(&transaction_error));
+    }
+
+    #[test]
+    fn test_is_addr_in_use() {
+        let error_msg = "Allocate: account Address { address: FAVDxWyV1GcvRxaDjv12jo1foDbU7uDYfrbuky68JGHK, base: None } already in use";
+        assert!(is_addr_in_use(error_msg));
+
+        let error_msg2 = "Allocate: account Address { address: 11111111111111111111111111111111, base: None } already in use";
+        assert!(is_addr_in_use(error_msg2));
+
+        let normal_msg = "Some other error message";
+        assert!(!is_addr_in_use(normal_msg));
+
+        let partial_msg =
+            "Allocate: account Address { address: FAVDxWyV1GcvRxaDjv12jo1foDbU7uDYfrbuky68JGHK";
+        assert!(!is_addr_in_use(partial_msg));
+
+        let embedded_msg = "Error: Allocate: account Address { address: FAVDxWyV1GcvRxaDjv12jo1foDbU7uDYfrbuky68JGHK, base: None } already in use - transaction failed";
+        assert!(is_addr_in_use(embedded_msg));
+
+        let full_message = r#"2025-11-25T18:02:30.415586Z DEBUG solana_rpc_client::nonblocking::rpc_client: -32002 Transaction simulation failed: Error processing Instruction 2: custom program error: 0x0
+2025-11-25T18:02:30.415641Z DEBUG solana_rpc_client::nonblocking::rpc_client:   1: Program ComputeBudget111111111111111111111111111111 invoke [1]
+2025-11-25T18:02:30.415672Z DEBUG solana_rpc_client::nonblocking::rpc_client:   2: Program ComputeBudget111111111111111111111111111111 success
+2025-11-25T18:02:30.415700Z DEBUG solana_rpc_client::nonblocking::rpc_client:   3: Program ComputeBudget111111111111111111111111111111 invoke [1]
+2025-11-25T18:02:30.415727Z DEBUG solana_rpc_client::nonblocking::rpc_client:   4: Program ComputeBudget111111111111111111111111111111 success
+2025-11-25T18:02:30.415754Z DEBUG solana_rpc_client::nonblocking::rpc_client:   5: Program gtw3LYHmSe3y1cRqCeBuTpyB4KDQHfaqqHQs6Rw19DX invoke [1]
+2025-11-25T18:02:30.415781Z DEBUG solana_rpc_client::nonblocking::rpc_client:   6: Program log: Instruction: InitializePayloadVerificationSession
+2025-11-25T18:02:30.415808Z DEBUG solana_rpc_client::nonblocking::rpc_client:   7: Program 11111111111111111111111111111111 invoke [2]
+2025-11-25T18:02:30.415835Z DEBUG solana_rpc_client::nonblocking::rpc_client:   8: Allocate: account Address { address: FAVDxWyV1GcvRxaDjv12jo1foDbU7uDYfrbuky68JGHK, base: None } already in use
+2025-11-25T18:02:30.415864Z DEBUG solana_rpc_client::nonblocking::rpc_client:   9: Program 11111111111111111111111111111111 failed: custom program error: 0x0
+2025-11-25T18:02:30.415891Z DEBUG solana_rpc_client::nonblocking::rpc_client:  10: Program gtw3LYHmSe3y1cRqCeBuTpyB4KDQHfaqqHQs6Rw19DX consumed 5909 of 7150 compute units
+2025-11-25T18:02:30.415919Z DEBUG solana_rpc_client::nonblocking::rpc_client:  11: Program gtw3LYHmSe3y1cRqCeBuTpyB4KDQHfaqqHQs6Rw19DX failed: custom program error: 0x0
+2025-11-25T18:02:30.415947Z DEBUG solana_rpc_client::nonblocking::rpc_client: 
+2025-11-25T18:02:30.416016Z ERROR relayer_core::includer: Failed to consume delivery: GatewayTxTaskError("Generic error: Generic error: Generic error: TransactionError: Error processing Instruction 2: custom program error: 0x0")"#;
+        assert!(is_addr_in_use(full_message));
+    }
 }

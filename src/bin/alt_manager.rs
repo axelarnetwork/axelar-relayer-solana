@@ -7,6 +7,7 @@ use solana::config::SolanaConfig;
 use solana::includer_client::{IncluderClient, IncluderClientTrait};
 use solana::redis::{RedisConnection, RedisConnectionTrait};
 use solana::transaction_type::SolanaTransactionType;
+use solana::utils::keypair_from_base58_string;
 use solana_sdk::address_lookup_table::instruction::{close_lookup_table, deactivate_lookup_table};
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Keypair;
@@ -99,7 +100,7 @@ async fn process_active_alts(
     let current_timestamp = chrono::Utc::now().timestamp();
 
     for (message_id, alt_pubkey, authority_keypair_str, created_at, retry_count, _) in active_alts {
-        let authority_keypair = Keypair::from_base58_string(&authority_keypair_str);
+        let authority_keypair = keypair_from_base58_string(&authority_keypair_str)?;
 
         let seconds_since_creation = current_timestamp - created_at;
         if seconds_since_creation >= ALT_LIFETIME_SECONDS {
@@ -137,7 +138,7 @@ async fn process_deactivated_alts(
     for (message_id, alt_pubkey, authority_keypair_str, deactivated_at, retry_count, _) in
         deactivated_alts
     {
-        let authority_keypair = Keypair::from_base58_string(&authority_keypair_str);
+        let authority_keypair = keypair_from_base58_string(&authority_keypair_str)?;
         let seconds_since_creation = current_timestamp - deactivated_at;
         if seconds_since_creation >= ALT_LIFETIME_SECONDS {
             debug!(

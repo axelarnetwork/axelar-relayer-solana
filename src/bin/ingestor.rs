@@ -8,10 +8,11 @@ use relayer_core::{gmp_api, ingestor};
 use solana::config::SolanaConfig;
 use solana::ingestor::SolanaIngestor;
 use solana::solana_transaction::PgSolanaTransactionModel;
-use solana_sdk::pubkey::Pubkey;
+use solana_axelar_gas_service::ID as GAS_SERVICE_ID;
+use solana_axelar_gateway::ID as GATEWAY_ID;
+use solana_axelar_its::ID as ITS_ID;
 use solana_transaction_parser::{parser::TransactionParser, redis::CostCache};
 use sqlx::PgPool;
-use std::str::FromStr;
 use std::sync::Arc;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -38,19 +39,15 @@ async fn main() -> anyhow::Result<()> {
 
     let gmp_api = gmp_api::construct_gmp_api(pg_pool.clone(), &config.common_config, true)?;
 
-    let gateway = Pubkey::from_str(&config.solana_gateway)?;
-    let gas_service = Pubkey::from_str(&config.solana_gas_service)?;
-    let its = Pubkey::from_str(&config.solana_its)?;
-
     let redis_client = redis::Client::open(config.common_config.redis_server.clone())?;
     let redis_conn = connection_manager(redis_client, None, None, None, None).await?;
     let cost_cache = CostCache::new(redis_conn.clone());
 
     let parser = TransactionParser::new(
         config.common_config.chain_name,
-        gas_service,
-        gateway,
-        its,
+        GAS_SERVICE_ID,
+        GATEWAY_ID,
+        ITS_ID,
         Arc::new(cost_cache),
     );
 

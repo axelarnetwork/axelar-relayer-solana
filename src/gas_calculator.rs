@@ -1,6 +1,7 @@
 // Estimates the gas required to make a transaction on Solana
 // https://solana.com/developers/guides/advanced/exchange
 // Read about prioritization fees in the corresponding section in the guide
+// Updated to support configurable percentiles
 
 use crate::error::GasCalculatorError;
 use crate::fees_client::FeesClientTrait;
@@ -30,7 +31,11 @@ impl<IC: IncluderClientTrait, FC: FeesClientTrait> GasCalculator<IC, FC> {
 #[async_trait]
 pub trait GasCalculatorTrait: ThreadSafe {
     async fn compute_budget(&self, tx: SolanaTransactionType) -> Result<u64, GasCalculatorError>;
-    async fn compute_unit_price(&self, ixs: &[Instruction]) -> Result<u64, GasCalculatorError>;
+    async fn compute_unit_price(
+        &self,
+        ixs: &[Instruction],
+        percentile: f64,
+    ) -> Result<u64, GasCalculatorError>;
 }
 
 #[async_trait]
@@ -51,7 +56,11 @@ impl<IC: IncluderClientTrait, FC: FeesClientTrait> GasCalculatorTrait for GasCal
         Ok(computed_units.saturating_add(safety_margin))
     }
 
-    async fn compute_unit_price(&self, ixs: &[Instruction]) -> Result<u64, GasCalculatorError> {
+    async fn compute_unit_price(
+        &self,
+        ixs: &[Instruction],
+        percentile: f64,
+    ) -> Result<u64, GasCalculatorError> {
         const MAX_ACCOUNTS: usize = 128;
 
         let all_touched_accounts = ixs
@@ -63,9 +72,8 @@ impl<IC: IncluderClientTrait, FC: FeesClientTrait> GasCalculatorTrait for GasCal
 
         let fees = self
             .fees_client
-            .get_recent_prioritization_fees(&all_touched_accounts)
-            .await
-            .map_err(|e| GasCalculatorError::Generic(e.to_string()))?;
+            .get_recent_prioritization_fees(&all_touched_accounts, percentile)
+            .await;
 
         debug!("Got prioritization fees: {}", fees);
 

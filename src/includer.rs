@@ -11,7 +11,7 @@ use crate::utils::{
     get_gas_service_event_authority_pda, get_gateway_event_authority_pda,
     get_gateway_root_config_internal, get_incoming_message_pda, get_operator_pda,
     get_signature_verification_pda, get_treasury_pda, get_verifier_set_tracker_pda,
-    not_enough_gas_event,
+    keypair_from_base58_string, not_enough_gas_event,
 };
 use anchor_lang::{InstructionData, ToAccountMetas};
 use async_trait::async_trait;
@@ -52,7 +52,7 @@ const SOLANA_EXPIRATION_TIME: u64 = 90;
 
 #[derive(Clone)]
 pub struct SolanaIncluder<
-    G: GmpApiTrait + ThreadSafe + Clone,
+    G: GmpApiTrait + Clone,
     R: RedisConnectionTrait + Clone,
     RF: RefundsModel + Clone,
     IC: IncluderClientTrait + Clone,
@@ -68,7 +68,7 @@ pub struct SolanaIncluder<
 }
 
 impl<
-        G: GmpApiTrait + ThreadSafe + Clone,
+        G: GmpApiTrait + Clone,
         R: RedisConnectionTrait + Clone,
         RF: RefundsModel + Clone,
         IC: IncluderClientTrait + Clone,
@@ -193,8 +193,8 @@ impl<
                 Ok((signature, gas_cost))
             }
             Err(e) => match e {
-                IncluderClientError::TransactionError(e) => {
-                    Err(SolanaIncluderError::TransactionError(e))
+                IncluderClientError::UnrecoverableTransactionError(e) => {
+                    Err(SolanaIncluderError::UnrecoverableError(e.to_string()))
                 }
                 _ => Err(SolanaIncluderError::GenericError(e.to_string())),
             },
@@ -221,12 +221,14 @@ impl<
         }) = alt_info
         {
             // ALT doesn't exist, create it
+            let authority_keypair = keypair_from_base58_string(authority_keypair_str)
+                .map_err(|e| IncluderError::GenericError(e.to_string()))?;
             let (alt_tx_build, estimated_alt_cost) = self
                 .transaction_builder
                 .build(
                     &[alt_ix_create.clone(), alt_ix_extend.clone()],
                     None,
-                    Some(vec![Keypair::from_base58_string(authority_keypair_str)]),
+                    Some(vec![authority_keypair]),
                 )
                 .await
                 .map_err(|e| IncluderError::GenericError(e.to_string()))?;
@@ -251,7 +253,7 @@ impl<
                 .await?;
 
             self.redis_conn
-                .write_gas_cost(
+                .write_gas_cost_for_message_id(
                     task.task.message.message_id.clone(),
                     actual_alt_cost.unwrap_or(0),
                     TransactionType::Execute,
@@ -301,7 +303,7 @@ impl<
 
                 // TODO: Spawn a task to write to Redis
                 self.redis_conn
-                    .write_gas_cost(
+                    .write_gas_cost_for_message_id(
                         task.task.message.message_id.clone(),
                         actual_tx_cost
                             .unwrap_or(0)
@@ -313,7 +315,7 @@ impl<
                 Ok(vec![])
             }
             Err(e) => match e {
-                IncluderClientError::TransactionError(e) => {
+                IncluderClientError::UnrecoverableTransactionError(e) => {
                     warn!("Transaction reverted: {}", e);
                     // Include ALT cost if ALT transaction was sent successfully
                     // TODO: this might be off. We need to know the actual cost of the transaction
@@ -394,7 +396,7 @@ impl<
     ) -> Result<(), IncluderError> {
         let mut retries = 0;
         loop {
-            let alt_account = self.client.inner().get_account(alt_pubkey).await;
+            let alt_account = self.client.get_account(alt_pubkey).await;
             match alt_account {
                 Ok(account) => {
                     let alt_state = AddressLookupTable::deserialize(&account.data)
@@ -470,7 +472,13 @@ impl<
                 );
                 Ok((signature, gas_cost))
             }
-            Err(e) => Err(IncluderError::GenericError(e.to_string())),
+            Err(e) => match e {
+                IncluderClientError::AccountInUseError(e) => {
+                    // TODO: Proper error checking
+                    Err(IncluderError::GenericError(e))
+                }
+                _ => Err(IncluderError::GenericError(e.to_string())),
+            },
         }
     }
 
@@ -521,7 +529,6 @@ impl<
 
         // Wait for all verification txs to complete and collect the results
         while let Some(result) = verifier_set_verification_futures.next().await {
-            // TODO: should send CannotExecuteMessage on unrecoverable errors
             let (signature, gas_cost) = result?;
             total_cost += gas_cost.unwrap_or(0);
             debug!(
@@ -587,13 +594,7 @@ impl<
         &self,
         messages: Vec<MerklizedMessage>,
         execute_data: &ExecuteData,
-    ) -> Result<
-        (
-            Vec<(CrossChainId, u64)>,
-            Vec<(CrossChainId, SolanaIncluderError)>,
-        ),
-        SolanaIncluderError,
-    > {
+    ) -> Result<Vec<(CrossChainId, u64)>, SolanaIncluderError> {
         // Collect PDAs
         let (gateway_root_pda, _) = get_gateway_root_config_internal();
 
@@ -638,30 +639,30 @@ impl<
             })
             .collect::<FuturesUnordered<_>>();
 
-        let mut failed_messages = vec![];
-        let mut successful_messages = vec![];
+        let mut messages = vec![];
         while let Some((cc_id, result)) = merkelised_message_futures.next().await {
             match result {
                 Ok((signature, gas_cost)) => {
-                    successful_messages.push((cc_id, gas_cost.unwrap_or(0)));
+                    messages.push((cc_id, gas_cost.unwrap_or(0)));
                     debug!(
                         "Message approved successfully, signature: {}, cost: {:?}",
                         signature, gas_cost
                     );
                 }
                 Err(e) => {
-                    failed_messages.push((cc_id, e));
+                    error!("Failed to approve message: {}: {}", cc_id.id, e);
+                    return Err(SolanaIncluderError::GenericError(e.to_string()));
                 }
             }
         }
 
-        Ok((successful_messages, failed_messages))
+        Ok(messages)
     }
 }
 
 #[async_trait]
 impl<
-        G: GmpApiTrait + ThreadSafe + Clone,
+        G: GmpApiTrait + Clone,
         R: RedisConnectionTrait + Clone,
         RF: RefundsModel + Clone,
         IC: IncluderClientTrait + Clone,
@@ -672,12 +673,7 @@ impl<
         feature = "instrumentation",
         tracing::instrument(skip(self), fields(message_id))
     )]
-    async fn handle_gateway_tx_task(
-        &self,
-        task: GatewayTxTask,
-    ) -> Result<Vec<Event>, IncluderError> {
-        let mut verification_cost: u64 = 0;
-
+    async fn handle_gateway_tx_task(&self, task: GatewayTxTask) -> Result<(), IncluderError> {
         let execute_data_bytes = base64::prelude::BASE64_STANDARD
             .decode(task.task.execute_data)
             .map_err(|e| IncluderError::GenericError(e.to_string()))?;
@@ -697,18 +693,35 @@ impl<
             }
         };
 
-        verification_cost =
-            verification_cost.saturating_add(init_verification_session_cost.unwrap_or(0));
+        self.redis_conn
+            .add_gas_cost_for_task_id(
+                task.common.id.clone(),
+                init_verification_session_cost.unwrap_or(0),
+                TransactionType::Approve,
+            )
+            .await;
 
         // Verify signatures
-        let verify_signatures_cost = self
-            .verify_signatures(&execute_data)
-            .await
-            .map_err(|e| IncluderError::GenericError(e.to_string()))?;
+        let verify_signatures_result = self.verify_signatures(&execute_data).await;
+        match verify_signatures_result {
+            Ok(verify_signatures_cost) => {
+                self.redis_conn
+                    .add_gas_cost_for_task_id(
+                        task.common.id.clone(),
+                        verify_signatures_cost,
+                        TransactionType::Approve,
+                    )
+                    .await;
+            }
+            Err(e) => {
+                error!(
+                    "Failed to verify signatures for task id: {}: {}",
+                    task.common.id, e
+                );
+                return Err(IncluderError::GenericError(e.to_string()));
+            }
+        }
 
-        verification_cost = verification_cost.saturating_add(verify_signatures_cost);
-
-        let mut gmp_events = vec![];
         match &execute_data.payload_items {
             MerklizedPayload::VerifierSetRotation {
                 new_verifier_set_merkle_root,
@@ -718,40 +731,34 @@ impl<
                     .map_err(|e| IncluderError::GenericError(e.to_string()))?;
             }
             MerklizedPayload::NewMessages { messages } => {
-                let (successful_messages, failed_messages) = self
+                let messages = self
                     .approve_messages(messages.clone(), &execute_data)
                     .await
                     .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
                 // The overhead cost is the initialize payload verification session and the total cost of verifying all signatures
                 // divided by the number of messages. The total cost for the message is the overhead plus its own cost.
-                let overhead_cost = verification_cost
-                    .checked_div(successful_messages.len() as u64)
+                let overhead_cost = self
+                    .redis_conn
+                    .get_gas_cost_for_task_id(task.common.id.clone(), TransactionType::Approve)
+                    .await
+                    .map_err(|e| IncluderError::GenericError(e.to_string()))?;
+                let overhead_cost_per_message = overhead_cost
+                    .checked_div(messages.len() as u64)
                     .unwrap_or(0);
-                for (cc_id, gas_cost) in &successful_messages {
+                for (cc_id, gas_cost) in &messages {
                     self.redis_conn
-                        .write_gas_cost(
+                        .write_gas_cost_for_message_id(
                             cc_id.id.clone(),
-                            gas_cost.saturating_add(overhead_cost),
+                            gas_cost.saturating_add(overhead_cost_per_message),
                             TransactionType::Approve,
                         )
                         .await;
                 }
-
-                for (cc_id, e) in &failed_messages {
-                    // TODO: some errors might be retryable
-                    gmp_events.push(self.gmp_api.cannot_execute_message(
-                        task.common.id.clone(),
-                        cc_id.id.clone(),
-                        cc_id.chain.clone(),
-                        e.to_string(),
-                        CannotExecuteMessageReason::Error,
-                    ));
-                }
             }
         };
 
-        Ok(gmp_events)
+        Ok(())
     }
 
     #[cfg_attr(
@@ -984,6 +991,8 @@ mod tests {
     use solana_axelar_std::{
         MerklizedMessage, MessageLeaf, PublicKey, SigningVerifierSetInfo, VerifierSetLeaf,
     };
+    use solana_sdk::account::Account;
+    use solana_sdk::address_lookup_table::state::LookupTableMeta;
     use solana_sdk::address_lookup_table::AddressLookupTableAccount;
     use solana_sdk::compute_budget::ComputeBudgetInstruction;
     use solana_sdk::hash::Hash;
@@ -1631,7 +1640,7 @@ mod tests {
             .returning(move |_| Box::pin(async move { Ok((test_signature, Some(5_000u64))) }));
 
         redis_conn
-            .expect_write_gas_cost()
+            .expect_write_gas_cost_for_message_id()
             .withf(move |id, cost, tx_type| {
                 *id == message_id_clone
                     && *cost == 5_000u64
@@ -1742,7 +1751,7 @@ mod tests {
             });
 
         mock_client.expect_send_transaction().times(0);
-        redis_conn.expect_write_gas_cost().times(0);
+        redis_conn.expect_write_gas_cost_for_message_id().times(0);
 
         let message_id_clone = message_id.clone();
         let source_chain_clone = source_chain.clone();
@@ -1879,7 +1888,7 @@ mod tests {
             .returning(move |_| Box::pin(async move { Ok((test_signature, Some(5_000u64))) }));
 
         redis_conn
-            .expect_write_gas_cost()
+            .expect_write_gas_cost_for_message_id()
             .withf(move |id, cost, tx_type| {
                 *id == message_id_clone
                     && *cost == 5_000u64
@@ -1986,7 +1995,7 @@ mod tests {
 
         // Should not reach send_transaction
         mock_client.expect_send_transaction().times(0);
-        redis_conn.expect_write_gas_cost().times(0);
+        redis_conn.expect_write_gas_cost_for_message_id().times(0);
         let message_id_clone = message_id.clone();
         let source_chain_clone = source_chain.clone();
 
@@ -2238,7 +2247,7 @@ mod tests {
                         payload_hash: payload_hash.clone(),
                         source_address: Pubkey::new_unique().to_string(),
                     },
-                    payload: "malformed-payload".to_string(),
+                    payload: BASE64_STANDARD.encode(b"malformed-payload"),
                     available_gas_balance: Amount {
                         amount: "1000".to_string(),
                         token_id: None,
@@ -2293,7 +2302,9 @@ mod tests {
         let alt_ix_extend =
             Instruction::new_with_bytes(solana_program::system_program::ID, &[2], vec![]);
 
-        let authority_keypair_str = "test-authority-keypair".to_string();
+        // Create a valid base58-encoded keypair string for testing
+        let test_authority_keypair = Keypair::new();
+        let authority_keypair_str = test_authority_keypair.to_base58_string();
         let alt_info = ALTInfo::new(
             Some(alt_ix_create.clone()),
             Some(alt_ix_extend.clone()),
@@ -2362,7 +2373,43 @@ mod tests {
                 }
             });
 
-        // Note: get_units_consumed_from_simulation is not called since transaction_builder is mocked
+        // Mock get_account for wait_for_alt_activation
+        // The wait_for_alt_activation function retries up to 10 times
+        // We'll mock it to fail a few times then succeed with valid ALT data
+        mock_client
+            .expect_get_account()
+            .times(1..)
+            .returning(move |_| {
+                Box::pin(async move {
+                    let meta = LookupTableMeta {
+                        deactivation_slot: Slot::MAX, // Not deactivated
+                        last_extended_slot: 0,
+                        last_extended_slot_start_index: 0,
+                        authority: Some(Pubkey::new_unique()),
+                        _padding: 0,
+                    };
+
+                    let mut account_data = Vec::new();
+                    account_data.extend_from_slice(&1u32.to_le_bytes()); // discriminator
+                    account_data.extend_from_slice(&meta.deactivation_slot.to_le_bytes());
+                    account_data.extend_from_slice(&meta.last_extended_slot.to_le_bytes());
+                    account_data
+                        .extend_from_slice(&meta.last_extended_slot_start_index.to_le_bytes());
+                    account_data.push(1); // authority option Some
+                    account_data.extend_from_slice(meta.authority.unwrap().as_ref());
+                    account_data.extend_from_slice(&[0u16.to_le_bytes()[0], 0u16.to_le_bytes()[1]]); // padding
+                                                                                                     // Add one address (32 bytes) to match addresses_len expectations
+                    account_data.extend_from_slice(Pubkey::new_unique().as_ref());
+
+                    Ok(Account {
+                        lamports: 1_000_000,
+                        data: account_data,
+                        owner: solana_sdk::address_lookup_table::program::id(),
+                        executable: false,
+                        rent_epoch: 0,
+                    })
+                })
+            });
 
         mock_client
             .expect_send_transaction()
@@ -2393,16 +2440,17 @@ mod tests {
             .returning(|_, _, _| Ok(()));
 
         let msg_id_for_cost = message_id.clone();
-        let write_gas_cost_calls = Arc::new(AtomicUsize::new(0));
-        let write_gas_cost_calls_clone = Arc::clone(&write_gas_cost_calls);
+        let write_gas_cost_for_message_id_calls = Arc::new(AtomicUsize::new(0));
+        let write_gas_cost_for_message_id_calls_clone =
+            Arc::clone(&write_gas_cost_for_message_id_calls);
         redis_conn
-            .expect_write_gas_cost()
+            .expect_write_gas_cost_for_message_id()
             .times(2)
-            .withf(move |id, cost, tx_type| {
+            .withf(move |id, _cost, tx_type| {
                 id == &msg_id_for_cost && matches!(tx_type, TransactionType::Execute)
             })
             .returning(move |_, cost, _| {
-                let idx = write_gas_cost_calls_clone.fetch_add(1, Ordering::SeqCst);
+                let idx = write_gas_cost_for_message_id_calls_clone.fetch_add(1, Ordering::SeqCst);
                 // First call: ALT cost (5_000), Second call: total cost (5_000 + 4_000 = 9_000)
                 assert!(
                     (idx == 0 && cost == 5_000) || (idx == 1 && cost == 9_000),
@@ -2438,7 +2486,7 @@ mod tests {
                     payload_hash: BASE64_STANDARD.encode([4u8; 32]),
                     source_address: "test-source-address".to_string(),
                 },
-                payload: "test-payload".to_string(),
+                payload: BASE64_STANDARD.encode(b"test-payload"),
                 available_gas_balance: Amount {
                     amount: available_gas.to_string(),
                     token_id: None,
@@ -2448,6 +2496,13 @@ mod tests {
 
         let result = includer.handle_execute_task(execute_task).await;
 
+        match &result {
+            Ok(_) => {}
+            Err(e) => eprintln!(
+                "handle_execute_its_task_happy_path_with_alt failed: {:?}",
+                e
+            ),
+        }
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), vec![]);
     }
@@ -2495,7 +2550,9 @@ mod tests {
         let alt_ix_extend =
             Instruction::new_with_bytes(solana_program::system_program::ID, &[4], vec![]);
 
-        let authority_keypair_str = "test-authority-keypair".to_string();
+        // Create a valid base58-encoded keypair string for testing
+        let test_authority_keypair = Keypair::new();
+        let authority_keypair_str = test_authority_keypair.to_base58_string();
         let alt_info = ALTInfo::new(
             Some(alt_ix_create.clone()),
             Some(alt_ix_extend.clone()),
@@ -2517,31 +2574,12 @@ mod tests {
                 ))
             });
 
-        let lookup_account = AddressLookupTableAccount {
-            key: alt_pubkey,
-            addresses: alt_addresses.clone(),
-        };
-
-        let v0_msg = v0::Message::try_compile(
-            &keypair.pubkey(),
-            std::slice::from_ref(&exec_ix),
-            &[lookup_account],
-            Hash::default(),
-        )
-        .unwrap();
-
-        let main_tx =
-            VersionedTransaction::try_new(VersionedMessage::V0(v0_msg), &[&keypair]).unwrap();
-
         let mut alt_tx = Transaction::new_with_payer(
             &[alt_ix_create.clone(), alt_ix_extend.clone()],
             Some(&keypair.pubkey()),
         );
         alt_tx.sign(&[&keypair], Hash::default());
 
-        let build_calls = Arc::new(AtomicUsize::new(0));
-        let build_calls_clone = Arc::clone(&build_calls);
-        let main_tx_clone = main_tx.clone();
         let alt_tx_clone = alt_tx.clone();
 
         // ALT creation cost exceeds available gas, so build() is called only once for ALT
@@ -2557,11 +2595,9 @@ mod tests {
                 ))
             });
 
-        // Note: get_units_consumed_from_simulation is not called since transaction_builder is mocked
-
         // With insufficient gas, we must NOT send any txs or write Redis
         mock_client.expect_send_transaction().times(0);
-        redis_conn.expect_write_gas_cost().times(0);
+        redis_conn.expect_write_gas_cost_for_message_id().times(0);
         redis_conn.expect_write_alt_entry().times(0);
 
         let msg_id_for_event = message_id.clone();
@@ -2612,7 +2648,7 @@ mod tests {
                     payload_hash: BASE64_STANDARD.encode([5u8; 32]),
                     source_address: Pubkey::new_unique().to_string(),
                 },
-                payload: "test-payload".to_string(),
+                payload: BASE64_STANDARD.encode(b"test-payload"),
                 available_gas_balance: Amount {
                     amount: available_gas.to_string(),
                     token_id: None,
@@ -2672,7 +2708,8 @@ mod tests {
         let alt_ix_extend =
             Instruction::new_with_bytes(solana_program::system_program::ID, &[6], vec![]);
 
-        let authority_keypair_str = "test-authority-keypair".to_string();
+        let test_authority_keypair = Keypair::new();
+        let authority_keypair_str = test_authority_keypair.to_base58_string();
         let alt_info = ALTInfo::new(
             Some(alt_ix_create.clone()),
             Some(alt_ix_extend.clone()),
@@ -2742,7 +2779,42 @@ mod tests {
                 }
             });
 
-        // Note: get_units_consumed_from_simulation is not called since transaction_builder is mocked
+        mock_client
+            .expect_get_account()
+            .times(1..)
+            .returning(move |_| {
+                Box::pin(async move {
+                    // Create a valid AddressLookupTable with activated status
+                    let meta = LookupTableMeta {
+                        deactivation_slot: Slot::MAX, // Not deactivated
+                        last_extended_slot: 0,
+                        last_extended_slot_start_index: 0,
+                        authority: Some(Pubkey::new_unique()),
+                        _padding: 0,
+                    };
+
+                    // Serialize the meta part (56 bytes) plus addresses
+                    let mut account_data = Vec::new();
+                    account_data.extend_from_slice(&1u32.to_le_bytes()); // discriminator
+                    account_data.extend_from_slice(&meta.deactivation_slot.to_le_bytes());
+                    account_data.extend_from_slice(&meta.last_extended_slot.to_le_bytes());
+                    account_data
+                        .extend_from_slice(&meta.last_extended_slot_start_index.to_le_bytes());
+                    account_data.push(1); // authority option Some
+                    account_data.extend_from_slice(meta.authority.unwrap().as_ref());
+                    account_data.extend_from_slice(&[0u16.to_le_bytes()[0], 0u16.to_le_bytes()[1]]); // padding
+                                                                                                     // Add one address (32 bytes) to match addresses_len expectations
+                    account_data.extend_from_slice(Pubkey::new_unique().as_ref());
+
+                    Ok(Account {
+                        lamports: 1_000_000,
+                        data: account_data,
+                        owner: solana_sdk::address_lookup_table::program::id(),
+                        executable: false,
+                        rent_epoch: 0,
+                    })
+                })
+            });
 
         // Send: first ALT succeeds (6000), second (main) fails with TransactionError
         let send_calls = Arc::new(AtomicUsize::new(0));
@@ -2758,7 +2830,7 @@ mod tests {
                     Box::pin(async move { Ok((alt_signature_clone, Some(6_000u64))) })
                 } else {
                     Box::pin(async move {
-                        Err(IncluderClientError::TransactionError(
+                        Err(IncluderClientError::UnrecoverableTransactionError(
                             TransactionError::AccountNotFound,
                         ))
                     })
@@ -2778,7 +2850,18 @@ mod tests {
             })
             .returning(|_, _, _| Ok(()));
 
-        redis_conn.expect_write_gas_cost().times(0);
+        // The ALT cost (6000) is written when ALT transaction succeeds
+        // The total cost is NOT written when main transaction fails (only event is sent)
+        let msg_id_for_gas = message_id.clone();
+        redis_conn
+            .expect_write_gas_cost_for_message_id()
+            .times(1)
+            .withf(move |id, cost, tx_type| {
+                id == &msg_id_for_gas
+                    && *cost == 6_000u64 // ALT cost only
+                    && matches!(tx_type, TransactionType::Execute)
+            })
+            .returning(|_, _, _| ());
 
         // Expect MessageExecuted(REVERTED) with cost = alt_cost + main_cost_simulated = 11000
         let msg_id_for_event = message_id.clone();
@@ -2831,7 +2914,7 @@ mod tests {
                     payload_hash: BASE64_STANDARD.encode([6u8; 32]),
                     source_address: Pubkey::new_unique().to_string(),
                 },
-                payload: "test-payload".to_string(),
+                payload: BASE64_STANDARD.encode(b"test-payload"),
                 available_gas_balance: Amount {
                     amount: available_gas.to_string(),
                     token_id: None,
@@ -2861,7 +2944,7 @@ mod tests {
         ) = get_includer_fields();
 
         let message_id = "test-execute-its-existing-alt-123".to_string();
-        let available_gas = 5_000u64; // would fail if we were to also create the ALT, but is enough for just the main tx
+        let available_gas = 5_000_000u64;
 
         mock_client
             .expect_incoming_message_already_executed()
@@ -2952,7 +3035,7 @@ mod tests {
 
         let msg_id_for_cost = message_id.clone();
         redis_conn
-            .expect_write_gas_cost()
+            .expect_write_gas_cost_for_message_id()
             .times(1)
             .withf(move |id, cost, tx_type| {
                 id == &msg_id_for_cost
@@ -2987,7 +3070,7 @@ mod tests {
                     payload_hash: BASE64_STANDARD.encode([7u8; 32]),
                     source_address: "test-source-address".to_string(),
                 },
-                payload: "test-payload".to_string(),
+                payload: BASE64_STANDARD.encode(b"test-payload"),
                 available_gas_balance: Amount {
                     amount: available_gas.to_string(),
                     token_id: None,
@@ -3008,7 +3091,7 @@ mod tests {
             mock_gmp_api,
             keypair,
             chain_name,
-            redis_conn,
+            mut redis_conn,
             mock_refunds_model,
             mut mock_client,
             mut transaction_builder,
@@ -3116,6 +3199,17 @@ mod tests {
                 Box::pin(async move { Ok((signature, Some(cost))) })
             });
 
+        // Expect add_gas_cost_for_task_id for init (10) and verify (20)
+        redis_conn
+            .expect_add_gas_cost_for_task_id()
+            .times(2)
+            .withf(move |task_id, cost, tx_type| {
+                *task_id == "rotate-signer-happy"
+                    && matches!(tx_type, TransactionType::Approve)
+                    && (*cost == 10 || *cost == 20)
+            })
+            .returning(|_, _, _| ());
+
         let includer = SolanaIncluder::new(
             Arc::new(mock_client),
             Arc::new(keypair),
@@ -3129,7 +3223,6 @@ mod tests {
         let result = includer.handle_gateway_tx_task(task).await;
 
         assert!(result.is_ok());
-        assert!(result.unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -3263,11 +3356,34 @@ mod tests {
                 Box::pin(async move { Ok((signature, Some(cost))) })
             });
 
+        // Expect add_gas_cost_for_task_id for init (10) and verify (20)
         redis_conn
-            .expect_write_gas_cost()
+            .expect_add_gas_cost_for_task_id()
+            .times(2)
+            .withf(move |task_id, cost, tx_type| {
+                *task_id == "approve-message-happy"
+                    && matches!(tx_type, TransactionType::Approve)
+                    && (*cost == 10 || *cost == 20)
+            })
+            .returning(|_, _, _| ());
+
+        // Expect get_gas_cost_for_task_id to read overhead (10 + 20 = 30)
+        redis_conn
+            .expect_get_gas_cost_for_task_id()
             .times(1)
-            .withf(move |_, cost, tx_type| {
-                *cost == 60 && matches!(tx_type, TransactionType::Approve)
+            .withf(move |task_id, tx_type| {
+                *task_id == "approve-message-happy" && matches!(tx_type, TransactionType::Approve)
+            })
+            .returning(|_, _| Ok(30u64));
+
+        // Expect write_gas_cost_for_message_id with overhead (30) + approve cost (30) = 60
+        redis_conn
+            .expect_write_gas_cost_for_message_id()
+            .times(1)
+            .withf(move |msg_id, cost, tx_type| {
+                *msg_id == "test-message-id"
+                    && *cost == 60
+                    && matches!(tx_type, TransactionType::Approve)
             })
             .returning(|_, _, _| ());
 
@@ -3284,7 +3400,6 @@ mod tests {
         let result = includer.handle_gateway_tx_task(task).await;
 
         assert!(result.is_ok());
-        assert!(result.unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -3487,10 +3602,42 @@ mod tests {
                 Box::pin(async move { Ok((sig, Some(cost))) })
             });
 
+        // add_gas_cost_for_task_id is called twice:
+        // 1. init cost: 10
+        // 2. total verify cost: 20 + 20 = 40 (verify_signatures returns TOTAL, not individual)
+        let add_calls = Arc::new(AtomicUsize::new(0));
+        let add_calls_clone = Arc::clone(&add_calls);
+        redis_conn
+            .expect_add_gas_cost_for_task_id()
+            .times(2)
+            .withf(move |task_id, cost, tx_type| {
+                let idx = add_calls_clone.fetch_add(1, Ordering::SeqCst);
+                *task_id == "approve-message-two-msgs-two-sigs"
+                    && matches!(tx_type, TransactionType::Approve)
+                    && match idx {
+                        0 => *cost == 10, // init cost
+                        1 => *cost == 40, // total verify cost (20 + 20)
+                        _ => false,
+                    }
+            })
+            .returning(|_, _, _| ());
+
+        // get_gas_cost_for_task_id returns overhead (10 + 40 = 50)
+        redis_conn
+            .expect_get_gas_cost_for_task_id()
+            .times(1)
+            .withf(move |task_id, tx_type| {
+                *task_id == "approve-message-two-msgs-two-sigs"
+                    && matches!(tx_type, TransactionType::Approve)
+            })
+            .returning(|_, _| Ok(50u64));
+
+        // Expect write_gas_cost_for_message_id with overhead per message (50/2 = 25) + approve cost
+        // msg1: 25 + 30 = 55, msg2: 25 + 40 = 65
         let expected_id_1 = msg_id_1.clone();
         let expected_id_2 = msg_id_2.clone();
         redis_conn
-            .expect_write_gas_cost()
+            .expect_write_gas_cost_for_message_id()
             .times(2)
             .withf(move |msg_id, cost, tx_type| {
                 if msg_id == &expected_id_1 {
@@ -3516,13 +3663,12 @@ mod tests {
         let result = includer.handle_gateway_tx_task(task).await;
 
         assert!(result.is_ok());
-        assert!(result.unwrap().is_empty());
     }
 
     #[tokio::test]
-    async fn test_handle_gateway_tx_task_approve_message_two_messages_one_fails_one_succeeds() {
+    async fn test_handle_gateway_tx_task_approve_message_fails_on_error() {
         let (
-            mut mock_gmp_api,
+            mock_gmp_api,
             keypair,
             chain_name,
             mut redis_conn,
@@ -3531,347 +3677,42 @@ mod tests {
             mut transaction_builder,
         ) = get_includer_fields();
 
-        let payload_merkle_root = [1u8; 32];
-        let signing_verifier_set_merkle_root = [2u8; 32];
-
-        let verifier_info_1 = SigningVerifierSetInfo {
-            leaf: VerifierSetLeaf {
-                nonce: 0,
-                quorum: 0,
-                signer_pubkey: PublicKey([1; 33]),
-                signer_weight: 0,
-                position: 0,
-                set_size: 0,
-                domain_separator: [0; 32],
-            },
-            merkle_proof: vec![0xAA],
-            signature: solana_axelar_std::Signature([1; 65]),
-        };
-
-        let verifier_info_2 = SigningVerifierSetInfo {
-            leaf: VerifierSetLeaf {
-                nonce: 1,
-                quorum: 0,
-                signer_pubkey: PublicKey([2; 33]),
-                signer_weight: 0,
-                position: 1,
-                set_size: 0,
-                domain_separator: [0; 32],
-            },
-            merkle_proof: vec![0xBB],
-            signature: solana_axelar_std::Signature([2; 65]),
-        };
-
-        let msg_id_1 = "test-message-id-1".to_string();
-        let msg_id_2 = "test-message-id-2".to_string();
-
-        let merkle_msg_1 = MerklizedMessage {
-            leaf: MessageLeaf {
-                message: Message {
-                    cc_id: CrossChainId {
-                        chain: "test-chain".to_string(),
-                        id: msg_id_1.clone(),
-                    },
-                    source_address: "test-source-address-1".to_string(),
-                    destination_chain: "test-destination-chain-1".to_string(),
-                    destination_address: "test-destination-address-1".to_string(),
-                    payload_hash: [11; 32],
-                },
-                position: 0,
-                set_size: 2,
-                domain_separator: [0; 32],
-            },
-            proof: vec![0x01],
-        };
-
-        let merkle_msg_2 = MerklizedMessage {
-            leaf: MessageLeaf {
-                message: Message {
-                    cc_id: CrossChainId {
-                        chain: "test-chain".to_string(),
-                        id: msg_id_2.clone(),
-                    },
-                    source_address: "test-source-address-2".to_string(),
-                    destination_chain: "test-destination-chain-2".to_string(),
-                    destination_address: "test-destination-address-2".to_string(),
-                    payload_hash: [22; 32],
-                },
-                position: 1,
-                set_size: 2,
-                domain_separator: [0; 32],
-            },
-            proof: vec![0x02],
-        };
-
-        let execute_data = ExecuteData {
-            payload_merkle_root,
-            signing_verifier_set_merkle_root,
-            signing_verifier_set_leaves: vec![verifier_info_1, verifier_info_2],
-            payload_items: MerklizedPayload::NewMessages {
-                messages: vec![merkle_msg_1, merkle_msg_2],
-            },
-        };
-
-        let execute_data_b64 =
-            base64::prelude::BASE64_STANDARD.encode(execute_data.try_to_vec().unwrap());
-
-        let task = GatewayTxTask {
-            common: CommonTaskFields {
-                id: "approve-message-two-msgs-one-fails".into(),
-                chain: "test-chain".into(),
-                timestamp: Utc::now().to_string(),
-                r#type: "gateway_tx".into(),
-                meta: None,
-            },
-            task: GatewayTxTaskFields {
-                execute_data: execute_data_b64,
-            },
-        };
-
-        let mut init_tx = Transaction::new_with_payer(&[], Some(&keypair.pubkey()));
-        init_tx.sign(&[&keypair], Hash::default());
-        let init_sig = init_tx.signatures[0];
-
-        let mut verify_tx_1 = Transaction::new_with_payer(&[], Some(&keypair.pubkey()));
-        verify_tx_1.sign(&[&keypair], Hash::default());
-        let verify_sig_1 = verify_tx_1.signatures[0];
-
-        let mut verify_tx_2 = Transaction::new_with_payer(&[], Some(&keypair.pubkey()));
-        verify_tx_2.sign(&[&keypair], Hash::default());
-        let verify_sig_2 = verify_tx_2.signatures[0];
-
-        let mut approve_tx_1 = Transaction::new_with_payer(&[], Some(&keypair.pubkey()));
-        approve_tx_1.sign(&[&keypair], Hash::default());
-        let approve_sig_1 = approve_tx_1.signatures[0];
-
-        let mut approve_tx_2 = Transaction::new_with_payer(&[], Some(&keypair.pubkey()));
-        approve_tx_2.sign(&[&keypair], Hash::default());
-
-        let init_tx_clone = init_tx.clone();
-        let verify_tx_1_clone = verify_tx_1.clone();
-        let verify_tx_2_clone = verify_tx_2.clone();
-        let approve_tx_1_clone = approve_tx_1.clone();
-        let _approve_tx_2_clone = approve_tx_2.clone(); // not used in build, since it fails at send
-
-        // 5 builds: init, verify1, verify2, approve1, approve2
-        let build_calls = Arc::new(AtomicUsize::new(0));
-        let build_calls_clone = Arc::clone(&build_calls);
-        transaction_builder
-            .expect_build()
-            .times(5)
-            .returning(move |_, _, _| {
-                let idx = build_calls_clone.fetch_add(1, Ordering::SeqCst);
-                match idx {
-                    0 => Ok((
-                        crate::transaction_type::SolanaTransactionType::Legacy(
-                            init_tx_clone.clone(),
-                        ),
-                        100_000u64,
-                    )),
-                    1 => Ok((
-                        crate::transaction_type::SolanaTransactionType::Legacy(
-                            verify_tx_1_clone.clone(),
-                        ),
-                        100_000u64,
-                    )),
-                    2 => Ok((
-                        crate::transaction_type::SolanaTransactionType::Legacy(
-                            verify_tx_2_clone.clone(),
-                        ),
-                        100_000u64,
-                    )),
-                    3 => Ok((
-                        crate::transaction_type::SolanaTransactionType::Legacy(
-                            approve_tx_1_clone.clone(),
-                        ),
-                        100_000u64,
-                    )),
-                    4 => Ok((
-                        crate::transaction_type::SolanaTransactionType::Legacy(
-                            approve_tx_2.clone(),
-                        ),
-                        100_000u64,
-                    )),
-                    _ => panic!("unexpected build call"),
-                }
-            });
-
-        // Costs:
-        // init:    10
-        // verify1: 20
-        // verify2: 30
-        // approve1:40 (success)
-        // approve2: (fails)
-        //
-        // overhead = 10 + 20 + 30 = 60
-        // per-message overhead = 60 / 2 = 30
-        // msg1_cost = 40 + 30 = 70
-        let send_calls = Arc::new(AtomicUsize::new(0));
-        let send_calls_clone = Arc::clone(&send_calls);
-        mock_client
-            .expect_send_transaction()
-            .times(5)
-            .returning(move |_| {
-                let idx = send_calls_clone.fetch_add(1, Ordering::SeqCst);
-                match idx {
-                    0 => Box::pin(async move { Ok((init_sig, Some(10u64))) }),
-                    1 => Box::pin(async move { Ok((verify_sig_1, Some(20u64))) }),
-                    2 => Box::pin(async move { Ok((verify_sig_2, Some(30u64))) }),
-                    3 => Box::pin(async move { Ok((approve_sig_1, Some(40u64))) }),
-                    4 => Box::pin(async move {
-                        Err(IncluderClientError::GenericError(
-                            "approve-2 failed".to_string(),
-                        ))
-                    }),
-                    _ => panic!("unexpected send_transaction call"),
-                }
-            });
-
-        // write_gas_cost only for the successful message (msg_id_1)
-        // overhead = 10 + 20 + 30 = 60
-        // successful_messages.len() = 1 (only approve1 succeeds)
-        // per-message overhead = 60 / 1 = 60
-        // msg1_cost = 40 + 60 = 100
-        let expected_success_id = msg_id_1.clone();
-        redis_conn
-            .expect_write_gas_cost()
-            .times(1)
-            .withf(move |msg_id, cost, tx_type| {
-                *msg_id == expected_success_id
-                    && *cost == 100
-                    && matches!(tx_type, TransactionType::Approve)
-            })
-            .returning(|_, _, _| ());
-
-        // Expect one cannot_execute_message for the failed message (msg_id_2)
-        let expected_fail_id = msg_id_2.clone();
-        mock_gmp_api
-            .expect_cannot_execute_message()
-            .times(1)
-            .withf(move |task_id, msg_id, src_chain, details, reason| {
-                *task_id == "approve-message-two-msgs-one-fails"
-                    && *msg_id == expected_fail_id
-                    && *src_chain == "test-chain"
-                    && details.contains("approve-2 failed")
-                    && matches!(reason, CannotExecuteMessageReason::Error)
-            })
-            .returning(|_, _, _, _, _| Event::CannotExecuteMessageV2 {
-                common: CommonEventFields {
-                    r#type: "CANNOT_EXECUTE_MESSAGE/V2".to_string(),
-                    event_id: "evt-approve-failed".to_string(),
-                    meta: None,
-                },
-                message_id: "dummy".to_string(),
-                source_chain: "test-chain".to_string(),
-                reason: CannotExecuteMessageReason::Error,
-                details: "dummy".to_string(),
-            });
-
-        let includer = SolanaIncluder::new(
-            Arc::new(mock_client),
-            Arc::new(keypair),
-            chain_name,
-            transaction_builder,
-            Arc::new(mock_gmp_api),
-            redis_conn,
-            Arc::new(mock_refunds_model),
-        );
-
-        let result = includer.handle_gateway_tx_task(task).await;
-
-        assert!(result.is_ok());
-        let events = result.unwrap();
-        assert_eq!(events.len(), 1);
-        assert!(matches!(events[0], Event::CannotExecuteMessageV2 { .. }));
-    }
-    #[tokio::test]
-    async fn test_handle_gateway_tx_task_verify_signature_failure_all_messages_cannot_execute() {
-        let (
-            mut mock_gmp_api,
-            keypair,
-            chain_name,
-            mut redis_conn,
-            mock_refunds_model,
-            mut mock_client,
-            mut transaction_builder,
-        ) = get_includer_fields();
-
-        let payload_merkle_root = [9u8; 32];
-        let signing_verifier_set_merkle_root = [8u8; 32];
+        let payload_merkle_root = [5u8; 32];
+        let signing_verifier_set_merkle_root = [6u8; 32];
 
         let verifier_info = SigningVerifierSetInfo {
             leaf: VerifierSetLeaf {
                 nonce: 0,
                 quorum: 0,
-                signer_pubkey: PublicKey([3; 33]),
+                signer_pubkey: PublicKey([5; 33]),
                 signer_weight: 0,
                 position: 0,
                 set_size: 1,
                 domain_separator: [0; 32],
             },
-            merkle_proof: vec![0xCC],
-            signature: solana_axelar_std::Signature([3; 65]),
+            merkle_proof: vec![0xEE],
+            signature: solana_axelar_std::Signature([5; 65]),
         };
 
-        let msg_id_1 = "verify-fail-msg-1".to_string();
-        let msg_id_2 = "verify-fail-msg-2".to_string();
-        let msg_id_3 = "verify-fail-msg-3".to_string();
+        let msg_id = "fail-msg".to_string();
 
-        let merkle_msg_1 = MerklizedMessage {
+        let merkle_msg = MerklizedMessage {
             leaf: MessageLeaf {
                 message: Message {
                     cc_id: CrossChainId {
                         chain: "test-chain".to_string(),
-                        id: msg_id_1.clone(),
+                        id: msg_id.clone(),
                     },
-                    source_address: "src-1".to_string(),
-                    destination_chain: "dst-chain".to_string(),
-                    destination_address: "dst-addr-1".to_string(),
-                    payload_hash: [1; 32],
+                    source_address: "test-source-address".to_string(),
+                    destination_chain: "test-destination-chain".to_string(),
+                    destination_address: "test-destination-address".to_string(),
+                    payload_hash: [51; 32],
                 },
                 position: 0,
-                set_size: 3,
+                set_size: 1,
                 domain_separator: [0; 32],
             },
-            proof: vec![0x01],
-        };
-
-        let merkle_msg_2 = MerklizedMessage {
-            leaf: MessageLeaf {
-                message: Message {
-                    cc_id: CrossChainId {
-                        chain: "test-chain".to_string(),
-                        id: msg_id_2.clone(),
-                    },
-                    source_address: "src-2".to_string(),
-                    destination_chain: "dst-chain".to_string(),
-                    destination_address: "dst-addr-2".to_string(),
-                    payload_hash: [2; 32],
-                },
-                position: 1,
-                set_size: 3,
-                domain_separator: [0; 32],
-            },
-            proof: vec![0x02],
-        };
-
-        let merkle_msg_3 = MerklizedMessage {
-            leaf: MessageLeaf {
-                message: Message {
-                    cc_id: CrossChainId {
-                        chain: "test-chain".to_string(),
-                        id: msg_id_3.clone(),
-                    },
-                    source_address: "src-3".to_string(),
-                    destination_chain: "dst-chain".to_string(),
-                    destination_address: "dst-addr-3".to_string(),
-                    payload_hash: [3; 32],
-                },
-                position: 2,
-                set_size: 3,
-                domain_separator: [0; 32],
-            },
-            proof: vec![0x03],
+            proof: vec![0x05],
         };
 
         let execute_data = ExecuteData {
@@ -3879,18 +3720,16 @@ mod tests {
             signing_verifier_set_merkle_root,
             signing_verifier_set_leaves: vec![verifier_info],
             payload_items: MerklizedPayload::NewMessages {
-                messages: vec![merkle_msg_1, merkle_msg_2, merkle_msg_3],
+                messages: vec![merkle_msg],
             },
         };
 
         let execute_data_b64 =
             base64::prelude::BASE64_STANDARD.encode(execute_data.try_to_vec().unwrap());
 
-        let task_id = "verify-signature-failure-all-cannot-execute".to_string();
-
         let task = GatewayTxTask {
             common: CommonTaskFields {
-                id: task_id.clone(),
+                id: "approve-message-fails".into(),
                 chain: "test-chain".into(),
                 timestamp: Utc::now().to_string(),
                 r#type: "gateway_tx".into(),
@@ -3907,16 +3746,21 @@ mod tests {
 
         let mut verify_tx = Transaction::new_with_payer(&[], Some(&keypair.pubkey()));
         verify_tx.sign(&[&keypair], Hash::default());
+        let verify_sig = verify_tx.signatures[0];
+
+        let mut approve_tx = Transaction::new_with_payer(&[], Some(&keypair.pubkey()));
+        approve_tx.sign(&[&keypair], Hash::default());
 
         let init_tx_clone = init_tx.clone();
         let verify_tx_clone = verify_tx.clone();
+        let approve_tx_clone = approve_tx.clone();
 
-        // 2 builds: init, verify
+        // 3 builds: init, verify, approve
         let build_calls = Arc::new(AtomicUsize::new(0));
         let build_calls_clone = Arc::clone(&build_calls);
         transaction_builder
             .expect_build()
-            .times(2)
+            .times(3)
             .returning(move |_, _, _| {
                 let idx = build_calls_clone.fetch_add(1, Ordering::SeqCst);
                 match idx {
@@ -3932,52 +3776,61 @@ mod tests {
                         ),
                         100_000u64,
                     )),
+                    2 => Ok((
+                        crate::transaction_type::SolanaTransactionType::Legacy(
+                            approve_tx_clone.clone(),
+                        ),
+                        100_000u64,
+                    )),
                     _ => panic!("unexpected build call"),
                 }
             });
 
+        // 3 sends: init (success), verify (success), approve (fails)
         let send_calls = Arc::new(AtomicUsize::new(0));
         let send_calls_clone = Arc::clone(&send_calls);
         mock_client
             .expect_send_transaction()
-            .times(2)
+            .times(3)
             .returning(move |_| {
                 let idx = send_calls_clone.fetch_add(1, Ordering::SeqCst);
                 match idx {
                     0 => Box::pin(async move { Ok((init_sig, Some(10u64))) }),
-                    1 => Box::pin(async move {
+                    1 => Box::pin(async move { Ok((verify_sig, Some(20u64))) }),
+                    2 => Box::pin(async move {
                         Err(IncluderClientError::GenericError(
-                            "verify failed".to_string(),
+                            "approve failed".to_string(),
                         ))
                     }),
                     _ => panic!("unexpected send_transaction call"),
                 }
             });
 
-        redis_conn.expect_write_gas_cost().times(0);
-
-        let expected_ids = [msg_id_1.clone(), msg_id_2.clone(), msg_id_3.clone()];
-        mock_gmp_api
-            .expect_cannot_execute_message()
-            .times(3)
-            .withf(move |got_task_id, msg_id, src_chain, details, reason| {
-                got_task_id == &task_id
-                    && expected_ids.contains(msg_id)
-                    && *src_chain == "test-chain"
-                    && details.contains("verify failed")
-                    && matches!(reason, CannotExecuteMessageReason::Error)
+        // add_gas_cost_for_task_id is called twice:
+        // 1. init cost: 10
+        // 2. total verify cost: 20
+        let add_calls = Arc::new(AtomicUsize::new(0));
+        let add_calls_clone = Arc::clone(&add_calls);
+        redis_conn
+            .expect_add_gas_cost_for_task_id()
+            .times(2)
+            .withf(move |task_id, cost, tx_type| {
+                let idx = add_calls_clone.fetch_add(1, Ordering::SeqCst);
+                *task_id == "approve-message-fails"
+                    && matches!(tx_type, TransactionType::Approve)
+                    && match idx {
+                        0 => *cost == 10, // init cost
+                        1 => *cost == 20, // total verify cost
+                        _ => false,
+                    }
             })
-            .returning(|_, msg_id, src_chain, _, _| Event::CannotExecuteMessageV2 {
-                common: CommonEventFields {
-                    r#type: "CANNOT_EXECUTE_MESSAGE/V2".to_string(),
-                    event_id: format!("evt-{}", msg_id),
-                    meta: None,
-                },
-                message_id: msg_id,
-                source_chain: src_chain,
-                reason: CannotExecuteMessageReason::Error,
-                details: "verify failed".to_string(),
-            });
+            .returning(|_, _, _| ());
+
+        // No get_gas_cost_for_task_id because approve_messages errors out
+        redis_conn.expect_get_gas_cost_for_task_id().times(0);
+
+        // No write_gas_cost_for_message_id because approve_messages errors out
+        redis_conn.expect_write_gas_cost_for_message_id().times(0);
 
         let includer = SolanaIncluder::new(
             Arc::new(mock_client),
@@ -3991,11 +3844,7 @@ mod tests {
 
         let result = includer.handle_gateway_tx_task(task).await;
 
-        assert!(result.is_ok());
-        let events = result.unwrap();
-        assert_eq!(events.len(), 3);
-        for ev in events {
-            assert!(matches!(ev, Event::CannotExecuteMessageV2 { .. }));
-        }
+        // Now errors out when any approve fails
+        assert!(result.is_err());
     }
 }
