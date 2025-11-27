@@ -1401,4 +1401,135 @@ mod tests {
         assert!(ttl <= GAS_COST_EXPIRATION as i64);
         assert!(ttl > (GAS_COST_EXPIRATION as i64 - 10));
     }
+
+    #[tokio::test]
+    async fn test_add_gas_cost_for_task_id_account_in_use_error_init_session() {
+        // Test that when AccountInUseError occurs in InitializePayloadVerificationSession,
+        // the cost added is 0, which doesn't change the existing cost
+        let (_container, redis_conn) = create_redis_connection().await;
+
+        let task_id = "test-task-account-in-use-init".to_string();
+        let existing_cost = 5000u64;
+
+        // First add some existing cost
+        redis_conn
+            .add_gas_cost_for_task_id(task_id.clone(), existing_cost, TransactionType::Approve)
+            .await;
+
+        // Simulate AccountInUseError handling: add 0 cost
+        redis_conn
+            .add_gas_cost_for_task_id(task_id.clone(), 0, TransactionType::Approve)
+            .await;
+
+        // Verify the cost remains unchanged (0 + existing = existing)
+        let mut conn = redis_conn.inner().clone();
+        let key = format!("task_cost:{}:{}", TransactionType::Approve, task_id);
+        let stored_value: Option<String> = redis::AsyncCommands::get(&mut conn, key).await.unwrap();
+
+        assert_eq!(stored_value, Some(existing_cost.to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_add_gas_cost_for_task_id_slot_already_verified_error() {
+        // Test that when SlotAlreadyVerifiedError occurs in VerifySignatures,
+        // no cost is added for that signature (cost remains 0 or doesn't accumulate)
+        let (_container, redis_conn) = create_redis_connection().await;
+
+        let task_id = "test-task-slot-already-verified".to_string();
+        let init_cost = 3000u64;
+
+        // First add initialization cost
+        redis_conn
+            .add_gas_cost_for_task_id(task_id.clone(), init_cost, TransactionType::Approve)
+            .await;
+
+        // Simulate SlotAlreadyVerifiedError: when signature is already verified,
+        // no cost is added (verify_signatures continues without adding cost)
+        // So we add 0 cost to simulate this scenario
+        redis_conn
+            .add_gas_cost_for_task_id(task_id.clone(), 0, TransactionType::Approve)
+            .await;
+
+        // Verify the cost remains as init_cost (0 + init_cost = init_cost)
+        let mut conn = redis_conn.inner().clone();
+        let key = format!("task_cost:{}:{}", TransactionType::Approve, task_id);
+        let stored_value: Option<String> = redis::AsyncCommands::get(&mut conn, key).await.unwrap();
+
+        assert_eq!(stored_value, Some(init_cost.to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_write_gas_cost_for_message_id_account_in_use_error_approve() {
+        // Test that when AccountInUseError occurs in ApproveMessages,
+        // write_gas_cost_for_message_id is called with 0 (or overhead + 0 = overhead if overhead > 0),
+        // but if the total is 0, it should return early and not write to Redis
+        let (_container, redis_conn) = create_redis_connection().await;
+
+        let message_id = "test-message-account-in-use-approve".to_string();
+
+        // Simulate AccountInUseError in ApproveMessages: write with 0 cost
+        // This should return early and not write to Redis
+        redis_conn
+            .write_gas_cost_for_message_id(message_id.clone(), 0, TransactionType::Approve)
+            .await;
+
+        // Verify nothing was written to Redis
+        let mut conn = redis_conn.inner().clone();
+        let key = format!("cost:{}:{}", TransactionType::Approve, message_id);
+        let stored_value: Option<String> = redis::AsyncCommands::get(&mut conn, key).await.unwrap();
+
+        assert_eq!(
+            stored_value, None,
+            "No cost should be written when gas_cost is 0"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_write_gas_cost_for_message_id_account_in_use_error_with_overhead() {
+        // Test that when AccountInUseError occurs in ApproveMessages but overhead > 0,
+        // write_gas_cost_for_message_id is called with overhead (0 + overhead = overhead)
+        // and should write the overhead cost
+        let (_container, redis_conn) = create_redis_connection().await;
+
+        let message_id = "test-message-account-in-use-with-overhead".to_string();
+        let overhead_cost = 1000u64;
+
+        // Simulate AccountInUseError in ApproveMessages with overhead:
+        // gas_cost is 0, but overhead_cost_per_message is overhead_cost
+        // So write_gas_cost_for_message_id is called with 0 + overhead = overhead
+        redis_conn
+            .write_gas_cost_for_message_id(
+                message_id.clone(),
+                overhead_cost,
+                TransactionType::Approve,
+            )
+            .await;
+
+        // Verify overhead cost was written to Redis
+        let mut conn = redis_conn.inner().clone();
+        let key = format!("cost:{}:{}", TransactionType::Approve, message_id);
+        let stored_value: Option<String> = redis::AsyncCommands::get(&mut conn, key).await.unwrap();
+
+        assert_eq!(stored_value, Some(overhead_cost.to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_add_gas_cost_for_task_id_zero_cost_initial() {
+        // Test that adding 0 cost initially creates an entry with 0
+        let (_container, redis_conn) = create_redis_connection().await;
+
+        let task_id = "test-task-zero-initial".to_string();
+
+        // Add 0 cost initially (simulating AccountInUseError or SlotAlreadyVerifiedError)
+        redis_conn
+            .add_gas_cost_for_task_id(task_id.clone(), 0, TransactionType::Approve)
+            .await;
+
+        // Verify 0 was written
+        let mut conn = redis_conn.inner().clone();
+        let key = format!("task_cost:{}:{}", TransactionType::Approve, task_id);
+        let stored_value: Option<String> = redis::AsyncCommands::get(&mut conn, key).await.unwrap();
+
+        assert_eq!(stored_value, Some(0u64.to_string()));
+    }
 }

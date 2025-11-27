@@ -196,6 +196,9 @@ impl<
                 IncluderClientError::SlotAlreadyVerifiedError(e) => {
                     Err(SolanaIncluderError::SlotAlreadyVerifiedError(e))
                 }
+                IncluderClientError::AccountInUseError(e) => {
+                    Err(SolanaIncluderError::AccountInUseError(e))
+                }
                 _ => Err(SolanaIncluderError::GenericError(e.to_string())),
             },
         }
