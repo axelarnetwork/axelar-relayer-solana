@@ -3872,4 +3872,556 @@ mod tests {
         // Now errors out when any approve fails
         assert!(result.is_err());
     }
+
+    #[tokio::test]
+    async fn test_handle_gateway_tx_task_account_in_use_error_init_session() {
+        // Test that when AccountInUseError occurs in InitializePayloadVerificationSession,
+        // add_gas_cost_for_task_id is called with 0, which should return early and not write to Redis
+        let (
+            mock_gmp_api,
+            keypair,
+            chain_name,
+            mut redis_conn,
+            mock_refunds_model,
+            mut mock_client,
+            mut transaction_builder,
+        ) = get_includer_fields();
+
+        let payload_merkle_root = [1u8; 32];
+        let signing_verifier_set_merkle_root = [2u8; 32];
+
+        let verifier_info = SigningVerifierSetInfo {
+            leaf: VerifierSetLeaf {
+                nonce: 0,
+                quorum: 0,
+                signer_pubkey: PublicKey([0; 33]),
+                signer_weight: 0,
+                position: 0,
+                set_size: 0,
+                domain_separator: [0; 32],
+            },
+            merkle_proof: vec![0xDD, 0xEE, 0xFF],
+            signature: solana_axelar_std::Signature([0; 65]),
+        };
+
+        let execute_data = ExecuteData {
+            payload_merkle_root,
+            signing_verifier_set_merkle_root,
+            signing_verifier_set_leaves: vec![verifier_info],
+            payload_items: MerklizedPayload::NewMessages {
+                messages: vec![MerklizedMessage {
+                    leaf: MessageLeaf {
+                        message: Message {
+                            cc_id: CrossChainId {
+                                chain: "test-chain".to_string(),
+                                id: "test-message-id".to_string(),
+                            },
+                            source_address: "test-source-address".to_string(),
+                            destination_chain: "test-destination-chain".to_string(),
+                            destination_address: "test-destination-address".to_string(),
+                            payload_hash: [0; 32],
+                        },
+                        position: 0,
+                        set_size: 0,
+                        domain_separator: [0; 32],
+                    },
+                    proof: vec![0xDD, 0xEE, 0xFF],
+                }],
+            },
+        };
+
+        let execute_data_b64 =
+            base64::prelude::BASE64_STANDARD.encode(execute_data.try_to_vec().unwrap());
+
+        let task = GatewayTxTask {
+            common: CommonTaskFields {
+                id: "account-in-use-init".into(),
+                chain: "test-chain".into(),
+                timestamp: Utc::now().to_string(),
+                r#type: "gateway_tx".into(),
+                meta: None,
+            },
+            task: GatewayTxTaskFields {
+                execute_data: execute_data_b64,
+            },
+        };
+
+        let mut verify_tx = Transaction::new_with_payer(&[], Some(&keypair.pubkey()));
+        verify_tx.sign(&[&keypair], Hash::default());
+        let verify_sig = verify_tx.signatures[0];
+
+        let mut approve_tx = Transaction::new_with_payer(&[], Some(&keypair.pubkey()));
+        approve_tx.sign(&[&keypair], Hash::default());
+        let approve_sig = approve_tx.signatures[0];
+
+        let init_tx_clone = Transaction::new_with_payer(&[], Some(&keypair.pubkey()));
+        let verify_tx_clone = verify_tx.clone();
+        let approve_tx_clone = approve_tx.clone();
+
+        let build_calls = Arc::new(AtomicUsize::new(0));
+        let build_calls_clone = Arc::clone(&build_calls);
+
+        transaction_builder
+            .expect_build()
+            .times(3)
+            .returning(move |_, _, _| {
+                let idx = build_calls_clone.fetch_add(1, Ordering::SeqCst);
+                match idx {
+                    0 => Ok((
+                        crate::transaction_type::SolanaTransactionType::Legacy(
+                            init_tx_clone.clone(),
+                        ),
+                        100_000u64,
+                    )),
+                    1 => Ok((
+                        crate::transaction_type::SolanaTransactionType::Legacy(
+                            verify_tx_clone.clone(),
+                        ),
+                        100_000u64,
+                    )),
+                    _ => Ok((
+                        crate::transaction_type::SolanaTransactionType::Legacy(
+                            approve_tx_clone.clone(),
+                        ),
+                        100_000u64,
+                    )),
+                }
+            });
+
+        // init returns AccountInUseError, verify succeeds, approve succeeds
+        let send_calls = Arc::new(AtomicUsize::new(0));
+        let send_calls_clone = Arc::clone(&send_calls);
+        mock_client
+            .expect_send_transaction()
+            .times(3)
+            .returning(move |_| {
+                let idx = send_calls_clone.fetch_add(1, Ordering::SeqCst);
+                match idx {
+                    0 => Box::pin(async move {
+                        Err(IncluderClientError::AccountInUseError(
+                            "account already in use".to_string(),
+                        ))
+                    }),
+                    1 => Box::pin(async move { Ok((verify_sig, Some(20u64))) }),
+                    2 => Box::pin(async move { Ok((approve_sig, Some(30u64))) }),
+                    _ => panic!("unexpected send_transaction call"),
+                }
+            });
+
+        // add_gas_cost_for_task_id is called twice:
+        // 1. Called for init with 0 (AccountInUseError) - function returns early, doesn't write to Redis
+        // 2. Called for verify with 20
+        redis_conn
+            .expect_add_gas_cost_for_task_id()
+            .times(2)
+            .withf(move |task_id, cost, tx_type| {
+                *task_id == "account-in-use-init"
+                    && matches!(tx_type, TransactionType::Approve)
+                    && (*cost == 0 || *cost == 20)
+            })
+            .returning(|_, _, _| ());
+
+        // get_gas_cost_for_task_id to read overhead (only verify cost since init was 0)
+        redis_conn
+            .expect_get_gas_cost_for_task_id()
+            .times(1)
+            .withf(move |task_id, tx_type| {
+                *task_id == "account-in-use-init" && matches!(tx_type, TransactionType::Approve)
+            })
+            .returning(|_, _| Ok(20u64));
+
+        // write_gas_cost_for_message_id with overhead (20) + approve cost (30) = 50
+        redis_conn
+            .expect_write_gas_cost_for_message_id()
+            .times(1)
+            .withf(move |msg_id, cost, tx_type| {
+                *msg_id == "test-message-id"
+                    && matches!(tx_type, TransactionType::Approve)
+                    && *cost == 50
+            })
+            .returning(|_, _, _| ());
+
+        let includer = SolanaIncluder::new(
+            Arc::new(mock_client),
+            Arc::new(keypair),
+            chain_name,
+            transaction_builder,
+            Arc::new(mock_gmp_api),
+            redis_conn,
+            Arc::new(mock_refunds_model),
+        );
+
+        let result = includer.handle_gateway_tx_task(task).await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_handle_gateway_tx_task_slot_already_verified_error() {
+        // Test that when SlotAlreadyVerifiedError occurs in VerifySignatures,
+        // if all signatures are already verified, total_cost is 0,
+        // and add_gas_cost_for_task_id is called with 0, which should return early
+        let (
+            mock_gmp_api,
+            keypair,
+            chain_name,
+            mut redis_conn,
+            mock_refunds_model,
+            mut mock_client,
+            mut transaction_builder,
+        ) = get_includer_fields();
+
+        let payload_merkle_root = [1u8; 32];
+        let signing_verifier_set_merkle_root = [2u8; 32];
+
+        let verifier_info = SigningVerifierSetInfo {
+            leaf: VerifierSetLeaf {
+                nonce: 0,
+                quorum: 0,
+                signer_pubkey: PublicKey([0; 33]),
+                signer_weight: 0,
+                position: 0,
+                set_size: 0,
+                domain_separator: [0; 32],
+            },
+            merkle_proof: vec![0xDD, 0xEE, 0xFF],
+            signature: solana_axelar_std::Signature([0; 65]),
+        };
+
+        let execute_data = ExecuteData {
+            payload_merkle_root,
+            signing_verifier_set_merkle_root,
+            signing_verifier_set_leaves: vec![verifier_info],
+            payload_items: MerklizedPayload::NewMessages {
+                messages: vec![MerklizedMessage {
+                    leaf: MessageLeaf {
+                        message: Message {
+                            cc_id: CrossChainId {
+                                chain: "test-chain".to_string(),
+                                id: "test-message-id".to_string(),
+                            },
+                            source_address: "test-source-address".to_string(),
+                            destination_chain: "test-destination-chain".to_string(),
+                            destination_address: "test-destination-address".to_string(),
+                            payload_hash: [0; 32],
+                        },
+                        position: 0,
+                        set_size: 0,
+                        domain_separator: [0; 32],
+                    },
+                    proof: vec![0xDD, 0xEE, 0xFF],
+                }],
+            },
+        };
+
+        let execute_data_b64 =
+            base64::prelude::BASE64_STANDARD.encode(execute_data.try_to_vec().unwrap());
+
+        let task = GatewayTxTask {
+            common: CommonTaskFields {
+                id: "slot-already-verified".into(),
+                chain: "test-chain".into(),
+                timestamp: Utc::now().to_string(),
+                r#type: "gateway_tx".into(),
+                meta: None,
+            },
+            task: GatewayTxTaskFields {
+                execute_data: execute_data_b64,
+            },
+        };
+
+        let mut init_tx = Transaction::new_with_payer(&[], Some(&keypair.pubkey()));
+        init_tx.sign(&[&keypair], Hash::default());
+        let init_sig = init_tx.signatures[0];
+
+        let mut approve_tx = Transaction::new_with_payer(&[], Some(&keypair.pubkey()));
+        approve_tx.sign(&[&keypair], Hash::default());
+        let approve_sig = approve_tx.signatures[0];
+
+        let init_tx_clone = init_tx.clone();
+        let verify_tx_clone = Transaction::new_with_payer(&[], Some(&keypair.pubkey()));
+        let approve_tx_clone = approve_tx.clone();
+
+        let build_calls = Arc::new(AtomicUsize::new(0));
+        let build_calls_clone = Arc::clone(&build_calls);
+
+        transaction_builder
+            .expect_build()
+            .times(3)
+            .returning(move |_, _, _| {
+                let idx = build_calls_clone.fetch_add(1, Ordering::SeqCst);
+                match idx {
+                    0 => Ok((
+                        crate::transaction_type::SolanaTransactionType::Legacy(
+                            init_tx_clone.clone(),
+                        ),
+                        100_000u64,
+                    )),
+                    1 => Ok((
+                        crate::transaction_type::SolanaTransactionType::Legacy(
+                            verify_tx_clone.clone(),
+                        ),
+                        100_000u64,
+                    )),
+                    _ => Ok((
+                        crate::transaction_type::SolanaTransactionType::Legacy(
+                            approve_tx_clone.clone(),
+                        ),
+                        100_000u64,
+                    )),
+                }
+            });
+
+        // init succeeds, verify returns SlotAlreadyVerifiedError, approve succeeds
+        let send_calls = Arc::new(AtomicUsize::new(0));
+        let send_calls_clone = Arc::clone(&send_calls);
+        mock_client
+            .expect_send_transaction()
+            .times(3)
+            .returning(move |_| {
+                let idx = send_calls_clone.fetch_add(1, Ordering::SeqCst);
+                match idx {
+                    0 => Box::pin(async move { Ok((init_sig, Some(10u64))) }),
+                    1 => Box::pin(async move {
+                        Err(IncluderClientError::SlotAlreadyVerifiedError(
+                            "slot already verified".to_string(),
+                        ))
+                    }),
+                    2 => Box::pin(async move { Ok((approve_sig, Some(30u64))) }),
+                    _ => panic!("unexpected send_transaction call"),
+                }
+            });
+
+        // add_gas_cost_for_task_id is called twice:
+        // 1. Called for init with 10
+        // 2. Called for verify with 0 (SlotAlreadyVerifiedError) - function returns early, doesn't write to Redis
+        redis_conn
+            .expect_add_gas_cost_for_task_id()
+            .times(2)
+            .withf(move |task_id, cost, tx_type| {
+                *task_id == "slot-already-verified"
+                    && matches!(tx_type, TransactionType::Approve)
+                    && (*cost == 10 || *cost == 0)
+            })
+            .returning(|_, _, _| ());
+
+        // get_gas_cost_for_task_id to read overhead (only init cost since verify was 0)
+        redis_conn
+            .expect_get_gas_cost_for_task_id()
+            .times(1)
+            .withf(move |task_id, tx_type| {
+                *task_id == "slot-already-verified" && matches!(tx_type, TransactionType::Approve)
+            })
+            .returning(|_, _| Ok(10u64));
+
+        // write_gas_cost_for_message_id with overhead (10) + approve cost (30) = 40
+        redis_conn
+            .expect_write_gas_cost_for_message_id()
+            .times(1)
+            .withf(move |msg_id, cost, tx_type| {
+                *msg_id == "test-message-id"
+                    && matches!(tx_type, TransactionType::Approve)
+                    && *cost == 40
+            })
+            .returning(|_, _, _| ());
+
+        let includer = SolanaIncluder::new(
+            Arc::new(mock_client),
+            Arc::new(keypair),
+            chain_name,
+            transaction_builder,
+            Arc::new(mock_gmp_api),
+            redis_conn,
+            Arc::new(mock_refunds_model),
+        );
+
+        let result = includer.handle_gateway_tx_task(task).await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_handle_gateway_tx_task_account_in_use_error_approve() {
+        // Test that when AccountInUseError occurs in ApproveMessages,
+        // the message is added with cost 0, and if overhead is also 0,
+        // write_gas_cost_for_message_id is called with 0, which should return early
+        let (
+            mock_gmp_api,
+            keypair,
+            chain_name,
+            mut redis_conn,
+            mock_refunds_model,
+            mut mock_client,
+            mut transaction_builder,
+        ) = get_includer_fields();
+
+        let payload_merkle_root = [1u8; 32];
+        let signing_verifier_set_merkle_root = [2u8; 32];
+
+        let verifier_info = SigningVerifierSetInfo {
+            leaf: VerifierSetLeaf {
+                nonce: 0,
+                quorum: 0,
+                signer_pubkey: PublicKey([0; 33]),
+                signer_weight: 0,
+                position: 0,
+                set_size: 0,
+                domain_separator: [0; 32],
+            },
+            merkle_proof: vec![0xDD, 0xEE, 0xFF],
+            signature: solana_axelar_std::Signature([0; 65]),
+        };
+
+        let execute_data = ExecuteData {
+            payload_merkle_root,
+            signing_verifier_set_merkle_root,
+            signing_verifier_set_leaves: vec![verifier_info],
+            payload_items: MerklizedPayload::NewMessages {
+                messages: vec![MerklizedMessage {
+                    leaf: MessageLeaf {
+                        message: Message {
+                            cc_id: CrossChainId {
+                                chain: "test-chain".to_string(),
+                                id: "test-message-id".to_string(),
+                            },
+                            source_address: "test-source-address".to_string(),
+                            destination_chain: "test-destination-chain".to_string(),
+                            destination_address: "test-destination-address".to_string(),
+                            payload_hash: [0; 32],
+                        },
+                        position: 0,
+                        set_size: 0,
+                        domain_separator: [0; 32],
+                    },
+                    proof: vec![0xDD, 0xEE, 0xFF],
+                }],
+            },
+        };
+
+        let execute_data_b64 =
+            base64::prelude::BASE64_STANDARD.encode(execute_data.try_to_vec().unwrap());
+
+        let task = GatewayTxTask {
+            common: CommonTaskFields {
+                id: "account-in-use-approve".into(),
+                chain: "test-chain".into(),
+                timestamp: Utc::now().to_string(),
+                r#type: "gateway_tx".into(),
+                meta: None,
+            },
+            task: GatewayTxTaskFields {
+                execute_data: execute_data_b64,
+            },
+        };
+
+        let mut init_tx = Transaction::new_with_payer(&[], Some(&keypair.pubkey()));
+        init_tx.sign(&[&keypair], Hash::default());
+        let init_sig = init_tx.signatures[0];
+
+        let mut verify_tx = Transaction::new_with_payer(&[], Some(&keypair.pubkey()));
+        verify_tx.sign(&[&keypair], Hash::default());
+        let verify_sig = verify_tx.signatures[0];
+
+        let init_tx_clone = init_tx.clone();
+        let verify_tx_clone = verify_tx.clone();
+        let approve_tx_clone = Transaction::new_with_payer(&[], Some(&keypair.pubkey()));
+
+        let build_calls = Arc::new(AtomicUsize::new(0));
+        let build_calls_clone = Arc::clone(&build_calls);
+
+        transaction_builder
+            .expect_build()
+            .times(3)
+            .returning(move |_, _, _| {
+                let idx = build_calls_clone.fetch_add(1, Ordering::SeqCst);
+                match idx {
+                    0 => Ok((
+                        crate::transaction_type::SolanaTransactionType::Legacy(
+                            init_tx_clone.clone(),
+                        ),
+                        100_000u64,
+                    )),
+                    1 => Ok((
+                        crate::transaction_type::SolanaTransactionType::Legacy(
+                            verify_tx_clone.clone(),
+                        ),
+                        100_000u64,
+                    )),
+                    _ => Ok((
+                        crate::transaction_type::SolanaTransactionType::Legacy(
+                            approve_tx_clone.clone(),
+                        ),
+                        100_000u64,
+                    )),
+                }
+            });
+
+        // init succeeds, verify succeeds, approve returns AccountInUseError
+        let send_calls = Arc::new(AtomicUsize::new(0));
+        let send_calls_clone = Arc::clone(&send_calls);
+        mock_client
+            .expect_send_transaction()
+            .times(3)
+            .returning(move |_| {
+                let idx = send_calls_clone.fetch_add(1, Ordering::SeqCst);
+                match idx {
+                    0 => Box::pin(async move { Ok((init_sig, Some(10u64))) }),
+                    1 => Box::pin(async move { Ok((verify_sig, Some(20u64))) }),
+                    2 => Box::pin(async move {
+                        Err(IncluderClientError::AccountInUseError(
+                            "account already in use".to_string(),
+                        ))
+                    }),
+                    _ => panic!("unexpected send_transaction call"),
+                }
+            });
+
+        // add_gas_cost_for_task_id should be called:
+        // 1. Called for init (10)
+        // 2. Called for verify (20)
+        redis_conn
+            .expect_add_gas_cost_for_task_id()
+            .times(2)
+            .withf(move |task_id, cost, tx_type| {
+                *task_id == "account-in-use-approve"
+                    && matches!(tx_type, TransactionType::Approve)
+                    && (*cost == 10 || *cost == 20)
+            })
+            .returning(|_, _, _| ());
+
+        // get_gas_cost_for_task_id to read overhead (10 + 20 = 30)
+        redis_conn
+            .expect_get_gas_cost_for_task_id()
+            .times(1)
+            .withf(move |task_id, tx_type| {
+                *task_id == "account-in-use-approve" && matches!(tx_type, TransactionType::Approve)
+            })
+            .returning(|_, _| Ok(30u64));
+
+        // write_gas_cost_for_message_id with overhead (30) + approve cost (0) = 30
+        // Since the total is not 0, it should write
+        redis_conn
+            .expect_write_gas_cost_for_message_id()
+            .times(1)
+            .withf(move |msg_id, cost, tx_type| {
+                *msg_id == "test-message-id"
+                    && matches!(tx_type, TransactionType::Approve)
+                    && *cost == 30
+            })
+            .returning(|_, _, _| ());
+
+        let includer = SolanaIncluder::new(
+            Arc::new(mock_client),
+            Arc::new(keypair),
+            chain_name,
+            transaction_builder,
+            Arc::new(mock_gmp_api),
+            redis_conn,
+            Arc::new(mock_refunds_model),
+        );
+
+        let result = includer.handle_gateway_tx_task(task).await;
+
+        assert!(result.is_ok());
+    }
 }
