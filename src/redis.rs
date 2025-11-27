@@ -1416,7 +1416,6 @@ mod tests {
         let (_container, redis_conn) = create_redis_connection().await;
 
         let task_id = "test-task-zero-cost-returns-early".to_string();
-
         let existing_cost = 5000u64;
 
         // First add some existing cost
@@ -1524,7 +1523,6 @@ mod tests {
     #[tokio::test]
     async fn test_add_gas_cost_for_task_id_zero_cost_initial() {
         // Test that adding 0 cost initially returns early and does not write to Redis
-        // Test that adding 0 cost initially creates an entry with 0
         let (_container, redis_conn) = create_redis_connection().await;
 
         let task_id = "test-task-zero-initial".to_string();
