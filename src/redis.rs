@@ -1416,16 +1416,15 @@ mod tests {
         let (_container, redis_conn) = create_redis_connection().await;
 
         let task_id = "test-task-zero-cost-returns-early".to_string();
+
         let existing_cost = 5000u64;
 
         // First add some existing cost
         redis_conn
             .add_gas_cost_for_task_id(task_id.clone(), existing_cost, TransactionType::Approve)
             .await;
-
         // Simulate calling with 0 cost (e.g., AccountInUseError or SlotAlreadyVerifiedError)
         // This should return early and not write to Redis
-        // Simulate AccountInUseError handling: add 0 cost
         redis_conn
             .add_gas_cost_for_task_id(task_id.clone(), 0, TransactionType::Approve)
             .await;
@@ -1525,6 +1524,7 @@ mod tests {
     #[tokio::test]
     async fn test_add_gas_cost_for_task_id_zero_cost_initial() {
         // Test that adding 0 cost initially returns early and does not write to Redis
+        // Test that adding 0 cost initially creates an entry with 0
         let (_container, redis_conn) = create_redis_connection().await;
 
         let task_id = "test-task-zero-initial".to_string();
@@ -1544,5 +1544,6 @@ mod tests {
             stored_value, None,
             "No cost should be written when gas_cost is 0"
         );
+        assert_eq!(stored_value, Some(0u64.to_string()));
     }
 }
