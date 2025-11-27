@@ -1542,6 +1542,5 @@ mod tests {
             stored_value, None,
             "No cost should be written when gas_cost is 0"
         );
-        assert_eq!(stored_value, Some(0u64.to_string()));
     }
 }
