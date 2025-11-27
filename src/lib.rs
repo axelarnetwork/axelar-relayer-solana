@@ -20,3 +20,12 @@ pub mod test_utils;
 pub mod transaction_builder;
 pub mod transaction_type;
 pub mod types;
+
+/// Re-export mock types when the `test-mocks` feature is enabled.
+/// Use this in integration tests by adding `solana = { path = "..", features = ["test-mocks"] }`
+#[cfg(feature = "test-mocks")]
+pub mod mocks {
+    pub use crate::models::solana_subscriber_cursor::MockSubscriberCursor;
+    pub use crate::models::solana_transaction::MockSolanaTransactionModel;
+    pub use crate::poll_client::MockSolanaRpcClientTrait;
+}

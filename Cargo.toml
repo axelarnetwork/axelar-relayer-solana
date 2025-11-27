@@ -114,3 +114,7 @@ path = "src/bin/recovery/subscriber.rs"
 
 [features]
 instrumentation = []
+# Enable this feature in integration tests to access mock types
+# Default feature so rust-analyzer always sees the mocks
+default = ["test-mocks"]
+test-mocks = []

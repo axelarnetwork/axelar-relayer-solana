@@ -24,7 +24,7 @@ use crate::utils::get_tx_batch_command;
 const SIGNATURE_PAGE_LIMIT: usize = 100;
 
 #[async_trait]
-#[cfg_attr(any(test), mockall::automock)]
+#[cfg_attr(any(test, feature = "test-mocks"), mockall::automock)]
 pub trait SolanaRpcClientTrait: ThreadSafe {
     fn inner(&self) -> &RpcClient;
 

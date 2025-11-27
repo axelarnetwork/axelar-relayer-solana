@@ -6,7 +6,7 @@ use relayer_core::{models::gmp_events::EventModel, utils::ThreadSafe};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 
-#[cfg_attr(any(test), mockall::automock)]
+#[cfg_attr(any(test, feature = "test-mocks"), mockall::automock)]
 #[async_trait]
 pub trait SolanaTransactionModel: ThreadSafe {
     async fn find(&self, id: String) -> Result<Option<SolanaTransactionData>>;
