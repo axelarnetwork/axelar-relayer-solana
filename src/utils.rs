@@ -466,6 +466,15 @@ pub fn is_addr_in_use(s: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Checks if a string contains the "SlotAlreadyVerified" error pattern.
+/// Matches: "Error Code: SlotAlreadyVerified"
+pub fn is_slot_already_verified(s: &str) -> bool {
+    let pattern = r"Error Code: SlotAlreadyVerified";
+    Regex::new(pattern)
+        .map(|re| re.is_match(s))
+        .unwrap_or(false)
+}
+
 pub fn keypair_to_base58_string(keypair: &Keypair) -> String {
     keypair.to_base58_string()
 }
@@ -560,5 +569,37 @@ mod tests {
 2025-11-25T18:02:30.415947Z DEBUG solana_rpc_client::nonblocking::rpc_client: 
 2025-11-25T18:02:30.416016Z ERROR relayer_core::includer: Failed to consume delivery: GatewayTxTaskError("Generic error: Generic error: Generic error: TransactionError: Error processing Instruction 2: custom program error: 0x0")"#;
         assert!(is_addr_in_use(full_message));
+    }
+
+    #[test]
+    fn test_is_slot_already_verified() {
+        let error_msg = "Error Code: SlotAlreadyVerified";
+        assert!(is_slot_already_verified(error_msg));
+
+        let error_msg2 = "Program log: AnchorError thrown in programs/solana-axelar-gateway/src/state/verification_session.rs:164. Error Code: SlotAlreadyVerified. Error Number: 6006. Error Message: SlotAlreadyVerified.";
+        assert!(is_slot_already_verified(error_msg2));
+
+        let normal_msg = "Some other error message";
+        assert!(!is_slot_already_verified(normal_msg));
+
+        let partial_msg = "Error Code: SlotAlready";
+        assert!(!is_slot_already_verified(partial_msg));
+
+        let embedded_msg = "Error: Program log: AnchorError thrown in programs/solana-axelar-gateway/src/state/verification_session.rs:164. Error Code: SlotAlreadyVerified. Error Number: 6006.";
+        assert!(is_slot_already_verified(embedded_msg));
+
+        let full_message = r#"2025-11-26T16:50:25.617503Z DEBUG solana_rpc_client::nonblocking::rpc_client: -32002 Transaction simulation failed: Error processing Instruction 2: custom program error: 0x1776
+2025-11-26T16:50:25.617579Z DEBUG solana_rpc_client::nonblocking::rpc_client:   1: Program ComputeBudget111111111111111111111111111111 invoke [1]
+2025-11-26T16:50:25.617714Z DEBUG solana_rpc_client::nonblocking::rpc_client:   2: Program ComputeBudget111111111111111111111111111111 success
+2025-11-26T16:50:25.617786Z DEBUG solana_rpc_client::nonblocking::rpc_client:   3: Program ComputeBudget111111111111111111111111111111 invoke [1]
+2025-11-26T16:50:25.617824Z DEBUG solana_rpc_client::nonblocking::rpc_client:   4: Program ComputeBudget111111111111111111111111111111 success
+2025-11-26T16:50:25.617928Z DEBUG solana_rpc_client::nonblocking::rpc_client:   5: Program gtw3LYHmSe3y1cRqCeBuTpyB4KDQHfaqqHQs6Rw19DX invoke [1]
+2025-11-26T16:50:25.618014Z DEBUG solana_rpc_client::nonblocking::rpc_client:   6: Program log: Instruction: VerifySignature
+2025-11-26T16:50:25.618080Z DEBUG solana_rpc_client::nonblocking::rpc_client:   7: Program log: AnchorError thrown in programs/solana-axelar-gateway/src/state/verification_session.rs:164. Error Code: SlotAlreadyVerified. Error Number: 6006. Error Message: SlotAlreadyVerified.
+2025-11-26T16:50:25.618115Z DEBUG solana_rpc_client::nonblocking::rpc_client:   8: Program gtw3LYHmSe3y1cRqCeBuTpyB4KDQHfaqqHQs6Rw19DX consumed 9333 of 11259 compute units
+2025-11-26T16:50:25.618140Z DEBUG solana_rpc_client::nonblocking::rpc_client:   9: Program gtw3LYHmSe3y1cRqCeBuTpyB4KDQHfaqqHQs6Rw19DX failed: custom program error: 0x1776
+2025-11-26T16:50:25.618165Z DEBUG solana_rpc_client::nonblocking::rpc_client: 
+2025-11-26T16:50:25.618307Z ERROR relayer_core::includer: Failed to consume delivery: GatewayTxTaskError("Generic error: TransactionError: Error processing Instruction 2: custom program error: 0x1776")"#;
+        assert!(is_slot_already_verified(full_message));
     }
 }

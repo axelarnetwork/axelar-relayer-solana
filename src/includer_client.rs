@@ -15,7 +15,7 @@ use tracing::{error, warn};
 use crate::{
     error::IncluderClientError,
     transaction_type::SolanaTransactionType,
-    utils::{is_addr_in_use, is_recoverable},
+    utils::{is_addr_in_use, is_recoverable, is_slot_already_verified},
 };
 
 #[async_trait]
@@ -153,6 +153,9 @@ impl IncluderClientTrait for IncluderClient {
                     // We might have to manually implement send_and_confirm()
                     if is_addr_in_use(&e.to_string()) {
                         return Err(IncluderClientError::AccountInUseError(e.to_string()));
+                    }
+                    if is_slot_already_verified(&e.to_string()) {
+                        return Err(IncluderClientError::SlotAlreadyVerifiedError(e.to_string()));
                     }
                     if let Some(transaction_error) = e.get_transaction_error() {
                         if is_recoverable(&transaction_error) {

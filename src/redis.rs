@@ -107,6 +107,10 @@ impl RedisConnectionTrait for RedisConnection {
         gas_cost: u64,
         transaction_type: TransactionType,
     ) {
+        if gas_cost == 0 {
+            debug!("Gas cost is 0 for task id: {}, skipping write", task_id);
+            return;
+        }
         debug!("Adding gas cost for task id: {} to Redis", task_id);
         let mut redis_conn = self.conn.clone();
         let set_opts = SetOptions::default().with_expiration(SetExpiry::EX(GAS_COST_EXPIRATION));
@@ -120,7 +124,7 @@ impl RedisConnectionTrait for RedisConnection {
                 Err(_) => 0, // If there's an error reading, assume 0
             };
 
-        let total_cost = existing_cost + gas_cost;
+        let total_cost = existing_cost.saturating_add(gas_cost);
 
         let result = redis_conn
             .set_options(key.clone(), total_cost, set_opts)
@@ -1400,5 +1404,115 @@ mod tests {
         assert!(ttl > 0, "TTL should be positive");
         assert!(ttl <= GAS_COST_EXPIRATION as i64);
         assert!(ttl > (GAS_COST_EXPIRATION as i64 - 10));
+    }
+
+    #[tokio::test]
+    async fn test_add_gas_cost_for_task_id_zero_cost_returns_early() {
+        // Test that when add_gas_cost_for_task_id is called with 0,
+        // it returns early and doesn't write to Redis, leaving existing cost unchanged.
+        // This happens in two scenarios:
+        // 1. AccountInUseError in InitializePayloadVerificationSession (cost is 0)
+        // 2. SlotAlreadyVerifiedError in VerifySignatures (total_cost is 0)
+        let (_container, redis_conn) = create_redis_connection().await;
+
+        let task_id = "test-task-zero-cost-returns-early".to_string();
+        let existing_cost = 5000u64;
+
+        // First add some existing cost
+        redis_conn
+            .add_gas_cost_for_task_id(task_id.clone(), existing_cost, TransactionType::Approve)
+            .await;
+
+        // Simulate calling with 0 cost (e.g., AccountInUseError or SlotAlreadyVerifiedError)
+        // This should return early and not write to Redis
+        redis_conn
+            .add_gas_cost_for_task_id(task_id.clone(), 0, TransactionType::Approve)
+            .await;
+
+        // Verify the cost remains unchanged (function returns early, no write occurs)
+        let mut conn = redis_conn.inner().clone();
+        let key = format!("task_cost:{}:{}", TransactionType::Approve, task_id);
+        let stored_value: Option<String> = redis::AsyncCommands::get(&mut conn, key).await.unwrap();
+
+        assert_eq!(stored_value, Some(existing_cost.to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_write_gas_cost_for_message_id_account_in_use_error_approve() {
+        // Test that when AccountInUseError occurs in ApproveMessages,
+        // write_gas_cost_for_message_id is called with 0 (or overhead + 0 = overhead if overhead > 0),
+        // but if the total is 0, it should return early and not write to Redis
+        let (_container, redis_conn) = create_redis_connection().await;
+
+        let message_id = "test-message-account-in-use-approve".to_string();
+
+        // Simulate AccountInUseError in ApproveMessages: write with 0 cost
+        // This should return early and not write to Redis
+        redis_conn
+            .write_gas_cost_for_message_id(message_id.clone(), 0, TransactionType::Approve)
+            .await;
+
+        // Verify nothing was written to Redis
+        let mut conn = redis_conn.inner().clone();
+        let key = format!("cost:{}:{}", TransactionType::Approve, message_id);
+        let stored_value: Option<String> = redis::AsyncCommands::get(&mut conn, key).await.unwrap();
+
+        assert_eq!(
+            stored_value, None,
+            "No cost should be written when gas_cost is 0"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_write_gas_cost_for_message_id_account_in_use_error_with_overhead() {
+        // Test that when AccountInUseError occurs in ApproveMessages but overhead > 0,
+        // write_gas_cost_for_message_id is called with overhead (0 + overhead = overhead)
+        // and should write the overhead cost
+        let (_container, redis_conn) = create_redis_connection().await;
+
+        let message_id = "test-message-account-in-use-with-overhead".to_string();
+        let overhead_cost = 1000u64;
+
+        // Simulate AccountInUseError in ApproveMessages with overhead:
+        // gas_cost is 0, but overhead_cost_per_message is overhead_cost
+        // So write_gas_cost_for_message_id is called with 0 + overhead = overhead
+        redis_conn
+            .write_gas_cost_for_message_id(
+                message_id.clone(),
+                overhead_cost,
+                TransactionType::Approve,
+            )
+            .await;
+
+        // Verify overhead cost was written to Redis
+        let mut conn = redis_conn.inner().clone();
+        let key = format!("cost:{}:{}", TransactionType::Approve, message_id);
+        let stored_value: Option<String> = redis::AsyncCommands::get(&mut conn, key).await.unwrap();
+
+        assert_eq!(stored_value, Some(overhead_cost.to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_add_gas_cost_for_task_id_zero_cost_initial() {
+        // Test that adding 0 cost initially returns early and does not write to Redis
+        let (_container, redis_conn) = create_redis_connection().await;
+
+        let task_id = "test-task-zero-initial".to_string();
+
+        // Add 0 cost initially (simulating AccountInUseError or SlotAlreadyVerifiedError)
+        // This should return early and not write to Redis
+        redis_conn
+            .add_gas_cost_for_task_id(task_id.clone(), 0, TransactionType::Approve)
+            .await;
+
+        // Verify nothing was written to Redis (function returns early)
+        let mut conn = redis_conn.inner().clone();
+        let key = format!("task_cost:{}:{}", TransactionType::Approve, task_id);
+        let stored_value: Option<String> = redis::AsyncCommands::get(&mut conn, key).await.unwrap();
+
+        assert_eq!(
+            stored_value, None,
+            "No cost should be written when gas_cost is 0"
+        );
     }
 }
