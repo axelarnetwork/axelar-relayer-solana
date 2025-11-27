@@ -1,17 +1,26 @@
-//! Integration tests
+//! Integration tests for Axelar Solana programs
 //! To run:
 //! cargo test --test test
 
+#![allow(clippy::indexing_slicing)]
+
 use std::path::PathBuf;
 
+use anchor_lang::{InstructionData, ToAccountMetas};
 use solana_rpc::rpc::JsonRpcConfig;
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::account::AccountSharedData;
 use solana_sdk::commitment_config::CommitmentConfig;
+use solana_sdk::instruction::Instruction;
+use solana_sdk::native_token::LAMPORTS_PER_SOL;
 use solana_sdk::signature::{Keypair, Signer};
+use solana_sdk::transaction::Transaction;
 use solana_sdk_ids::bpf_loader_upgradeable;
 use solana_system_interface::program::ID as SYSTEM_PROGRAM_ID;
 use solana_test_validator::{TestValidatorGenesis, UpgradeableProgramInfo};
+
+use solana_axelar_gateway::state::config::{InitialVerifierSet, InitializeConfigParams};
+use solana_axelar_std::{hasher::LeafHash, MerkleTree, PublicKey, VerifierSetLeaf, U256};
 
 fn programs_dir() -> PathBuf {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
@@ -30,12 +39,24 @@ fn cleanup_leftover_validators() {
     std::thread::sleep(std::time::Duration::from_millis(500));
 }
 
-/// Start a test validator with the Axelar programs deployed and verify deployment succeeds.
+/// Generate a random secp256k1 signer for gateway verification
+fn generate_random_signer() -> (libsecp256k1::SecretKey, [u8; 33]) {
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+    let secret_key_bytes: [u8; 32] = rng.gen();
+    let secret_key = libsecp256k1::SecretKey::parse(&secret_key_bytes).expect("valid secret key");
+    let public_key = libsecp256k1::PublicKey::from_secret_key(&secret_key);
+    let compressed_pubkey = public_key.serialize_compressed();
+    (secret_key, compressed_pubkey)
+}
+
+/// Deploy and initialize all Axelar programs on a test validator
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_validator_program_deployment() {
+async fn test_deploy_and_initialize_programs() {
     cleanup_leftover_validators();
 
     let upgrade_authority = Keypair::new();
+    let operator = Keypair::new();
 
     let mut validator = TestValidatorGenesis::default();
 
@@ -44,14 +65,19 @@ async fn test_validator_program_deployment() {
     rpc_config.enable_extended_tx_metadata_storage = true;
     validator.rpc_config(rpc_config);
 
-    // Fund the upgrade authority account
+    // Fund the upgrade authority and operator accounts
     validator.add_account(
         upgrade_authority.pubkey(),
-        AccountSharedData::new(u64::MAX, 0, &SYSTEM_PROGRAM_ID),
+        AccountSharedData::new(100 * LAMPORTS_PER_SOL, 0, &SYSTEM_PROGRAM_ID),
+    );
+    validator.add_account(
+        operator.pubkey(),
+        AccountSharedData::new(100 * LAMPORTS_PER_SOL, 0, &SYSTEM_PROGRAM_ID),
     );
 
     let programs_path = programs_dir();
 
+    // Verify program files exist
     let program_files = [
         "solana_axelar_gateway.so",
         "solana_axelar_gas_service.so",
@@ -66,6 +92,8 @@ async fn test_validator_program_deployment() {
         }
     }
 
+    // Add all programs to the validator
+    // Note: ITS requires upgrade_authority == operator for initialization constraint
     validator.add_upgradeable_programs_with_path(&[
         UpgradeableProgramInfo {
             program_id: solana_axelar_gateway::ID,
@@ -82,7 +110,7 @@ async fn test_validator_program_deployment() {
         UpgradeableProgramInfo {
             program_id: solana_axelar_its::ID,
             loader: bpf_loader_upgradeable::id(),
-            upgrade_authority: upgrade_authority.pubkey(),
+            upgrade_authority: operator.pubkey(), // Must match operator for init constraint
             program_path: programs_path.join("solana_axelar_its.so"),
         },
         UpgradeableProgramInfo {
@@ -98,15 +126,14 @@ async fn test_validator_program_deployment() {
             program_path: programs_path.join("solana_axelar_operators.so"),
         },
     ]);
-    let (test_validator, _payer) = validator.start_async().await;
 
+    let (test_validator, payer) = validator.start_async().await;
     let rpc_url = test_validator.rpc_url();
 
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
 
     let rpc_client = RpcClient::new_with_commitment(rpc_url.clone(), CommitmentConfig::confirmed());
 
-    // Verify each program is deployed by checking the account exists and is executable
     let programs_to_check = [
         ("Gateway", solana_axelar_gateway::ID),
         ("Gas Service", solana_axelar_gas_service::ID),
@@ -122,10 +149,236 @@ async fn test_validator_program_deployment() {
             .unwrap_or_else(|e| panic!("Failed to get {} program account: {}", name, e));
 
         assert!(account.executable, "{} program should be executable", name);
+        println!("✓ {} program deployed: {}", name, program_id);
     }
 
+    let registry = solana_axelar_operators::OperatorRegistry::find_pda().0;
+    let operator_account_pda =
+        solana_axelar_operators::OperatorAccount::find_pda(&operator.pubkey()).0;
+
+    let init_operators_ix = Instruction {
+        program_id: solana_axelar_operators::ID,
+        accounts: solana_axelar_operators::accounts::Initialize {
+            payer: payer.pubkey(),
+            owner: operator.pubkey(),
+            registry,
+            system_program: SYSTEM_PROGRAM_ID,
+        }
+        .to_account_metas(None),
+        data: solana_axelar_operators::instruction::Initialize {}.data(),
+    };
+
+    let add_operator_ix = Instruction {
+        program_id: solana_axelar_operators::ID,
+        accounts: solana_axelar_operators::accounts::AddOperator {
+            owner: operator.pubkey(),
+            operator_to_add: operator.pubkey(),
+            registry,
+            operator_account: operator_account_pda,
+            system_program: SYSTEM_PROGRAM_ID,
+        }
+        .to_account_metas(None),
+        data: solana_axelar_operators::instruction::AddOperator {}.data(),
+    };
+
+    let recent_blockhash = rpc_client
+        .get_latest_blockhash()
+        .await
+        .expect("get blockhash");
+    let tx = Transaction::new_signed_with_payer(
+        &[init_operators_ix, add_operator_ix],
+        Some(&payer.pubkey()),
+        &[&payer, &operator],
+        recent_blockhash,
+    );
+    rpc_client
+        .send_and_confirm_transaction(&tx)
+        .await
+        .expect("Failed to initialize operators");
+
+    println!("✓ Operators initialized");
+
+    let treasury = solana_axelar_gas_service::Treasury::find_pda().0;
+
+    let init_gas_service_ix = Instruction {
+        program_id: solana_axelar_gas_service::ID,
+        accounts: solana_axelar_gas_service::accounts::Initialize {
+            payer: payer.pubkey(),
+            operator: operator.pubkey(),
+            operator_pda: operator_account_pda,
+            system_program: SYSTEM_PROGRAM_ID,
+            treasury,
+        }
+        .to_account_metas(None),
+        data: solana_axelar_gas_service::instruction::Initialize {}.data(),
+    };
+
+    let recent_blockhash = rpc_client
+        .get_latest_blockhash()
+        .await
+        .expect("get blockhash");
+    let tx = Transaction::new_signed_with_payer(
+        &[init_gas_service_ix],
+        Some(&payer.pubkey()),
+        &[&payer, &operator],
+        recent_blockhash,
+    );
+    rpc_client
+        .send_and_confirm_transaction(&tx)
+        .await
+        .expect("Failed to initialize gas service");
+
+    println!("✓ Gas Service initialized");
+
+    let gateway_root_pda = solana_axelar_gateway::GatewayConfig::find_pda().0;
+    let program_data =
+        solana_sdk::bpf_loader_upgradeable::get_program_data_address(&solana_axelar_gateway::ID);
+
+    // Generate signers for verifier set
+    let (_secret_key_1, compressed_pubkey_1) = generate_random_signer();
+    let (_secret_key_2, compressed_pubkey_2) = generate_random_signer();
+
+    let domain_separator = [2u8; 32];
+    let quorum_threshold = 100;
+
+    let verifier_leaves = [
+        VerifierSetLeaf {
+            nonce: 0,
+            quorum: quorum_threshold,
+            signer_pubkey: PublicKey(compressed_pubkey_1),
+            signer_weight: 50,
+            position: 0,
+            set_size: 2,
+            domain_separator,
+        },
+        VerifierSetLeaf {
+            nonce: 0,
+            quorum: quorum_threshold,
+            signer_pubkey: PublicKey(compressed_pubkey_2),
+            signer_weight: 50,
+            position: 1,
+            set_size: 2,
+            domain_separator,
+        },
+    ];
+
+    let verifier_leaf_hashes: Vec<[u8; 32]> =
+        verifier_leaves.iter().map(VerifierSetLeaf::hash).collect();
+    let verifier_merkle_tree = MerkleTree::from_leaves(&verifier_leaf_hashes);
+    let verifier_set_hash = verifier_merkle_tree.root().expect("merkle root");
+
+    let verifier_set_tracker_pda =
+        solana_axelar_gateway::VerifierSetTracker::find_pda(&verifier_set_hash).0;
+
+    let params = InitializeConfigParams {
+        domain_separator,
+        initial_verifier_set: InitialVerifierSet {
+            hash: verifier_set_hash,
+            pda: verifier_set_tracker_pda,
+        },
+        minimum_rotation_delay: 3600,
+        operator: operator.pubkey(),
+        previous_verifier_retention: U256::from(5u64),
+    };
+
+    let init_gateway_ix = Instruction {
+        program_id: solana_axelar_gateway::ID,
+        accounts: solana_axelar_gateway::accounts::InitializeConfig {
+            payer: payer.pubkey(),
+            upgrade_authority: upgrade_authority.pubkey(),
+            system_program: SYSTEM_PROGRAM_ID,
+            program_data,
+            gateway_root_pda,
+            verifier_set_tracker_pda,
+        }
+        .to_account_metas(None),
+        data: solana_axelar_gateway::instruction::InitializeConfig { params }.data(),
+    };
+
+    let recent_blockhash = rpc_client
+        .get_latest_blockhash()
+        .await
+        .expect("get blockhash");
+    let tx = Transaction::new_signed_with_payer(
+        &[init_gateway_ix],
+        Some(&payer.pubkey()),
+        &[&payer, &upgrade_authority],
+        recent_blockhash,
+    );
+    rpc_client
+        .send_and_confirm_transaction(&tx)
+        .await
+        .expect("Failed to initialize gateway");
+
+    println!("Gateway initialized");
+
+    let its_root_pda = solana_axelar_its::InterchainTokenService::find_pda().0;
+    let its_program_data =
+        solana_sdk::bpf_loader_upgradeable::get_program_data_address(&solana_axelar_its::ID);
+    let user_roles_pda =
+        solana_axelar_its::UserRoles::find_pda(&its_root_pda, &operator.pubkey()).0;
+
+    let init_its_ix = Instruction {
+        program_id: solana_axelar_its::ID,
+        accounts: solana_axelar_its::accounts::Initialize {
+            payer: operator.pubkey(),
+            program_data: its_program_data,
+            its_root_pda,
+            system_program: SYSTEM_PROGRAM_ID,
+            operator: operator.pubkey(),
+            user_roles_account: user_roles_pda,
+        }
+        .to_account_metas(None),
+        data: solana_axelar_its::instruction::Initialize {
+            chain_name: "solana".to_owned(),
+            its_hub_address: "axelar123".to_owned(),
+        }
+        .data(),
+    };
+
+    let recent_blockhash = rpc_client
+        .get_latest_blockhash()
+        .await
+        .expect("get blockhash");
+    let tx = Transaction::new_signed_with_payer(
+        &[init_its_ix],
+        Some(&payer.pubkey()),
+        &[&payer, &operator],
+        recent_blockhash,
+    );
+    rpc_client
+        .send_and_confirm_transaction(&tx)
+        .await
+        .expect("Failed to initialize ITS");
+
+    println!("ITS initialized");
+
+    let accounts_to_verify = [
+        ("Operator Registry", registry),
+        ("Operator Account", operator_account_pda),
+        ("Gas Service Treasury", treasury),
+        ("Gateway Config", gateway_root_pda),
+        ("Verifier Set Tracker", verifier_set_tracker_pda),
+        ("ITS Root", its_root_pda),
+        ("ITS User Roles", user_roles_pda),
+    ];
+
+    for (name, pubkey) in accounts_to_verify {
+        let account = rpc_client
+            .get_account(&pubkey)
+            .await
+            .unwrap_or_else(|e| panic!("Failed to get {} account: {}", name, e));
+        assert!(
+            account.lamports > 0,
+            "{} account should have lamports",
+            name
+        );
+        println!("{} account verified: {}", name, pubkey);
+    }
+
+    println!("All programs deployed and initialized successfully!");
+
     drop(test_validator);
-    drop(_payer);
 
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 

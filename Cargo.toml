@@ -88,6 +88,8 @@ solana-rpc = "~2.3"
 solana-loader-v3-interface = "5.0.0"
 solana-system-interface = "1.0.0"
 solana-sdk-ids = "2.2.1"
+libsecp256k1 = "0.7"
+rand = "0.8"
 
 [lints.clippy]
 uninlined_format_args = "allow"
