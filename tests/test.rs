@@ -368,12 +368,8 @@ async fn test_happy_path() {
 
     println!("All programs initialized successfully");
 
-    // Wait for transactions to be confirmed and indexed
     tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
 
-    // =========================================================================
-    // Setup Subscriber Poller with mocked queue
-    // =========================================================================
     let mock_queue = MockQueueTrait::new();
     let queue: Arc<dyn relayer_core::queue::QueueTrait> = Arc::new(mock_queue);
 
@@ -390,7 +386,6 @@ async fn test_happy_path() {
     .await
     .expect("Failed to create poller");
 
-    // Poll Gas Service account
     let gas_service_txs = poller
         .poll_account(solana_axelar_gas_service::ID, AccountPollerEnum::GasService)
         .await
@@ -404,7 +399,6 @@ async fn test_happy_path() {
         gas_service_txs.len()
     );
 
-    // Verify the gas service init transaction contains the expected log
     let has_gas_init = gas_service_txs.iter().any(|tx| {
         tx.logs
             .iter()
@@ -415,7 +409,6 @@ async fn test_happy_path() {
         "Gas Service transactions should include Initialize instruction"
     );
 
-    // Poll Gateway account
     let gateway_txs = poller
         .poll_account(solana_axelar_gateway::ID, AccountPollerEnum::Gateway)
         .await
@@ -436,7 +429,6 @@ async fn test_happy_path() {
         "Gateway transactions should include InitializeConfig instruction"
     );
 
-    // Poll ITS account
     let its_txs = poller
         .poll_account(solana_axelar_its::ID, AccountPollerEnum::ITS)
         .await
@@ -459,7 +451,6 @@ async fn test_happy_path() {
 
     println!("Subscriber poller successfully found all initialization transactions!");
 
-    // Cleanup
     drop(test_validator);
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     cleanup_leftover_validators();
