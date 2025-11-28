@@ -9504,6 +9504,7 @@ dependencies = [
  "hex",
  "httpmock",
  "interchain-token-transfer-gmp",
+ "lapin",
  "libsecp256k1 0.7.2",
  "mockall 0.13.1",
  "mpl-token-metadata",

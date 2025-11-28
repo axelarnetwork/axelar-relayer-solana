@@ -26,6 +26,6 @@ pub mod types;
 #[cfg(feature = "test-mocks")]
 pub mod mocks {
     pub use crate::models::solana_subscriber_cursor::MockSubscriberCursor;
-    pub use crate::models::solana_transaction::MockSolanaTransactionModel;
+    pub use crate::models::solana_transaction::{MockSolanaTransactionModel, MockUpdateEvents};
     pub use crate::poll_client::MockSolanaRpcClientTrait;
 }

@@ -56,7 +56,7 @@ impl PgSolanaTransactionModel {
     }
 }
 
-#[cfg_attr(test, mockall::automock)]
+#[cfg_attr(any(test, feature = "test-mocks"), mockall::automock)]
 pub trait UpdateEvents: ThreadSafe {
     fn update_events(
         &self,
