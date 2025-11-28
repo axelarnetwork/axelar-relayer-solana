@@ -15,10 +15,10 @@ use relayer_core::ingestor::IngestorTrait;
 use relayer_core::queue::{QueueItem, QueueTrait};
 use solana::ingestor::SolanaIngestor;
 use solana::mocks::MockUpdateEvents;
-use solana::models::solana_subscriber_cursor::{AccountPollerEnum, PostgresDB};
+use solana::models::solana_subscriber_cursor::PostgresDB;
 use solana::models::solana_transaction::PgSolanaTransactionModel;
 use solana::poll_client::SolanaRpcClient;
-use solana::subscriber_poller::{SolanaPoller, TransactionPoller};
+use solana::subscriber_poller::SolanaPoller;
 use solana_rpc::rpc::JsonRpcConfig;
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::account::AccountSharedData;
@@ -35,6 +35,7 @@ use solana_transaction_parser::redis::MockCostCacheTrait;
 use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::postgres;
 use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
 
 use solana_axelar_gateway::state::config::{InitialVerifierSet, InitializeConfigParams};
 use solana_axelar_gateway::ID as GATEWAY_PROGRAM_ID;
@@ -109,8 +110,9 @@ fn generate_random_signer() -> (libsecp256k1::SecretKey, [u8; 33]) {
     (secret_key, compressed_pubkey)
 }
 
-/// Test that call_contract transactions are captured by the poller and published to the queue
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+/// Test that call_contract transactions are captured by the poller's run() function
+/// and processed by the ingestor to post events to the GMP API.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_call_contract_picked_up_and_sent_to_gmp() {
     cleanup_leftover_validators();
 
@@ -375,47 +377,44 @@ async fn test_call_contract_picked_up_and_sent_to_gmp() {
 
     println!("Gateway initialized successfully");
 
-    tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
-
     let test_queue = Arc::new(TestQueue::new());
     let events_queue: Arc<dyn QueueTrait> = Arc::clone(&test_queue) as Arc<dyn QueueTrait>;
 
     let solana_rpc_client = SolanaRpcClient::new(&rpc_url, CommitmentConfig::confirmed(), 3)
         .expect("create rpc client");
 
-    let poller = SolanaPoller::new(
-        solana_rpc_client,
-        "test_call_contract_poller".to_string(),
-        Arc::new(transaction_model),
-        Arc::new(postgres_db),
-        events_queue,
-    )
-    .await
-    .expect("Failed to create poller");
-
-    let gateway_txs = poller
-        .poll_account(solana_axelar_gateway::ID, AccountPollerEnum::Gateway)
+    let poller = Arc::new(
+        SolanaPoller::new(
+            solana_rpc_client,
+            "test_call_contract_poller".to_string(),
+            Arc::new(transaction_model),
+            Arc::new(postgres_db),
+            events_queue,
+        )
         .await
-        .expect("Failed to poll gateway");
-
-    println!("Found {} gateway transaction(s)", gateway_txs.len());
-    assert!(
-        !gateway_txs.is_empty(),
-        "Should find gateway initialization transaction"
+        .expect("Failed to create poller"),
     );
 
-    // Verify the init transaction was found
-    let has_gateway_init = gateway_txs.iter().any(|tx| {
-        tx.logs
-            .iter()
-            .any(|log| log.contains("Instruction: InitializeConfig"))
+    let poller_cancellation = CancellationToken::new();
+    let poller_cancellation_clone = poller_cancellation.clone();
+
+    // Start the poller's run() function in the background
+    let poller_clone = Arc::clone(&poller);
+    let poller_handle = tokio::spawn(async move {
+        println!("Poller starting run()...");
+        poller_clone
+            .run(
+                solana_axelar_gas_service::ID,
+                solana_axelar_gateway::ID,
+                solana_axelar_its::ID,
+                poller_cancellation_clone,
+            )
+            .await;
+        println!("Poller run() completed");
     });
-    assert!(
-        has_gateway_init,
-        "Gateway transactions should include InitializeConfig instruction"
-    );
 
-    // send call contract tx
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
     let (event_authority_pda, _) = solana_sdk::pubkey::Pubkey::find_program_address(
         &[b"__event_authority"],
         &GATEWAY_PROGRAM_ID,
@@ -429,7 +428,7 @@ async fn test_call_contract_picked_up_and_sent_to_gmp() {
         destination_chain: destination_chain.clone(),
         destination_contract_address: destination_address.clone(),
         payload: payload.clone(),
-        signing_pda_bump: 0, // Not used for direct signers
+        signing_pda_bump: 0,
     };
 
     let mut accounts = solana_axelar_gateway::accounts::CallContract {
@@ -441,7 +440,6 @@ async fn test_call_contract_picked_up_and_sent_to_gmp() {
     }
     .to_account_metas(None);
 
-    // Mark the caller as a signer
     accounts[0].is_signer = true;
 
     let call_contract_instruction = Instruction {
@@ -468,74 +466,40 @@ async fn test_call_contract_picked_up_and_sent_to_gmp() {
         call_contract_signature
     );
 
-    tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
-
-    let gateway_txs_after_call = poller
-        .poll_account(solana_axelar_gateway::ID, AccountPollerEnum::Gateway)
-        .await
-        .expect("Failed to poll gateway after call_contract");
-
-    println!(
-        "Found {} gateway transaction(s) after call_contract",
-        gateway_txs_after_call.len()
-    );
-
-    // Check that we found the call_contract transaction in the polled transactions
-    let has_call_contract = gateway_txs_after_call.iter().any(|tx| {
-        tx.logs
-            .iter()
-            .any(|log| log.contains("Instruction: CallContract"))
-    });
-    assert!(
-        has_call_contract,
-        "Gateway transactions should include CallContract instruction after call"
-    );
-
-    let signatures: Vec<solana_sdk::signature::Signature> = gateway_txs_after_call
-        .iter()
-        .map(|tx| tx.signature)
-        .collect();
-    println!(
-        "Recovering {} transaction(s) to publish to queue...",
-        signatures.len()
-    );
-
-    poller
-        .recover_txs(signatures)
-        .await
-        .expect("Failed to recover transactions");
-
-    let queued_items = test_queue.get_items().await;
-    println!("Queue contains {} items", queued_items.len());
-
-    assert!(
-        !queued_items.is_empty(),
-        "Queue should have at least one entry after recovering transactions"
-    );
-
-    // Check if the CallContract transaction is in the queue
+    // Wait for the poller to pick up the transaction (it polls every 10 seconds)
+    // We'll poll the queue until we find the CallContract or timeout
     let mut found_call_contract = false;
-    for item in &queued_items {
-        if let QueueItem::Transaction(tx_data) = item {
-            let preview = if tx_data.len() > 200 {
-                format!("{}...", &tx_data[..200])
-            } else {
-                tx_data.to_string()
-            };
-            println!("Queue item: {}", preview);
-            if tx_data.contains("CallContract") {
-                found_call_contract = true;
-                println!("✓ Found CallContract in queue!");
+    let start_time = std::time::Instant::now();
+    let timeout = std::time::Duration::from_secs(30);
+
+    while !found_call_contract && start_time.elapsed() < timeout {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        let queued_items = test_queue.get_items().await;
+        for item in &queued_items {
+            if let QueueItem::Transaction(tx_data) = item {
+                if tx_data.contains("CallContract") {
+                    found_call_contract = true;
+                    println!("Poller picked up CallContract transaction!");
+                    break;
+                }
             }
         }
     }
 
+    println!("Cancelling poller...");
+    poller_cancellation.cancel();
+
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), poller_handle).await;
+    println!("Poller stopped");
+
     assert!(
         found_call_contract,
-        "CallContract transaction should be published to the queue"
+        "Poller should have picked up the CallContract transaction within timeout"
     );
 
-    println!("PgSolanaTransactionModelarsing transaction and extracting CallContract event");
+    let queued_items = test_queue.get_items().await;
+    println!("Queue contains {} items", queued_items.len());
 
     // Find the CallContract transaction in the queue
     let call_contract_tx_json = queued_items
@@ -553,7 +517,6 @@ async fn test_call_contract_picked_up_and_sent_to_gmp() {
         })
         .expect("Should have found CallContract transaction in queue");
 
-    // Create a TransactionParser with mock cost cache
     let mock_cost_cache = Arc::new(MockCostCacheTrait::new());
     let parser = TransactionParser::new(
         "solana".to_string(),
@@ -578,51 +541,38 @@ async fn test_call_contract_picked_up_and_sent_to_gmp() {
     println!("Ingestor extracted {} event(s)", events.len());
 
     // Verify that we got a Call event
-    let mut found_call_event = false;
-    for event in &events {
-        match event {
-            Event::Call {
-                common,
-                message,
-                destination_chain,
-                payload,
-            } => {
-                println!("Found Call event!");
-                println!("Event ID: {}", common.event_id);
-                println!("Message ID: {}", message.message_id);
-                println!("Source Chain: {}", message.source_chain);
-                println!("Destination Chain: {}", destination_chain);
-                println!("Destination Address: {}", message.destination_address);
-                println!("Payload length: {} bytes", payload.len());
-                found_call_event = true;
+    let call_event = events
+        .iter()
+        .find(|e| matches!(e, Event::Call { .. }))
+        .expect("Should find a Call event");
 
-                assert_eq!(
-                    destination_chain, "ethereum",
-                    "Destination chain should be ethereum"
-                );
-            }
-            _ => {
-                println!("Other event type: {:?}", event);
-            }
-        }
+    if let Event::Call {
+        common,
+        message,
+        destination_chain,
+        payload,
+    } = call_event
+    {
+        println!("Found Call event!");
+        println!("Event ID: {}", common.event_id);
+        println!("Message ID: {}", message.message_id);
+        println!("Source Chain: {}", message.source_chain);
+        println!("Destination Chain: {}", destination_chain);
+        println!("Destination Address: {}", message.destination_address);
+        println!("Payload length: {} bytes", payload.len());
+
+        assert_eq!(destination_chain, "ethereum");
+        assert_eq!(message.destination_address, "0xDestinationContract");
     }
 
-    assert!(
-        found_call_event,
-        "Ingestor should have extracted a Call event from the CallContract transaction"
-    );
+    let captured_event = Arc::new(std::sync::Mutex::new(None::<Event>));
+    let captured_event_clone = Arc::clone(&captured_event);
 
-    // Create a mock GMP API that expects to be called with our event
     let mut mock_gmp_api = MockGmpApiTrait::new();
-
-    let captured_event = std::sync::Arc::new(std::sync::Mutex::new(None::<Event>));
-    let captured_event_clone = std::sync::Arc::clone(&captured_event);
-
     mock_gmp_api
         .expect_post_events()
         .times(1)
         .returning(move |events| {
-            // Capture the first Call event
             for event in &events {
                 if matches!(event, Event::Call { .. }) {
                     let mut captured = captured_event_clone.lock().unwrap();
@@ -630,7 +580,6 @@ async fn test_call_contract_picked_up_and_sent_to_gmp() {
                     break;
                 }
             }
-            // Return success for each event
             let results: Vec<PostEventResult> = events
                 .iter()
                 .enumerate()
@@ -649,8 +598,6 @@ async fn test_call_contract_picked_up_and_sent_to_gmp() {
         .await
         .expect("GMP API should accept the events");
 
-    // Verify the captured event is the CallContract we expected
-    // Extract the event data in a block scope to drop the lock before await
     {
         let captured = captured_event.lock().unwrap();
         assert!(
@@ -665,7 +612,7 @@ async fn test_call_contract_picked_up_and_sent_to_gmp() {
             ..
         }) = captured.as_ref()
         {
-            println!("GMP API was called with CallContract event!");
+            println!("GMP API received CallContract event!");
             println!("Event ID: {}", common.event_id);
             println!("Message ID: {}", message.message_id);
             println!("Destination Chain: {}", destination_chain);
@@ -675,12 +622,11 @@ async fn test_call_contract_picked_up_and_sent_to_gmp() {
     }
 
     println!("Test completed successfully!");
-    println!("call_contract transaction was sent to Solana");
-    println!("Poller captured the transaction");
+    println!("call_contract transaction sent to Solana");
+    println!("Poller.run() captured the transaction");
     println!("Transaction was published to the queue");
     println!("Ingestor parsed the transaction and extracted CallContract event");
-    println!("CallContract event has correct destination chain (ethereum)");
-    println!("Mock GMP API was called with the CallContract event");
+    println!("GMP API received the CallContract event");
 
     drop(test_validator);
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
