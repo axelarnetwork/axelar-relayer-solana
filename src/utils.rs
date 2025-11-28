@@ -343,6 +343,20 @@ pub fn get_destination_ata(destination_pubkey: &Pubkey, token_mint_pda: &Pubkey)
     )
 }
 
+pub fn get_initialize_verification_session_pda(
+    payload_merkle_root: &[u8; 32],
+    signing_verifier_set_hash: &[u8; 32],
+) -> (Pubkey, u8) {
+    Pubkey::find_program_address(
+        &[
+            seed_prefixes::SIGNATURE_VERIFICATION_SEED,
+            payload_merkle_root,
+            signing_verifier_set_hash,
+        ],
+        &solana_axelar_gateway::ID,
+    )
+}
+
 pub fn calculate_total_cost_lamports(
     tx: &SolanaTransactionType,
     units: u64,
@@ -456,13 +470,14 @@ pub fn is_recoverable(transaction_error: &TransactionError) -> bool {
 
 /// Checks if a string contains the "account already in use" error pattern.
 /// Matches: "Allocate: account Address { address: <address>, base: None } already in use"
-pub fn is_addr_in_use(s: &str) -> bool {
-    // Pattern matches: "Allocate: account Address { address: " followed by a base58 address
-    // (32-44 characters, excluding 0, O, I, l) followed by ", base: None } already in use"
-    // Base58 characters: 123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz
-    let pattern = r"Allocate: account Address \{ address: [1-9A-HJ-NP-Za-km-z]{32,44}, base: None \} already in use";
+/// Returns true only if the extracted address matches the expected_address exactly.
+pub fn is_addr_in_use(s: &str, expected_address: &str) -> bool {
+    let pattern = r"Allocate: account Address \{ address: ([1-9A-HJ-NP-Za-km-z]{32,44}), base: None \} already in use";
     Regex::new(pattern)
-        .map(|re| re.is_match(s))
+        .ok()
+        .and_then(|re| re.captures(s))
+        .and_then(|caps| caps.get(1))
+        .map(|m| m.as_str() == expected_address)
         .unwrap_or(false)
 }
 
@@ -539,20 +554,43 @@ mod tests {
     #[test]
     fn test_is_addr_in_use() {
         let error_msg = "Allocate: account Address { address: FAVDxWyV1GcvRxaDjv12jo1foDbU7uDYfrbuky68JGHK, base: None } already in use";
-        assert!(is_addr_in_use(error_msg));
+        assert!(is_addr_in_use(
+            error_msg,
+            "FAVDxWyV1GcvRxaDjv12jo1foDbU7uDYfrbuky68JGHK"
+        ));
+        assert!(!is_addr_in_use(
+            error_msg,
+            "DifferentAddress1111111111111111111111111"
+        ));
 
         let error_msg2 = "Allocate: account Address { address: 11111111111111111111111111111111, base: None } already in use";
-        assert!(is_addr_in_use(error_msg2));
+        assert!(is_addr_in_use(
+            error_msg2,
+            "11111111111111111111111111111111"
+        ));
+        assert!(!is_addr_in_use(
+            error_msg2,
+            "FAVDxWyV1GcvRxaDjv12jo1foDbU7uDYfrbuky68JGHK"
+        ));
 
         let normal_msg = "Some other error message";
-        assert!(!is_addr_in_use(normal_msg));
+        assert!(!is_addr_in_use(
+            normal_msg,
+            "FAVDxWyV1GcvRxaDjv12jo1foDbU7uDYfrbuky68JGHK"
+        ));
 
         let partial_msg =
             "Allocate: account Address { address: FAVDxWyV1GcvRxaDjv12jo1foDbU7uDYfrbuky68JGHK";
-        assert!(!is_addr_in_use(partial_msg));
+        assert!(!is_addr_in_use(
+            partial_msg,
+            "FAVDxWyV1GcvRxaDjv12jo1foDbU7uDYfrbuky68JGHK"
+        ));
 
         let embedded_msg = "Error: Allocate: account Address { address: FAVDxWyV1GcvRxaDjv12jo1foDbU7uDYfrbuky68JGHK, base: None } already in use - transaction failed";
-        assert!(is_addr_in_use(embedded_msg));
+        assert!(is_addr_in_use(
+            embedded_msg,
+            "FAVDxWyV1GcvRxaDjv12jo1foDbU7uDYfrbuky68JGHK"
+        ));
 
         let full_message = r#"2025-11-25T18:02:30.415586Z DEBUG solana_rpc_client::nonblocking::rpc_client: -32002 Transaction simulation failed: Error processing Instruction 2: custom program error: 0x0
 2025-11-25T18:02:30.415641Z DEBUG solana_rpc_client::nonblocking::rpc_client:   1: Program ComputeBudget111111111111111111111111111111 invoke [1]
@@ -568,7 +606,14 @@ mod tests {
 2025-11-25T18:02:30.415919Z DEBUG solana_rpc_client::nonblocking::rpc_client:  11: Program gtw3LYHmSe3y1cRqCeBuTpyB4KDQHfaqqHQs6Rw19DX failed: custom program error: 0x0
 2025-11-25T18:02:30.415947Z DEBUG solana_rpc_client::nonblocking::rpc_client: 
 2025-11-25T18:02:30.416016Z ERROR relayer_core::includer: Failed to consume delivery: GatewayTxTaskError("Generic error: Generic error: Generic error: TransactionError: Error processing Instruction 2: custom program error: 0x0")"#;
-        assert!(is_addr_in_use(full_message));
+        assert!(is_addr_in_use(
+            full_message,
+            "FAVDxWyV1GcvRxaDjv12jo1foDbU7uDYfrbuky68JGHK"
+        ));
+        assert!(!is_addr_in_use(
+            full_message,
+            "DifferentAddress1111111111111111111111111"
+        ));
     }
 
     #[test]

@@ -174,6 +174,7 @@ impl<
     async fn build_and_send_transaction(
         &self,
         ixs: Vec<Instruction>,
+        execute_data: Option<&ExecuteData>,
     ) -> Result<(Signature, Option<u64>), SolanaIncluderError> {
         let (tx, _) = match self.transaction_builder.build(&ixs, None, None).await {
             Ok((tx, cost)) => (tx, cost),
@@ -182,7 +183,7 @@ impl<
             }
         };
 
-        let res = self.client.send_transaction(tx).await;
+        let res = self.client.send_transaction(tx, execute_data).await;
         match res {
             Ok((signature, gas_cost)) => {
                 debug!(
@@ -248,7 +249,7 @@ impl<
 
             let (signature, actual_alt_cost) = self
                 .client
-                .send_transaction(alt_tx_build)
+                .send_transaction(alt_tx_build, None)
                 .await
                 .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
@@ -300,7 +301,7 @@ impl<
             ));
         }
 
-        match self.client.send_transaction(transaction).await {
+        match self.client.send_transaction(transaction, None).await {
             Ok((signature, actual_tx_cost)) => {
                 info!("Transaction sent successfully: {}", signature.to_string());
 
@@ -465,7 +466,7 @@ impl<
             .await
             .map_err(|e| SolanaIncluderError::GenericError(e.to_string()))?;
 
-        let res = self.client.send_transaction(tx).await;
+        let res = self.client.send_transaction(tx, Some(execute_data)).await;
         match res {
             Ok((signature, gas_cost)) => {
                 debug!(
@@ -525,7 +526,7 @@ impl<
                     data: ix_data,
                 };
 
-                self.build_and_send_transaction(vec![ix])
+                self.build_and_send_transaction(vec![ix], None)
             })
             .collect::<FuturesUnordered<_>>();
 
@@ -593,7 +594,7 @@ impl<
         };
 
         // Build and send RotateSigners transaction
-        let (signature, gas_cost) = self.build_and_send_transaction(vec![ix]).await?;
+        let (signature, gas_cost) = self.build_and_send_transaction(vec![ix], None).await?;
         debug!(
             "Rotated signers transaction sent successfully: {}. Cost: {:?}",
             signature, gas_cost
@@ -646,7 +647,13 @@ impl<
                 };
 
                 let cc_id = merklized_message.leaf.message.cc_id;
-                async { (cc_id, self.build_and_send_transaction(vec![ix]).await) }
+                async {
+                    (
+                        cc_id,
+                        self.build_and_send_transaction(vec![ix], Some(execute_data))
+                            .await,
+                    )
+                }
             })
             .collect::<FuturesUnordered<_>>();
 
@@ -958,7 +965,7 @@ impl<
 
         let (signature, _gas_cost) = self
             .client
-            .send_transaction(tx)
+            .send_transaction(tx, None)
             .await
             .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
@@ -1458,7 +1465,7 @@ mod tests {
         mock_client
             .expect_send_transaction()
             .times(1)
-            .returning(move |_| Box::pin(async move { Ok((test_signature, Some(5000u64))) }));
+            .returning(move |_, _| Box::pin(async move { Ok((test_signature, Some(5000u64))) }));
 
         let includer = SolanaIncluder::new(
             Arc::new(mock_client),
@@ -1662,7 +1669,7 @@ mod tests {
         mock_client
             .expect_send_transaction()
             .times(1)
-            .returning(move |_| Box::pin(async move { Ok((test_signature, Some(5_000u64))) }));
+            .returning(move |_, _| Box::pin(async move { Ok((test_signature, Some(5_000u64))) }));
 
         redis_conn
             .expect_write_gas_cost_for_message_id()
@@ -1910,7 +1917,7 @@ mod tests {
         mock_client
             .expect_send_transaction()
             .times(1)
-            .returning(move |_| Box::pin(async move { Ok((test_signature, Some(5_000u64))) }));
+            .returning(move |_, _| Box::pin(async move { Ok((test_signature, Some(5_000u64))) }));
 
         redis_conn
             .expect_write_gas_cost_for_message_id()
@@ -2439,7 +2446,7 @@ mod tests {
         mock_client
             .expect_send_transaction()
             .times(2)
-            .returning(|_| {
+            .returning(move |_, _| {
                 static CALL: AtomicUsize = AtomicUsize::new(0);
                 let idx = CALL.fetch_add(1, Ordering::SeqCst);
                 if idx == 0 {
@@ -2849,7 +2856,7 @@ mod tests {
         mock_client
             .expect_send_transaction()
             .times(2)
-            .returning(move |_| {
+            .returning(move |_, _| {
                 let idx = send_calls_clone.fetch_add(1, Ordering::SeqCst);
                 if idx == 0 {
                     Box::pin(async move { Ok((alt_signature_clone, Some(6_000u64))) })
@@ -3054,7 +3061,7 @@ mod tests {
         mock_client
             .expect_send_transaction()
             .times(1)
-            .returning(move |_| Box::pin(async move { Ok((send_signature, Some(5_000u64))) }));
+            .returning(move |_, _| Box::pin(async move { Ok((send_signature, Some(5_000u64))) }));
 
         redis_conn.expect_write_alt_entry().times(0);
 
@@ -3218,7 +3225,7 @@ mod tests {
         mock_client
             .expect_send_transaction()
             .times(3)
-            .returning(move |_| {
+            .returning(move |_, _| {
                 let idx = send_calls_clone.fetch_add(1, Ordering::SeqCst);
                 let (signature, cost) = send_responses[idx];
                 Box::pin(async move { Ok((signature, Some(cost))) })
@@ -3375,7 +3382,7 @@ mod tests {
         mock_client
             .expect_send_transaction()
             .times(3)
-            .returning(move |_| {
+            .returning(move |_, _| {
                 let idx = send_calls_clone.fetch_add(1, Ordering::SeqCst);
                 let (signature, cost) = send_responses[idx];
                 Box::pin(async move { Ok((signature, Some(cost))) })
@@ -3621,7 +3628,7 @@ mod tests {
         mock_client
             .expect_send_transaction()
             .times(5)
-            .returning(move |_| {
+            .returning(move |_, _| {
                 let idx = send_calls_clone.fetch_add(1, Ordering::SeqCst);
                 let (sig, cost) = send_responses[idx];
                 Box::pin(async move { Ok((sig, Some(cost))) })
@@ -3817,7 +3824,7 @@ mod tests {
         mock_client
             .expect_send_transaction()
             .times(3)
-            .returning(move |_| {
+            .returning(move |_, _| {
                 let idx = send_calls_clone.fetch_add(1, Ordering::SeqCst);
                 match idx {
                     0 => Box::pin(async move { Ok((init_sig, Some(10u64))) }),
@@ -3994,7 +4001,7 @@ mod tests {
         mock_client
             .expect_send_transaction()
             .times(3)
-            .returning(move |_| {
+            .returning(move |_, _| {
                 let idx = send_calls_clone.fetch_add(1, Ordering::SeqCst);
                 match idx {
                     0 => Box::pin(async move {
@@ -4178,7 +4185,7 @@ mod tests {
         mock_client
             .expect_send_transaction()
             .times(3)
-            .returning(move |_| {
+            .returning(move |_, _| {
                 let idx = send_calls_clone.fetch_add(1, Ordering::SeqCst);
                 match idx {
                     0 => Box::pin(async move { Ok((init_sig, Some(10u64))) }),
@@ -4362,7 +4369,7 @@ mod tests {
         mock_client
             .expect_send_transaction()
             .times(3)
-            .returning(move |_| {
+            .returning(move |_, _| {
                 let idx = send_calls_clone.fetch_add(1, Ordering::SeqCst);
                 match idx {
                     0 => Box::pin(async move { Ok((init_sig, Some(10u64))) }),
