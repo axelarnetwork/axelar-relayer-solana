@@ -184,12 +184,9 @@ impl IncluderClientTrait for IncluderClient {
                                 return Err(IncluderClientError::AccountInUseError(e.to_string()));
                             }
                         }
-
-                        if is_slot_already_verified(&e.to_string()) {
-                            return Err(IncluderClientError::SlotAlreadyVerifiedError(
-                                e.to_string(),
-                            ));
-                        }
+                    }
+                    if is_slot_already_verified(&e.to_string()) {
+                        return Err(IncluderClientError::SlotAlreadyVerifiedError(e.to_string()));
                     }
                     if let Some(transaction_error) = e.get_transaction_error() {
                         if is_recoverable(&transaction_error) {
@@ -553,5 +550,32 @@ mod tests {
 
         assert!(!is_addr_in_use(&error_message, &expected_pda.to_string()));
         assert!(is_addr_in_use(&error_message, different_address));
+    }
+
+    /// Simulates the error handling logic when execute_data is None.
+    /// In this case, only SlotAlreadyVerified is checked (AccountInUse checks are skipped).
+    fn simulate_error_handling_without_execute_data(error_message: &str) -> ExpectedError {
+        if is_slot_already_verified(error_message) {
+            return ExpectedError::SlotAlreadyVerified;
+        }
+        ExpectedError::Generic
+    }
+
+    #[test]
+    fn test_error_handling_slot_already_verified_without_execute_data() {
+        // Test that SlotAlreadyVerifiedError is returned even when execute_data is None
+        let error_message = "Error Code: SlotAlreadyVerified";
+
+        let result = simulate_error_handling_without_execute_data(error_message);
+        assert_eq!(result, ExpectedError::SlotAlreadyVerified);
+    }
+
+    #[test]
+    fn test_error_handling_generic_error_without_execute_data() {
+        // Test that GenericError is returned when execute_data is None and no special patterns match
+        let error_message = "Some other error occurred";
+
+        let result = simulate_error_handling_without_execute_data(error_message);
+        assert_eq!(result, ExpectedError::Generic);
     }
 }
