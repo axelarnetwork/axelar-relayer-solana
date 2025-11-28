@@ -3,7 +3,7 @@ use async_trait::async_trait;
 
 use relayer_core::{error::ClientError, utils::ThreadSafe};
 use solana_axelar_gateway::IncomingMessage;
-use solana_axelar_std::execute_data::{ExecuteData, MerklizedPayload};
+use solana_axelar_std::execute_data::ExecuteData;
 use solana_client::rpc_response::RpcPrioritizationFee;
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{
@@ -17,8 +17,7 @@ use crate::{
     error::IncluderClientError,
     transaction_type::SolanaTransactionType,
     utils::{
-        get_incoming_message_pda, get_initialize_verification_session_pda, is_addr_in_use,
-        is_recoverable, is_slot_already_verified,
+        check_if_error_includes_an_expected_account, is_recoverable, is_slot_already_verified,
     },
 };
 
@@ -158,31 +157,9 @@ impl IncluderClientTrait for IncluderClient {
                     // and we'll fail to account for the fee.
                     // We might have to manually implement send_and_confirm()
                     if let Some(execute_data) = execute_data {
-                        let (initialize_verification_session_pda, _) =
-                            get_initialize_verification_session_pda(
-                                &execute_data.payload_merkle_root,
-                                &execute_data.signing_verifier_set_merkle_root,
-                            );
-
-                        if is_addr_in_use(
-                            &e.to_string(),
-                            &initialize_verification_session_pda.to_string(),
-                        ) {
+                        if check_if_error_includes_an_expected_account(&e.to_string(), execute_data)
+                        {
                             return Err(IncluderClientError::AccountInUseError(e.to_string()));
-                        }
-                        let command_id = match &execute_data.payload_items {
-                            MerklizedPayload::NewMessages { messages } => messages
-                                .first()
-                                .map(|message| message.leaf.message.command_id()),
-                            MerklizedPayload::VerifierSetRotation {
-                                new_verifier_set_merkle_root: _,
-                            } => None,
-                        };
-                        if let Some(command_id) = command_id {
-                            let (incoming_message_pda, _) = get_incoming_message_pda(&command_id);
-                            if is_addr_in_use(&e.to_string(), &incoming_message_pda.to_string()) {
-                                return Err(IncluderClientError::AccountInUseError(e.to_string()));
-                            }
                         }
                     }
                     if is_slot_already_verified(&e.to_string()) {
@@ -314,6 +291,8 @@ fn read(mut data: &[u8]) -> Option<IncomingMessage> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::{get_initialize_verification_session_pda, is_addr_in_use};
+    use solana_axelar_std::execute_data::MerklizedPayload;
     use solana_axelar_std::message::MessageLeaf;
     use solana_axelar_std::verifier_set::{SigningVerifierSetInfo, VerifierSetLeaf};
     use solana_axelar_std::{
@@ -372,31 +351,10 @@ mod tests {
         Generic,
     }
 
+    /// Simulates the error handling logic in send_transaction when execute_data is provided.
     fn simulate_error_handling(error_message: &str, execute_data: &ExecuteData) -> ExpectedError {
-        let (initialize_verification_session_pda, _) = get_initialize_verification_session_pda(
-            &execute_data.payload_merkle_root,
-            &execute_data.signing_verifier_set_merkle_root,
-        );
-
-        if is_addr_in_use(
-            error_message,
-            &initialize_verification_session_pda.to_string(),
-        ) {
+        if check_if_error_includes_an_expected_account(error_message, execute_data) {
             return ExpectedError::AccountInUse;
-        }
-
-        let command_id = match &execute_data.payload_items {
-            MerklizedPayload::NewMessages { messages } => messages
-                .first()
-                .map(|message| message.leaf.message.command_id()),
-            MerklizedPayload::VerifierSetRotation { .. } => None,
-        };
-
-        if let Some(command_id) = command_id {
-            let (incoming_message_pda, _) = get_incoming_message_pda(&command_id);
-            if is_addr_in_use(error_message, &incoming_message_pda.to_string()) {
-                return ExpectedError::AccountInUse;
-            }
         }
 
         if is_slot_already_verified(error_message) {
@@ -406,8 +364,18 @@ mod tests {
         ExpectedError::Generic
     }
 
+    /// Simulates the error handling logic when execute_data is None.
+    fn simulate_error_handling_without_execute_data(error_message: &str) -> ExpectedError {
+        // When execute_data is None, AccountInUse checks are skipped
+        if is_slot_already_verified(error_message) {
+            return ExpectedError::SlotAlreadyVerified;
+        }
+        ExpectedError::Generic
+    }
+
+    // Tests for error handling flow with execute_data
     #[test]
-    fn test_error_handling_account_in_use_init_verification_session_pda() {
+    fn test_error_flow_returns_account_in_use_for_init_pda() {
         let payload_merkle_root = [1u8; 32];
         let signing_verifier_set_merkle_root = [2u8; 32];
         let execute_data =
@@ -428,30 +396,32 @@ mod tests {
     }
 
     #[test]
-    fn test_error_handling_account_in_use_incoming_message_pda() {
+    fn test_error_flow_returns_account_in_use_for_incoming_message_pda() {
         let payload_merkle_root = [1u8; 32];
         let signing_verifier_set_merkle_root = [2u8; 32];
         let execute_data =
             create_test_execute_data(payload_merkle_root, signing_verifier_set_merkle_root);
 
         let command_id = match &execute_data.payload_items {
-            MerklizedPayload::NewMessages { messages } => messages
-                .first()
-                .map(|message| message.leaf.message.command_id()),
-            MerklizedPayload::VerifierSetRotation { .. } => None,
+            MerklizedPayload::NewMessages { messages } => {
+                messages.first().map(|m| m.leaf.message.command_id())
+            }
+            _ => None,
         }
-        .expect("Expected a message with command_id");
+        .expect("Expected a message");
 
-        let (incoming_msg_pda, _) = get_incoming_message_pda(&command_id);
+        let (incoming_msg_pda, _) = crate::utils::get_incoming_message_pda(&command_id);
         let error_message = format!(
             "Allocate: account Address {{ address: {}, base: None }} already in use",
             incoming_msg_pda
         );
+
         let result = simulate_error_handling(&error_message, &execute_data);
         assert_eq!(result, ExpectedError::AccountInUse);
     }
+
     #[test]
-    fn test_error_handling_slot_already_verified() {
+    fn test_error_flow_returns_slot_already_verified() {
         let payload_merkle_root = [1u8; 32];
         let signing_verifier_set_merkle_root = [2u8; 32];
         let execute_data =
@@ -464,7 +434,7 @@ mod tests {
     }
 
     #[test]
-    fn test_error_handling_generic_error_different_address() {
+    fn test_error_flow_returns_generic_for_different_address() {
         let payload_merkle_root = [1u8; 32];
         let signing_verifier_set_merkle_root = [2u8; 32];
         let execute_data =
@@ -481,7 +451,7 @@ mod tests {
     }
 
     #[test]
-    fn test_error_handling_generic_error_no_pattern_match() {
+    fn test_error_flow_returns_generic_for_no_pattern_match() {
         let payload_merkle_root = [1u8; 32];
         let signing_verifier_set_merkle_root = [2u8; 32];
         let execute_data =
@@ -494,7 +464,7 @@ mod tests {
     }
 
     #[test]
-    fn test_error_handling_priority_account_in_use_before_slot_verified() {
+    fn test_error_flow_priority_account_in_use_before_slot_verified() {
         let payload_merkle_root = [1u8; 32];
         let signing_verifier_set_merkle_root = [2u8; 32];
         let execute_data =
@@ -505,15 +475,46 @@ mod tests {
             &signing_verifier_set_merkle_root,
         );
 
+        // Error message contains both AccountInUse and SlotAlreadyVerified patterns
         let error_message = format!(
             "Allocate: account Address {{ address: {}, base: None }} already in use. Error Code: SlotAlreadyVerified",
             init_pda
         );
 
+        // AccountInUse should be detected first (higher priority)
         let result = simulate_error_handling(&error_message, &execute_data);
         assert_eq!(result, ExpectedError::AccountInUse);
     }
 
+    // Tests for error handling flow without execute_data
+    #[test]
+    fn test_error_flow_without_execute_data_returns_slot_already_verified() {
+        let error_message = "Error Code: SlotAlreadyVerified";
+
+        let result = simulate_error_handling_without_execute_data(error_message);
+        assert_eq!(result, ExpectedError::SlotAlreadyVerified);
+    }
+
+    #[test]
+    fn test_error_flow_without_execute_data_returns_generic() {
+        let error_message = "Some other error occurred";
+
+        let result = simulate_error_handling_without_execute_data(error_message);
+        assert_eq!(result, ExpectedError::Generic);
+    }
+
+    #[test]
+    fn test_error_flow_without_execute_data_returns_generic_for_account_in_use_pattern() {
+        // Even if the error has the AccountInUse pattern, without execute_data
+        // we cannot check if the address matches, so we return Generic
+        let error_message =
+            "Allocate: account Address { address: 11111111111111111111111111111111, base: None } already in use";
+
+        let result = simulate_error_handling_without_execute_data(error_message);
+        assert_eq!(result, ExpectedError::Generic);
+    }
+
+    // Basic tests for is_addr_in_use function
     #[test]
     fn test_is_addr_in_use_matching() {
         let payload_merkle_root = [1u8; 32];
@@ -550,32 +551,5 @@ mod tests {
 
         assert!(!is_addr_in_use(&error_message, &expected_pda.to_string()));
         assert!(is_addr_in_use(&error_message, different_address));
-    }
-
-    /// Simulates the error handling logic when execute_data is None.
-    /// In this case, only SlotAlreadyVerified is checked (AccountInUse checks are skipped).
-    fn simulate_error_handling_without_execute_data(error_message: &str) -> ExpectedError {
-        if is_slot_already_verified(error_message) {
-            return ExpectedError::SlotAlreadyVerified;
-        }
-        ExpectedError::Generic
-    }
-
-    #[test]
-    fn test_error_handling_slot_already_verified_without_execute_data() {
-        // Test that SlotAlreadyVerifiedError is returned even when execute_data is None
-        let error_message = "Error Code: SlotAlreadyVerified";
-
-        let result = simulate_error_handling_without_execute_data(error_message);
-        assert_eq!(result, ExpectedError::SlotAlreadyVerified);
-    }
-
-    #[test]
-    fn test_error_handling_generic_error_without_execute_data() {
-        // Test that GenericError is returned when execute_data is None and no special patterns match
-        let error_message = "Some other error occurred";
-
-        let result = simulate_error_handling_without_execute_data(error_message);
-        assert_eq!(result, ExpectedError::Generic);
     }
 }
