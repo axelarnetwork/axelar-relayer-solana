@@ -23,9 +23,34 @@ pub mod types;
 
 /// Re-export mock types when the `test-mocks` feature is enabled.
 /// Use this in integration tests by adding `solana = { path = "..", features = ["test-mocks"] }`
+///
+/// Only external services and input data should be mocked:
+/// - GMP API (external service)
+/// - Redis connection (for gas cost caching - can be mocked)
+/// - Refunds model (if not using test DB)
+/// - Update events model (for ingestor tests)
+///
+/// Real components should be used for true integration tests:
+/// - IncluderClient, TransactionBuilder, GasCalculator, FeesClient
 #[cfg(feature = "test-mocks")]
 pub mod mocks {
-    pub use crate::models::solana_subscriber_cursor::MockSubscriberCursor;
-    pub use crate::models::solana_transaction::{MockSolanaTransactionModel, MockUpdateEvents};
-    pub use crate::poll_client::MockSolanaRpcClientTrait;
+    // For ingestor tests - mock the update events model
+    pub use crate::models::solana_transaction::MockUpdateEvents;
+
+    // For includer tests - mock external services only
+    pub use crate::models::refunds::MockRefundsModel;
+    pub use crate::redis::MockRedisConnectionTrait;
+
+    // Clone implementations for mocks (required by SolanaIncluder)
+    impl Clone for MockRedisConnectionTrait {
+        fn clone(&self) -> Self {
+            Self::new()
+        }
+    }
+
+    impl Clone for MockRefundsModel {
+        fn clone(&self) -> Self {
+            Self::new()
+        }
+    }
 }

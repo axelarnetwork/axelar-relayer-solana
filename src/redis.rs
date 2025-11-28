@@ -27,7 +27,7 @@ fn default_true() -> bool {
     true
 }
 
-#[cfg_attr(any(test), mockall::automock)]
+#[cfg_attr(any(test, feature = "test-mocks"), mockall::automock)]
 #[async_trait]
 pub trait RedisConnectionTrait: ThreadSafe {
     fn inner(&self) -> &ConnectionManager;

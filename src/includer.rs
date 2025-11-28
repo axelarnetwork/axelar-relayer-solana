@@ -1058,18 +1058,6 @@ mod tests {
         }
     }
 
-    impl Clone for MockRedisConnectionTrait {
-        fn clone(&self) -> Self {
-            Self::new()
-        }
-    }
-
-    impl Clone for MockRefundsModel {
-        fn clone(&self) -> Self {
-            Self::new()
-        }
-    }
-
     impl Clone for MockTransactionBuilderTrait<MockIncluderClientTrait> {
         fn clone(&self) -> Self {
             Self::new()

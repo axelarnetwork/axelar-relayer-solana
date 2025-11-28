@@ -88,9 +88,10 @@ solana-rpc = "~2.3"
 solana-loader-v3-interface = "5.0.0"
 solana-system-interface = "1.0.0"
 solana-sdk-ids = "2.2.1"
-libsecp256k1 = "0.7"
+libsecp256k1 = "0.6"
 rand = "0.8"
 lapin = "2.5"
+solana-axelar-gateway-test-fixtures = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "main" }
 
 [lints.clippy]
 uninlined_format_args = "allow"
