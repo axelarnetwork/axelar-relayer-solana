@@ -65,6 +65,11 @@ impl TestQueue {
     async fn get_items(&self) -> Vec<QueueItem> {
         self.items.lock().await.clone()
     }
+
+    /// Clear all queued items. Useful to ensure no cross-test leakage.
+    async fn clear(&self) {
+        self.items.lock().await.clear();
+    }
 }
 
 #[async_trait]
@@ -668,6 +673,8 @@ async fn test_call_contract_picked_up_and_sent_to_gmp() {
     }
 
     println!("Test completed successfully!");
+    // Ensure in-memory queue is emptied so nothing leaks across tests in the same process
+    test_queue.clear().await;
     env.cleanup().await;
 }
 
@@ -854,7 +861,6 @@ async fn test_includer_gateway_tx_task() {
             .await;
     });
 
-    // Wait for poller to pick up transactions (with timeout)
     let mut found_approve_message_tx = false;
     let max_wait = std::time::Duration::from_secs(30);
     let start = std::time::Instant::now();
@@ -866,10 +872,9 @@ async fn test_includer_gateway_tx_task() {
         for item in &queued_items {
             if let QueueItem::Transaction(tx_data) = item {
                 // Check for ApproveMessage in the transaction logs
-                // This proves the message was approved on-chain
                 if tx_data.contains("ApproveMessage") || tx_data.contains("MessageApproved") {
                     found_approve_message_tx = true;
-                    println!("✓ Found ApproveMessage transaction in queue!");
+                    println!("Found ApproveMessage transaction in queue!");
                     break;
                 }
             }
@@ -881,7 +886,6 @@ async fn test_includer_gateway_tx_task() {
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), poller_handle).await;
     println!("Poller stopped");
 
-    // Get all transactions from queue
     let queued_items = test_queue.get_items().await;
     println!("Queue contains {} items total", queued_items.len());
 
@@ -890,10 +894,7 @@ async fn test_includer_gateway_tx_task() {
         "Should have found ApproveMessage transaction in queue (proves message was approved on-chain)"
     );
 
-    // Try to parse transactions with ingestor to find MessageApproved event
-    // Note: The parser may not fully support all event formats, so we treat this as optional
     let mut mock_cost_cache = MockCostCacheTrait::new();
-    // The parser needs cost cache to work - return 0 for any message
     mock_cost_cache
         .expect_get_cost_by_message_id()
         .returning(|_, _| Ok(0));
@@ -912,7 +913,6 @@ async fn test_includer_gateway_tx_task() {
 
     let ingestor = SolanaIngestor::new(parser, mock_update_events);
 
-    // Parse all transactions and look for MessageApproved event
     let mut found_approved_event = false;
 
     for item in &queued_items {
@@ -920,13 +920,7 @@ async fn test_includer_gateway_tx_task() {
             // Print raw transaction data for debugging if it contains ApproveMessage
             if tx_data.contains("ApproveMessage") {
                 println!("ApproveMessage transaction data (truncated):");
-                println!("  {} bytes total", tx_data.len());
-                // Parse the JSON to see the structure
-                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(tx_data) {
-                    if let Some(logs) = parsed.get("logs") {
-                        println!("  Logs: {:?}", logs);
-                    }
-                }
+                println!(" {} bytes total", tx_data.len());
             }
 
             match ingestor.handle_transaction(tx_data.to_string()).await {
@@ -953,8 +947,7 @@ async fn test_includer_gateway_tx_task() {
                     }
                 }
                 Err(e) => {
-                    // TODO: Parsing fails fo some reason for ApproveEvent
-                    println!("Transaction parse note: {:?}", e);
+                    panic!("Failed to parse transaction: {:?}", e);
                 }
             }
         }
@@ -970,5 +963,6 @@ async fn test_includer_gateway_tx_task() {
     }
 
     println!("Includer integration test completed!");
+    test_queue.clear().await;
     env.cleanup().await;
 }
