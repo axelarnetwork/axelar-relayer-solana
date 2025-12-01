@@ -9596,6 +9596,7 @@ dependencies = [
  "solana-axelar-gateway-test-fixtures",
  "solana-axelar-governance",
  "solana-axelar-its",
+ "solana-axelar-memo",
  "solana-axelar-operators",
  "solana-axelar-std",
  "solana-client",
@@ -9877,6 +9878,18 @@ dependencies = [
  "solana-axelar-gateway",
  "solana-axelar-operators",
  "spl-token-metadata-interface 0.6.0",
+]
+
+[[package]]
+name = "solana-axelar-memo"
+version = "0.1.6"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main#e736f3bb8c8c768a610c0824da3eacadcdc069ec"
+dependencies = [
+ "anchor-lang",
+ "anchor-spl",
+ "program-utils",
+ "solana-axelar-gateway",
+ "solana-axelar-its",
 ]
 
 [[package]]

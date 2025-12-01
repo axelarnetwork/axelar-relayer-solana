@@ -69,7 +69,12 @@ solana-axelar-operators = { git = "https://github.com/axelarnetwork/axelar-ampli
     "no-entrypoint",
     "devnet-amplifier",
 ] }
+solana-axelar-memo = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "main", package = "solana-axelar-memo", features = [
+    "no-entrypoint",
+    "devnet-amplifier",
+] }
 solana-axelar-std = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "main" }
+
 bytemuck = "1.24.0"
 bincode = "1"
 reqwest = "0.12.24"

@@ -279,17 +279,6 @@ pub fn get_token_manager_ata(token_manager_pda: &Pubkey, token_mint_pda: &Pubkey
     )
 }
 
-pub fn get_deployer_ata(payer: &Pubkey, token_mint_pda: &Pubkey) -> (Pubkey, u8) {
-    Pubkey::find_program_address(
-        &[
-            payer.as_ref(),
-            spl_token_2022::id().as_ref(),
-            token_mint_pda.as_ref(),
-        ],
-        &spl_associated_token_account::id(),
-    )
-}
-
 pub fn get_mpl_token_metadata_account(token_mint_pda: &Pubkey) -> (Pubkey, u8) {
     Pubkey::find_program_address(
         &[

@@ -141,6 +141,7 @@ struct TestEnvironment {
     pub verifier_merkle_tree: MerkleTree,
     pub postgres_db: PostgresDB,
     pub transaction_model: PgSolanaTransactionModel,
+    pub memo_program_id: solana_sdk::pubkey::Pubkey,
     #[allow(dead_code)]
     pub db_container: ContainerAsync<postgres::Postgres>,
 }
@@ -212,7 +213,7 @@ impl TestEnvironment {
             }
         }
 
-        let memo_program_id = solana_sdk::pubkey::Pubkey::new_unique();
+        let memo_program_id = solana_axelar_memo::ID;
 
         validator.add_upgradeable_programs_with_path(&[
             UpgradeableProgramInfo {
@@ -425,6 +426,7 @@ impl TestEnvironment {
             verifier_merkle_tree,
             postgres_db,
             transaction_model,
+            memo_program_id,
             db_container,
         }
     }
@@ -479,7 +481,6 @@ async fn test_call_contract_picked_up_and_sent_to_gmp() {
 
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-    // Send call_contract transaction
     let (event_authority_pda, _) = solana_sdk::pubkey::Pubkey::find_program_address(
         &[b"__event_authority"],
         &GATEWAY_PROGRAM_ID,
@@ -673,21 +674,20 @@ async fn test_call_contract_picked_up_and_sent_to_gmp() {
     }
 
     println!("Test completed successfully!");
-    // Ensure in-memory queue is emptied so nothing leaks across tests in the same process
     test_queue.clear().await;
     env.cleanup().await;
 }
 
-// Test that the includer can process a GatewayTxTask for an ITS message
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn test_includer_gateway_tx_task() {
+async fn test_approve_and_execute_message() {
     use base64::prelude::BASE64_STANDARD;
     use base64::Engine;
     use borsh::BorshSerialize;
     use solana_axelar_std::execute_data::{ExecuteData, MerklizedPayload};
     use solana_axelar_std::{CrossChainId, MerklizedMessage, Message, MessageLeaf};
     use solana_transaction_parser::gmp_types::{
-        CommonTaskFields, GatewayTxTask, GatewayTxTaskFields,
+        Amount, CommonTaskFields, ExecuteTask, ExecuteTaskFields, GatewayTxTask,
+        GatewayTxTaskFields, GatewayV2Message,
     };
 
     let env = TestEnvironment::new().await;
@@ -718,16 +718,57 @@ async fn test_includer_gateway_tx_task() {
     mock_redis
         .expect_write_gas_cost_for_message_id()
         .returning(|_, _, _| ());
+    mock_redis.expect_get_alt_entry().returning(|_| Ok(None));
 
-    let mock_gmp_api = MockGmpApiTrait::new();
+    // Set up GMP API mock with expectations for both GatewayTxTask and ExecuteTask
+    let mut mock_gmp_api = MockGmpApiTrait::new();
+    // ExecuteTask will call execute_message after execution (success or failure)
+    mock_gmp_api
+        .expect_execute_message()
+        .returning(|msg_id, source_chain, status, cost| {
+            println!(
+                "GMP API execute_message called: msg_id={}, source_chain={}, status={:?}, cost={:?}",
+                msg_id, source_chain, status, cost
+            );
+            Event::MessageExecuted {
+                common: solana_transaction_parser::gmp_types::CommonEventFields {
+                    r#type: "MESSAGE_EXECUTED".to_string(),
+                    event_id: "mock-event-id".to_string(),
+                    meta: None,
+                },
+                message_id: msg_id,
+                source_chain,
+                status,
+                cost,
+            }
+        });
     let mock_refunds_model = MockRefundsModel::new();
 
     let signing_verifier_set_merkle_root = env.verifier_set_hash;
 
-    // Create the message we want to approve
-    let its_program_address = solana_axelar_its::ID.to_string();
+    let memo_program_address = env.memo_program_id.to_string();
     let message_id = "test-message-id-001";
     let source_address = "axelar1test";
+
+    use solana_axelar_gateway::executable::{ExecutablePayload, ExecutablePayloadEncodingScheme};
+
+    let memo_string = "test-memo-execution";
+    // For memo, a counter PDA is required
+    let (counter_pda, _counter_bump) =
+        solana_sdk::pubkey::Pubkey::find_program_address(&[b"counter"], &env.memo_program_id);
+
+    let encoding_scheme = ExecutablePayloadEncodingScheme::AbiEncoding;
+
+    let test_payload = ExecutablePayload::new(
+        memo_string.as_bytes(),
+        &[solana_sdk::instruction::AccountMeta::new(
+            counter_pda,
+            false,
+        )],
+        encoding_scheme,
+    );
+
+    let test_payload_hash: [u8; 32] = test_payload.hash().expect("Failed to hash payload");
 
     let message = Message {
         cc_id: CrossChainId {
@@ -736,11 +777,10 @@ async fn test_includer_gateway_tx_task() {
         },
         source_address: source_address.to_string(),
         destination_chain: "solana-devnet".to_string(),
-        destination_address: its_program_address.clone(),
-        payload_hash: [0; 32],
+        destination_address: memo_program_address.clone(),
+        payload_hash: test_payload_hash,
     };
 
-    // Create the message leaf and merkle tree for the payload
     let message_leaf = MessageLeaf {
         message: message.clone(),
         position: 0,
@@ -773,7 +813,7 @@ async fn test_includer_gateway_tx_task() {
         payload_items: MerklizedPayload::NewMessages {
             messages: vec![MerklizedMessage {
                 leaf: message_leaf,
-                proof: vec![], // Single message, no proof needed
+                proof: vec![], // no proof needed for a single message
             }],
         },
     };
@@ -793,11 +833,10 @@ async fn test_includer_gateway_tx_task() {
         },
     };
 
-    println!("Created GatewayTxTask for ITS message:");
+    println!("Created GatewayTxTask for memo (executable) message:");
     println!("Task ID: {}", task.common.id);
     println!("Message ID: {}", message_id);
-    println!("Destination: {}", its_program_address);
-    println!("Using REAL: IncluderClient, TransactionBuilder, GasCalculator, FeesClient");
+    println!("Destination: {}", memo_program_address);
     let includer = SolanaIncluder::new(
         Arc::new(includer_client),
         keypair,
@@ -821,15 +860,11 @@ async fn test_includer_gateway_tx_task() {
         }
     }
 
-    // Now use subscriber/ingestor to pick up and parse the transactions
-    // to verify that a MessageApproved event was emitted
     println!("Setting up subscriber to verify MessageApproved event...");
 
-    // Create test queue to capture transactions
     let test_queue = Arc::new(TestQueue::new());
     let events_queue: Arc<dyn QueueTrait> = Arc::clone(&test_queue) as Arc<dyn QueueTrait>;
 
-    // Create subscriber poller
     let poll_client = SolanaRpcClient::new(&env.rpc_url, CommitmentConfig::confirmed(), 3)
         .expect("Failed to create poll client");
 
@@ -839,13 +874,12 @@ async fn test_includer_gateway_tx_task() {
             "test_gateway_tx_poller".to_string(),
             Arc::new(env.transaction_model.clone()),
             Arc::new(env.postgres_db.clone()),
-            events_queue,
+            Arc::clone(&events_queue),
         )
         .await
         .expect("Failed to create poller"),
     );
 
-    // Run poller briefly to pick up the approve message transaction
     let poller_cancellation = CancellationToken::new();
     let poller_cancellation_clone = poller_cancellation.clone();
 
@@ -871,8 +905,7 @@ async fn test_includer_gateway_tx_task() {
         let queued_items = test_queue.get_items().await;
         for item in &queued_items {
             if let QueueItem::Transaction(tx_data) = item {
-                // Check for ApproveMessage in the transaction logs
-                if tx_data.contains("ApproveMessage") || tx_data.contains("MessageApproved") {
+                if tx_data.contains("ApproveMessage") {
                     found_approve_message_tx = true;
                     println!("Found ApproveMessage transaction in queue!");
                     break;
@@ -917,7 +950,6 @@ async fn test_includer_gateway_tx_task() {
 
     for item in &queued_items {
         if let QueueItem::Transaction(tx_data) = item {
-            // Print raw transaction data for debugging if it contains ApproveMessage
             if tx_data.contains("ApproveMessage") {
                 println!("ApproveMessage transaction data (truncated):");
                 println!(" {} bytes total", tx_data.len());
@@ -960,6 +992,237 @@ async fn test_includer_gateway_tx_task() {
         );
     } else {
         println!("MessageApproved event not parsed (parser format mismatch), but ApproveMessage tx confirmed");
+    }
+
+    println!("Executing approved message...");
+
+    println!("Initializing Counter PDA for memo program...");
+
+    let init_ix_data = solana_axelar_memo::instruction::Init {}.data();
+    let init_accounts = solana_axelar_memo::accounts::Init {
+        counter: counter_pda,
+        payer: env.payer.pubkey(),
+        system_program: solana_sdk::system_program::ID,
+    }
+    .to_account_metas(None);
+
+    let init_instruction = Instruction {
+        program_id: env.memo_program_id,
+        accounts: init_accounts,
+        data: init_ix_data,
+    };
+
+    let recent_blockhash_init = env
+        .rpc_client
+        .get_latest_blockhash()
+        .await
+        .expect("Failed to get blockhash for init");
+
+    let init_tx = Transaction::new_signed_with_payer(
+        &[init_instruction],
+        Some(&env.payer.pubkey()),
+        &[&env.payer],
+        recent_blockhash_init,
+    );
+
+    match env.rpc_client.send_and_confirm_transaction(&init_tx).await {
+        Ok(sig) => println!("Counter PDA initialized: {}", sig),
+        Err(e) => {
+            panic!("Failed to initialize counter PDA: {:?}", e);
+        }
+    }
+
+    let execute_payload_bytes = test_payload
+        .encode()
+        .expect("Failed to encode ExecutablePayload");
+    let execute_payload_b64 = BASE64_STANDARD.encode(&execute_payload_bytes);
+
+    let execute_task = ExecuteTask {
+        common: CommonTaskFields {
+            id: "test-execute-task-001".into(),
+            chain: "solana-devnet".into(),
+            timestamp: "2025-11-26T14:47:20.567796Z".into(),
+            r#type: "EXECUTE".into(),
+            meta: None,
+        },
+        task: ExecuteTaskFields {
+            message: GatewayV2Message {
+                message_id: message_id.to_string(),
+                source_chain: "axelar".to_string(),
+                source_address: source_address.to_string(),
+                destination_address: memo_program_address.clone(),
+                payload_hash: BASE64_STANDARD.encode(message.payload_hash),
+            },
+            payload: execute_payload_b64,
+            available_gas_balance: Amount {
+                token_id: None,
+                amount: "1000000000".to_string(), // 1 SOL in lamports
+            },
+        },
+    };
+
+    // Reuse the same includer - all components are reusable
+    let execute_result = includer.handle_execute_task(execute_task).await;
+
+    match execute_result {
+        Ok(events) => {
+            println!("Execute task completed! Returned {} event(s)", events.len());
+            for event in &events {
+                println!("Event: {:?}", event);
+            }
+        }
+        Err(e) => {
+            println!("Execute task error: {:?}", e);
+            let error_str = format!("{:?}", e);
+            panic!("Execute task failed: {}", error_str);
+        }
+    }
+
+    println!("Setting up subscriber to verify MessageExecuted event...");
+
+    // Wait a bit for the transaction to be confirmed before starting the poller
+    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+
+    test_queue.clear().await;
+
+    // Create a fresh poller to pick up the execute transaction
+    // (reusing the old one might have a cursor position that's already past the transaction)
+    let poll_client_execute = SolanaRpcClient::new(&env.rpc_url, CommitmentConfig::confirmed(), 3)
+        .expect("Failed to create poll client for execute");
+
+    let events_queue_execute: Arc<dyn QueueTrait> = Arc::clone(&test_queue) as Arc<dyn QueueTrait>;
+    let poller_execute = Arc::new(
+        SolanaPoller::new(
+            poll_client_execute,
+            "test_execute_poller".to_string(),
+            Arc::new(env.transaction_model.clone()),
+            Arc::new(env.postgres_db.clone()),
+            events_queue_execute,
+        )
+        .await
+        .expect("Failed to create poller for execute"),
+    );
+
+    let poller_cancellation_execute = CancellationToken::new();
+    let poller_cancellation_execute_clone = poller_cancellation_execute.clone();
+
+    let poller_clone_execute = Arc::clone(&poller_execute);
+    let poller_handle_execute = tokio::spawn(async move {
+        poller_clone_execute
+            .run(
+                solana_axelar_gas_service::ID,
+                solana_axelar_gateway::ID,
+                solana_axelar_its::ID,
+                poller_cancellation_execute_clone,
+            )
+            .await;
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    let mut found_execute_message_tx = false;
+    let max_wait_execute = std::time::Duration::from_secs(30);
+    let start_execute = std::time::Instant::now();
+
+    while start_execute.elapsed() < max_wait_execute && !found_execute_message_tx {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        let queued_items = test_queue.get_items().await;
+        for item in &queued_items {
+            if let QueueItem::Transaction(tx_data) = item {
+                if tx_data.contains("Execute") || tx_data.contains("MessageExecuted") {
+                    found_execute_message_tx = true;
+                    println!("Found MessageExecuted transaction in queue!");
+                    break;
+                }
+            }
+        }
+    }
+
+    println!("Cancelling poller...");
+    poller_cancellation_execute.cancel();
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), poller_handle_execute).await;
+    println!("Poller stopped");
+
+    let queued_items_execute = test_queue.get_items().await;
+    println!("Queue contains {} items total", queued_items_execute.len());
+
+    assert!(
+        found_execute_message_tx,
+        "Should have found MessageExecuted transaction in queue (proves message was executed on-chain)"
+    );
+
+    let mut mock_cost_cache_execute = MockCostCacheTrait::new();
+    mock_cost_cache_execute
+        .expect_get_cost_by_message_id()
+        .returning(|_, _| Ok(0));
+    let parser_execute = TransactionParser::new(
+        "solana".to_string(),
+        solana_axelar_gas_service::ID,
+        solana_axelar_gateway::ID,
+        solana_axelar_its::ID,
+        Arc::new(mock_cost_cache_execute),
+    );
+
+    let mut mock_update_events_execute = MockUpdateEvents::new();
+    mock_update_events_execute
+        .expect_update_events()
+        .returning(|_, _| Box::pin(async { Ok(()) }));
+
+    let ingestor_execute = SolanaIngestor::new(parser_execute, mock_update_events_execute);
+
+    let mut found_executed_event = false;
+
+    for item in &queued_items_execute {
+        if let QueueItem::Transaction(tx_data) = item {
+            if tx_data.contains("MessageExecuted") {
+                println!("MessageExecuted transaction data (truncated):");
+                println!(" {} bytes total", tx_data.len());
+                println!("Transaction data: {}", tx_data);
+            }
+
+            match ingestor_execute
+                .handle_transaction(tx_data.to_string())
+                .await
+            {
+                Ok(events) => {
+                    for event in &events {
+                        if let Event::MessageExecuted {
+                            common,
+                            message_id: event_message_id,
+                            source_chain: event_source_chain,
+                            status,
+                            cost,
+                            ..
+                        } = event
+                        {
+                            println!("Parsed MessageExecuted event!");
+                            println!("Event ID: {}", common.event_id);
+                            println!("Message ID: {}", event_message_id);
+                            println!("Source Chain: {}", event_source_chain);
+                            println!("Status: {:?}", status);
+                            println!("Cost: {:?}", cost);
+
+                            if *event_message_id == message_id {
+                                found_executed_event = true;
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    println!("Transaction parse note: {:?}", e);
+                }
+            }
+        }
+    }
+
+    if found_executed_event {
+        println!(
+            "MessageExecuted event parsed successfully for message_id: {}",
+            message_id
+        );
+    } else {
+        panic!("MessageExecuted event found but not parsed");
     }
 
     println!("Includer integration test completed!");
