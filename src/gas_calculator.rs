@@ -34,7 +34,7 @@ pub trait GasCalculatorTrait: ThreadSafe {
     async fn compute_unit_price(
         &self,
         ixs: &[Instruction],
-        percentile: f64,
+        percentile: u64,
     ) -> Result<u64, GasCalculatorError>;
 }
 
@@ -59,7 +59,7 @@ impl<IC: IncluderClientTrait, FC: FeesClientTrait> GasCalculatorTrait for GasCal
     async fn compute_unit_price(
         &self,
         ixs: &[Instruction],
-        percentile: f64,
+        percentile: u64,
     ) -> Result<u64, GasCalculatorError> {
         const MAX_ACCOUNTS: usize = 128;
 

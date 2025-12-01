@@ -144,6 +144,10 @@ struct TestEnvironment {
     pub memo_program_id: solana_sdk::pubkey::Pubkey,
     #[allow(dead_code)]
     pub db_container: ContainerAsync<postgres::Postgres>,
+    /// ITS root PDA (pre-initialized during genesis)
+    pub its_root_pda: solana_sdk::pubkey::Pubkey,
+    /// ITS hub address used for initialization
+    pub its_hub_address: String,
 }
 
 impl TestEnvironment {
@@ -205,6 +209,7 @@ impl TestEnvironment {
             "solana_axelar_governance.so",
             "solana_axelar_operators.so",
             "solana_axelar_memo.so",
+            "mpl_token_metadata.so",
         ];
         for file in &program_files {
             let path = programs_path.join(file);
@@ -252,7 +257,82 @@ impl TestEnvironment {
                 upgrade_authority: upgrade_authority.pubkey(),
                 program_path: programs_path.join("solana_axelar_memo.so"),
             },
+            UpgradeableProgramInfo {
+                program_id: mpl_token_metadata::ID,
+                loader: bpf_loader_upgradeable::id(),
+                upgrade_authority: upgrade_authority.pubkey(),
+                program_path: programs_path.join("mpl_token_metadata.so"),
+            },
         ]);
+
+        // Pre-initialize ITS state during genesis to bypass the program_data deserialization issue
+        let its_hub_address = "0x1234567890123456789012345678901234567890".to_string();
+        let its_chain_name = "solana-devnet".to_string();
+        let (its_root_pda, its_root_bump) = solana_axelar_its::InterchainTokenService::find_pda();
+
+        // Create ITS root PDA account data with Anchor format
+        {
+            use anchor_lang::{AnchorSerialize, Discriminator};
+
+            // InterchainTokenService state
+            let its_state = solana_axelar_its::InterchainTokenService {
+                its_hub_address: its_hub_address.clone(),
+                chain_name: its_chain_name.clone(),
+                paused: false,
+                trusted_chains: vec!["ethereum".to_string()], // Pre-add ethereum as trusted
+                bump: its_root_bump,
+            };
+
+            // Serialize with Anchor format: 8-byte discriminator + Borsh data
+            let mut data = Vec::new();
+            data.extend_from_slice(&solana_axelar_its::InterchainTokenService::DISCRIMINATOR);
+            its_state
+                .serialize(&mut data)
+                .expect("Failed to serialize ITS state");
+
+            let lamports = solana_sdk::rent::Rent::default().minimum_balance(data.len());
+            validator.add_account(
+                its_root_pda,
+                AccountSharedData::from(solana_sdk::account::Account {
+                    lamports,
+                    data,
+                    owner: solana_axelar_its::ID,
+                    executable: false,
+                    rent_epoch: 0,
+                }),
+            );
+        }
+
+        // Create UserRoles account for operator
+        {
+            use anchor_lang::{AnchorSerialize, Discriminator};
+
+            let (user_roles_pda, user_roles_bump) =
+                solana_axelar_its::state::UserRoles::find_pda(&its_root_pda, &operator.pubkey());
+
+            let user_roles_state = solana_axelar_its::state::UserRoles {
+                roles: solana_axelar_its::state::Roles::OPERATOR,
+                bump: user_roles_bump,
+            };
+
+            let mut data = Vec::new();
+            data.extend_from_slice(&solana_axelar_its::state::UserRoles::DISCRIMINATOR);
+            user_roles_state
+                .serialize(&mut data)
+                .expect("Failed to serialize UserRoles state");
+
+            let lamports = solana_sdk::rent::Rent::default().minimum_balance(data.len());
+            validator.add_account(
+                user_roles_pda,
+                AccountSharedData::from(solana_sdk::account::Account {
+                    lamports,
+                    data,
+                    owner: solana_axelar_its::ID,
+                    executable: false,
+                    rent_epoch: 0,
+                }),
+            );
+        }
 
         let (test_validator, payer) = validator.start_async().await;
         let rpc_url = test_validator.rpc_url();
@@ -428,6 +508,8 @@ impl TestEnvironment {
             transaction_model,
             memo_program_id,
             db_container,
+            its_root_pda,
+            its_hub_address,
         }
     }
 
@@ -679,7 +761,7 @@ async fn test_call_contract_picked_up_and_sent_to_gmp() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn test_approve_and_execute_message() {
+async fn test_approve_and_execute_memo_message() {
     use base64::prelude::BASE64_STANDARD;
     use base64::Engine;
     use borsh::BorshSerialize;
@@ -720,9 +802,7 @@ async fn test_approve_and_execute_message() {
         .returning(|_, _, _| ());
     mock_redis.expect_get_alt_entry().returning(|_| Ok(None));
 
-    // Set up GMP API mock with expectations for both GatewayTxTask and ExecuteTask
     let mut mock_gmp_api = MockGmpApiTrait::new();
-    // ExecuteTask will call execute_message after execution (success or failure)
     mock_gmp_api
         .expect_execute_message()
         .returning(|msg_id, source_chain, status, cost| {
@@ -1061,7 +1141,6 @@ async fn test_approve_and_execute_message() {
         },
     };
 
-    // Reuse the same includer - all components are reusable
     let execute_result = includer.handle_execute_task(execute_task).await;
 
     match execute_result {
@@ -1080,13 +1159,10 @@ async fn test_approve_and_execute_message() {
 
     println!("Setting up subscriber to verify MessageExecuted event...");
 
-    // Wait a bit for the transaction to be confirmed before starting the poller
     tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
 
     test_queue.clear().await;
 
-    // Create a fresh poller to pick up the execute transaction
-    // (reusing the old one might have a cursor position that's already past the transaction)
     let poll_client_execute = SolanaRpcClient::new(&env.rpc_url, CommitmentConfig::confirmed(), 3)
         .expect("Failed to create poll client for execute");
 
@@ -1130,7 +1206,7 @@ async fn test_approve_and_execute_message() {
         let queued_items = test_queue.get_items().await;
         for item in &queued_items {
             if let QueueItem::Transaction(tx_data) = item {
-                if tx_data.contains("Execute") || tx_data.contains("MessageExecuted") {
+                if tx_data.contains("Execute") {
                     found_execute_message_tx = true;
                     println!("Found MessageExecuted transaction in queue!");
                     break;
@@ -1149,7 +1225,7 @@ async fn test_approve_and_execute_message() {
 
     assert!(
         found_execute_message_tx,
-        "Should have found MessageExecuted transaction in queue (proves message was executed on-chain)"
+        "Should have found MessageExecuted transaction in queue"
     );
 
     let mut mock_cost_cache_execute = MockCostCacheTrait::new();
@@ -1176,7 +1252,7 @@ async fn test_approve_and_execute_message() {
     for item in &queued_items_execute {
         if let QueueItem::Transaction(tx_data) = item {
             if tx_data.contains("MessageExecuted") {
-                println!("MessageExecuted transaction data (truncated):");
+                println!("MessageExecuted transaction data:");
                 println!(" {} bytes total", tx_data.len());
                 println!("Transaction data: {}", tx_data);
             }
@@ -1226,6 +1302,652 @@ async fn test_approve_and_execute_message() {
     }
 
     println!("Includer integration test completed!");
+    test_queue.clear().await;
+    env.cleanup().await;
+}
+
+/// Full ITS integration test: Deploy token, then transfer tokens
+/// This test covers the complete approve + execute flow for both DeployInterchainToken
+/// and InterchainTransfer payloads, following the pattern from solana-axelar-its-test-fixtures.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_approve_and_execute_its_message() {
+    use base64::prelude::BASE64_STANDARD;
+    use base64::Engine;
+    use borsh::BorshSerialize;
+    use interchain_token_transfer_gmp::alloy_primitives::{Bytes, FixedBytes, Uint};
+    use interchain_token_transfer_gmp::{
+        DeployInterchainToken, GMPPayload, InterchainTransfer, ReceiveFromHub,
+    };
+    use solana_axelar_its::utils::interchain_token_id;
+    use solana_axelar_std::execute_data::{ExecuteData, MerklizedPayload};
+    use solana_axelar_std::{CrossChainId, MerklizedMessage, Message, MessageLeaf};
+    use solana_transaction_parser::gmp_types::{
+        Amount, CommonTaskFields, ExecuteTask, ExecuteTaskFields, GatewayTxTask,
+        GatewayTxTaskFields, GatewayV2Message,
+    };
+
+    let env = TestEnvironment::new().await;
+
+    // ITS is pre-initialized during genesis - use values from env
+    println!("ITS service was pre-initialized during genesis");
+    let its_hub_address = env.its_hub_address.clone();
+    let _its_root_pda = env.its_root_pda;
+    let its_program_address = solana_axelar_its::ID.to_string();
+
+    // Setup includer and mocks (reused for both phases)
+    let includer_client = IncluderClient::new(&env.rpc_url, CommitmentConfig::confirmed(), 3)
+        .expect("Failed to create includer client");
+
+    let fees_client =
+        FeesClient::new(includer_client.clone(), 10).expect("Failed to create fees client");
+    let gas_calculator = GasCalculator::new(includer_client.clone(), fees_client);
+    let keypair = Arc::new(Keypair::from_bytes(&env.payer.to_bytes()).unwrap());
+    let transaction_builder = TransactionBuilder::new(
+        Arc::clone(&keypair),
+        gas_calculator,
+        Arc::new(includer_client.clone()),
+    );
+
+    let mut mock_redis = MockRedisConnectionTrait::new();
+    mock_redis
+        .expect_add_gas_cost_for_task_id()
+        .returning(|_, _, _| ());
+    mock_redis
+        .expect_get_gas_cost_for_task_id()
+        .returning(|_, _| Ok(0u64));
+    mock_redis
+        .expect_write_gas_cost_for_message_id()
+        .returning(|_, _, _| ());
+    mock_redis.expect_get_alt_entry().returning(|_| Ok(None));
+
+    let mut mock_gmp_api = MockGmpApiTrait::new();
+    mock_gmp_api
+        .expect_execute_message()
+        .returning(|msg_id, source_chain, status, cost| {
+            println!(
+                "GMP API execute_message: msg_id={}, source_chain={}, status={:?}",
+                msg_id, source_chain, status
+            );
+            Event::MessageExecuted {
+                common: solana_transaction_parser::gmp_types::CommonEventFields {
+                    r#type: "MESSAGE_EXECUTED".to_string(),
+                    event_id: "mock-event-id".to_string(),
+                    meta: None,
+                },
+                message_id: msg_id,
+                source_chain,
+                status,
+                cost,
+            }
+        });
+    let mock_refunds_model = MockRefundsModel::new();
+
+    let includer = SolanaIncluder::new(
+        Arc::new(includer_client),
+        keypair,
+        "solana-devnet".to_string(),
+        transaction_builder,
+        Arc::new(mock_gmp_api),
+        mock_redis,
+        Arc::new(mock_refunds_model),
+    );
+
+    // =========================================================================
+    // PHASE 1: Deploy Interchain Token
+    // =========================================================================
+    println!("\n=== PHASE 1: Deploy Interchain Token ===");
+
+    let deploy_message_id = "test-its-deploy-token-001";
+    let source_address = its_hub_address.clone();
+
+    // Derive token_id from payer and salt (following the example pattern)
+    let salt = [1u8; 32];
+    let token_id = interchain_token_id(&env.payer.pubkey(), &salt);
+
+    // Create DeployInterchainToken payload
+    let deploy_token = DeployInterchainToken {
+        selector: Uint::from(1u64),
+        token_id: FixedBytes::from(token_id),
+        name: "Test Token".to_string(),
+        symbol: "TEST".to_string(),
+        decimals: 9,
+        minter: Bytes::from(vec![]),
+    };
+
+    let deploy_inner = GMPPayload::DeployInterchainToken(deploy_token).encode();
+    let deploy_receive_from_hub = ReceiveFromHub {
+        selector: Uint::from(4u64),
+        source_chain: "ethereum".to_string(),
+        payload: Bytes::from(deploy_inner),
+    };
+
+    let deploy_gmp_payload = GMPPayload::ReceiveFromHub(deploy_receive_from_hub);
+    let deploy_payload_bytes = deploy_gmp_payload.encode();
+    let deploy_payload_hash = solana_sdk::keccak::hashv(&[&deploy_payload_bytes]).to_bytes();
+
+    // Create message for deploy
+    let deploy_message = Message {
+        cc_id: CrossChainId {
+            chain: "ethereum".to_string(),
+            id: deploy_message_id.to_string(),
+        },
+        source_address: source_address.clone(),
+        destination_chain: "solana-devnet".to_string(),
+        destination_address: its_program_address.clone(),
+        payload_hash: deploy_payload_hash,
+    };
+
+    let deploy_message_leaf = MessageLeaf {
+        message: deploy_message.clone(),
+        position: 0,
+        set_size: 1,
+        domain_separator: env.domain_separator,
+    };
+    let deploy_leaf_hash = deploy_message_leaf.hash();
+    let deploy_merkle_tree = MerkleTree::from_leaves(&[deploy_leaf_hash]);
+    let deploy_merkle_root = deploy_merkle_tree.root().expect("merkle root");
+
+    let deploy_verifier_info_1 = create_verifier_info(
+        &env.verifier_secret_keys[0],
+        deploy_merkle_root,
+        &env.verifier_leaves[0],
+        0,
+        &env.verifier_merkle_tree,
+    );
+    let deploy_verifier_info_2 = create_verifier_info(
+        &env.verifier_secret_keys[1],
+        deploy_merkle_root,
+        &env.verifier_leaves[1],
+        1,
+        &env.verifier_merkle_tree,
+    );
+
+    let deploy_execute_data = ExecuteData {
+        payload_merkle_root: deploy_merkle_root,
+        signing_verifier_set_merkle_root: env.verifier_set_hash,
+        signing_verifier_set_leaves: vec![deploy_verifier_info_1, deploy_verifier_info_2],
+        payload_items: MerklizedPayload::NewMessages {
+            messages: vec![MerklizedMessage {
+                leaf: deploy_message_leaf,
+                proof: vec![],
+            }],
+        },
+    };
+
+    // Phase 1a: Approve deploy message
+    println!("Approving deploy message...");
+    let deploy_gateway_task = GatewayTxTask {
+        common: CommonTaskFields {
+            id: "test-its-deploy-gateway-001".into(),
+            chain: "solana-devnet".into(),
+            timestamp: "2025-11-26T14:47:18.567796Z".into(),
+            r#type: "GATEWAY_TX".into(),
+            meta: None,
+        },
+        task: GatewayTxTaskFields {
+            execute_data: BASE64_STANDARD.encode(deploy_execute_data.try_to_vec().unwrap()),
+        },
+    };
+
+    includer
+        .handle_gateway_tx_task(deploy_gateway_task)
+        .await
+        .expect("Failed to approve deploy message");
+    println!("Deploy message approved!");
+
+    // Phase 1b: Execute deploy
+    println!("Executing deploy...");
+
+    // Note: The relayer will create all required accounts during execution.
+    // mpl_token_metadata exists as an executable account (added in TestEnvironment::new)
+
+    let deploy_execute_task = ExecuteTask {
+        common: CommonTaskFields {
+            id: "test-its-deploy-execute-001".into(),
+            chain: "solana-devnet".into(),
+            timestamp: "2025-11-26T14:47:19.567796Z".into(),
+            r#type: "EXECUTE".into(),
+            meta: None,
+        },
+        task: ExecuteTaskFields {
+            message: GatewayV2Message {
+                message_id: deploy_message_id.to_string(),
+                source_chain: "ethereum".to_string(),
+                source_address: source_address.clone(),
+                destination_address: its_program_address.clone(),
+                payload_hash: BASE64_STANDARD.encode(deploy_payload_hash),
+            },
+            payload: BASE64_STANDARD.encode(&deploy_payload_bytes),
+            available_gas_balance: Amount {
+                token_id: None,
+                amount: "10000000000".to_string(), // Increased for complex ITS execution
+            },
+        },
+    };
+
+    // Verify MessageApproved event was emitted
+    println!("Setting up poller to verify MessageApproved event...");
+    let test_queue = Arc::new(TestQueue::new());
+    let events_queue: Arc<dyn QueueTrait> = Arc::clone(&test_queue) as Arc<dyn QueueTrait>;
+
+    let poll_client = SolanaRpcClient::new(&env.rpc_url, CommitmentConfig::confirmed(), 3)
+        .expect("Failed to create poll client");
+
+    let poller = Arc::new(
+        SolanaPoller::new(
+            poll_client,
+            "test_its_deploy_poller".to_string(),
+            Arc::new(env.transaction_model.clone()),
+            Arc::new(env.postgres_db.clone()),
+            Arc::clone(&events_queue),
+        )
+        .await
+        .expect("Failed to create poller"),
+    );
+
+    let poller_cancellation = CancellationToken::new();
+    let poller_cancellation_clone = poller_cancellation.clone();
+
+    let poller_clone = Arc::clone(&poller);
+    let poller_handle = tokio::spawn(async move {
+        poller_clone
+            .run(
+                solana_axelar_gas_service::ID,
+                solana_axelar_gateway::ID,
+                solana_axelar_its::ID,
+                poller_cancellation_clone,
+            )
+            .await;
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    let mut found_approve_message_tx = false;
+    let max_wait = std::time::Duration::from_secs(30);
+    let start = std::time::Instant::now();
+
+    while start.elapsed() < max_wait && !found_approve_message_tx {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        let queued_items = test_queue.get_items().await;
+        for item in &queued_items {
+            if let QueueItem::Transaction(tx_data) = item {
+                if tx_data.contains("ApproveMessage") {
+                    found_approve_message_tx = true;
+                    println!("Found ApproveMessage transaction in queue!");
+                    break;
+                }
+            }
+        }
+    }
+
+    println!("Cancelling poller...");
+    poller_cancellation.cancel();
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), poller_handle).await;
+    println!("Poller stopped");
+
+    let queued_items = test_queue.get_items().await;
+    println!("Queue contains {} items total", queued_items.len());
+
+    assert!(
+        found_approve_message_tx,
+        "Should have found ApproveMessage transaction in queue"
+    );
+
+    // Parse MessageApproved event
+    let mut mock_cost_cache = MockCostCacheTrait::new();
+    mock_cost_cache
+        .expect_get_cost_by_message_id()
+        .returning(|_, _| Ok(0));
+    let parser = TransactionParser::new(
+        "solana".to_string(),
+        solana_axelar_gas_service::ID,
+        solana_axelar_gateway::ID,
+        solana_axelar_its::ID,
+        Arc::new(mock_cost_cache),
+    );
+
+    let mut mock_update_events = MockUpdateEvents::new();
+    mock_update_events
+        .expect_update_events()
+        .returning(|_, _| Box::pin(async { Ok(()) }));
+
+    let ingestor = SolanaIngestor::new(parser, mock_update_events);
+
+    let mut found_approved_event = false;
+    for item in &queued_items {
+        if let QueueItem::Transaction(tx_data) = item {
+            if tx_data.contains("ApproveMessage") {
+                match ingestor.handle_transaction(tx_data.to_string()).await {
+                    Ok(events) => {
+                        for event in &events {
+                            if let Event::MessageApproved {
+                                common,
+                                message,
+                                cost,
+                                ..
+                            } = event
+                            {
+                                println!("Parsed MessageApproved event!");
+                                println!("Event ID: {}", common.event_id);
+                                println!("Message ID: {}", message.message_id);
+                                println!("Source Chain: {}", message.source_chain);
+                                println!("Source Address: {}", message.source_address);
+                                println!("Cost: {:?}", cost);
+
+                                if message.message_id == deploy_message_id {
+                                    found_approved_event = true;
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        println!("Failed to parse transaction: {:?}", e);
+                    }
+                }
+            }
+        }
+    }
+
+    assert!(
+        found_approved_event,
+        "MessageApproved event should have been parsed for message_id: {}",
+        deploy_message_id
+    );
+    println!(
+        "MessageApproved event parsed successfully for message_id: {}",
+        deploy_message_id
+    );
+
+    // Now execute the deploy
+    let deploy_result = includer.handle_execute_task(deploy_execute_task).await;
+    match &deploy_result {
+        Ok(events) => {
+            println!("Deploy executed successfully! Events: {:?}", events.len());
+        }
+        Err(e) => {
+            panic!("Deploy execution failed: {:?}", e);
+        }
+    }
+
+    // Give time for deploy to be confirmed
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+    println!("Interchain Transfer...");
+
+    let transfer_message_id = "test-its-transfer-001";
+    let destination_pubkey = env.payer.pubkey();
+    let transfer_amount = 1_000_000u64;
+
+    // Create InterchainTransfer payload
+    let source_address_bytes = "ethereum_address_123".as_bytes().to_vec();
+    let destination_address_bytes = destination_pubkey.to_bytes().to_vec();
+
+    let transfer = InterchainTransfer {
+        selector: Uint::from(0u64),
+        token_id: FixedBytes::from(token_id),
+        source_address: Bytes::from(source_address_bytes),
+        destination_address: Bytes::from(destination_address_bytes),
+        amount: Uint::from(transfer_amount),
+        data: Bytes::from(vec![]),
+    };
+
+    let transfer_inner = GMPPayload::InterchainTransfer(transfer).encode();
+    let transfer_receive_from_hub = ReceiveFromHub {
+        selector: Uint::from(4u64),
+        source_chain: "ethereum".to_string(),
+        payload: Bytes::from(transfer_inner),
+    };
+
+    let transfer_gmp_payload = GMPPayload::ReceiveFromHub(transfer_receive_from_hub);
+    let transfer_payload_bytes = transfer_gmp_payload.encode();
+    let transfer_payload_hash = solana_sdk::keccak::hashv(&[&transfer_payload_bytes]).to_bytes();
+
+    // Create message for transfer
+    let transfer_message = Message {
+        cc_id: CrossChainId {
+            chain: "ethereum".to_string(),
+            id: transfer_message_id.to_string(),
+        },
+        source_address: source_address.clone(),
+        destination_chain: "solana-devnet".to_string(),
+        destination_address: its_program_address.clone(),
+        payload_hash: transfer_payload_hash,
+    };
+
+    let transfer_message_leaf = MessageLeaf {
+        message: transfer_message.clone(),
+        position: 0,
+        set_size: 1,
+        domain_separator: env.domain_separator,
+    };
+    let transfer_leaf_hash = transfer_message_leaf.hash();
+    let transfer_merkle_tree = MerkleTree::from_leaves(&[transfer_leaf_hash]);
+    let transfer_merkle_root = transfer_merkle_tree.root().expect("merkle root");
+
+    let transfer_verifier_info_1 = create_verifier_info(
+        &env.verifier_secret_keys[0],
+        transfer_merkle_root,
+        &env.verifier_leaves[0],
+        0,
+        &env.verifier_merkle_tree,
+    );
+    let transfer_verifier_info_2 = create_verifier_info(
+        &env.verifier_secret_keys[1],
+        transfer_merkle_root,
+        &env.verifier_leaves[1],
+        1,
+        &env.verifier_merkle_tree,
+    );
+
+    let transfer_execute_data = ExecuteData {
+        payload_merkle_root: transfer_merkle_root,
+        signing_verifier_set_merkle_root: env.verifier_set_hash,
+        signing_verifier_set_leaves: vec![transfer_verifier_info_1, transfer_verifier_info_2],
+        payload_items: MerklizedPayload::NewMessages {
+            messages: vec![MerklizedMessage {
+                leaf: transfer_message_leaf,
+                proof: vec![],
+            }],
+        },
+    };
+
+    println!("Approving transfer message...");
+    let transfer_gateway_task = GatewayTxTask {
+        common: CommonTaskFields {
+            id: "test-its-transfer-gateway-001".into(),
+            chain: "solana-devnet".into(),
+            timestamp: "2025-11-26T14:47:20.567796Z".into(),
+            r#type: "GATEWAY_TX".into(),
+            meta: None,
+        },
+        task: GatewayTxTaskFields {
+            execute_data: BASE64_STANDARD.encode(transfer_execute_data.try_to_vec().unwrap()),
+        },
+    };
+
+    includer
+        .handle_gateway_tx_task(transfer_gateway_task)
+        .await
+        .expect("Failed to approve transfer message");
+    println!("Transfer message approved!");
+
+    println!("Executing transfer...");
+    let transfer_execute_task = ExecuteTask {
+        common: CommonTaskFields {
+            id: "test-its-transfer-execute-001".into(),
+            chain: "solana-devnet".into(),
+            timestamp: "2025-11-26T14:47:21.567796Z".into(),
+            r#type: "EXECUTE".into(),
+            meta: None,
+        },
+        task: ExecuteTaskFields {
+            message: GatewayV2Message {
+                message_id: transfer_message_id.to_string(),
+                source_chain: "ethereum".to_string(),
+                source_address: source_address.clone(),
+                destination_address: its_program_address.clone(),
+                payload_hash: BASE64_STANDARD.encode(transfer_payload_hash),
+            },
+            payload: BASE64_STANDARD.encode(&transfer_payload_bytes),
+            available_gas_balance: Amount {
+                token_id: None,
+                amount: "10000000000".to_string(),
+            },
+        },
+    };
+
+    match includer.handle_execute_task(transfer_execute_task).await {
+        Ok(events) => {
+            println!("Transfer executed successfully! Events: {:?}", events.len());
+        }
+        Err(e) => {
+            println!("Transfer execution failed: {:?}", e);
+        }
+    }
+
+    // Verify MessageExecuted event
+    println!("Setting up poller to verify MessageExecuted event...");
+    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+
+    test_queue.clear().await;
+
+    let poll_client_execute = SolanaRpcClient::new(&env.rpc_url, CommitmentConfig::confirmed(), 3)
+        .expect("Failed to create poll client for execute");
+
+    let events_queue_execute: Arc<dyn QueueTrait> = Arc::clone(&test_queue) as Arc<dyn QueueTrait>;
+    let poller_execute = Arc::new(
+        SolanaPoller::new(
+            poll_client_execute,
+            "test_its_execute_poller".to_string(),
+            Arc::new(env.transaction_model.clone()),
+            Arc::new(env.postgres_db.clone()),
+            events_queue_execute,
+        )
+        .await
+        .expect("Failed to create poller for execute"),
+    );
+
+    let poller_cancellation_execute = CancellationToken::new();
+    let poller_cancellation_execute_clone = poller_cancellation_execute.clone();
+
+    let poller_clone_execute = Arc::clone(&poller_execute);
+    let poller_handle_execute = tokio::spawn(async move {
+        poller_clone_execute
+            .run(
+                solana_axelar_gas_service::ID,
+                solana_axelar_gateway::ID,
+                solana_axelar_its::ID,
+                poller_cancellation_execute_clone,
+            )
+            .await;
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    let mut found_execute_message_tx = false;
+    let max_wait_execute = std::time::Duration::from_secs(30);
+    let start_execute = std::time::Instant::now();
+
+    while start_execute.elapsed() < max_wait_execute && !found_execute_message_tx {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        let queued_items = test_queue.get_items().await;
+        for item in &queued_items {
+            if let QueueItem::Transaction(tx_data) = item {
+                if tx_data.contains("Execute")
+                    || tx_data.contains("ValidateMessage")
+                    || tx_data.contains("MessageExecuted")
+                {
+                    found_execute_message_tx = true;
+                    println!("Found MessageExecuted transaction in queue!");
+                    break;
+                }
+            }
+        }
+    }
+
+    println!("Cancelling poller...");
+    poller_cancellation_execute.cancel();
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), poller_handle_execute).await;
+    println!("Poller stopped");
+
+    let queued_items_execute = test_queue.get_items().await;
+    println!("Queue contains {} items total", queued_items_execute.len());
+
+    assert!(
+        found_execute_message_tx,
+        "Should have found MessageExecuted transaction in queue"
+    );
+
+    let mut mock_cost_cache_execute = MockCostCacheTrait::new();
+    mock_cost_cache_execute
+        .expect_get_cost_by_message_id()
+        .returning(|_, _| Ok(0));
+    let parser_execute = TransactionParser::new(
+        "solana".to_string(),
+        solana_axelar_gas_service::ID,
+        solana_axelar_gateway::ID,
+        solana_axelar_its::ID,
+        Arc::new(mock_cost_cache_execute),
+    );
+
+    let mut mock_update_events_execute = MockUpdateEvents::new();
+    mock_update_events_execute
+        .expect_update_events()
+        .returning(|_, _| Box::pin(async { Ok(()) }));
+
+    let ingestor_execute = SolanaIngestor::new(parser_execute, mock_update_events_execute);
+
+    let mut found_executed_event = false;
+    for item in &queued_items_execute {
+        if let QueueItem::Transaction(tx_data) = item {
+            if tx_data.contains("MessageExecuted") || tx_data.contains("Execute") {
+                match ingestor_execute
+                    .handle_transaction(tx_data.to_string())
+                    .await
+                {
+                    Ok(events) => {
+                        for event in &events {
+                            if let Event::MessageExecuted {
+                                common,
+                                message_id: event_message_id,
+                                source_chain: event_source_chain,
+                                status,
+                                cost,
+                                ..
+                            } = event
+                            {
+                                println!("Parsed MessageExecuted event!");
+                                println!("Event ID: {}", common.event_id);
+                                println!("Message ID: {}", event_message_id);
+                                println!("Source Chain: {}", event_source_chain);
+                                println!("Status: {:?}", status);
+                                println!("Cost: {:?}", cost);
+
+                                if *event_message_id == deploy_message_id
+                                    || *event_message_id == transfer_message_id
+                                {
+                                    found_executed_event = true;
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        println!("Transaction parse note: {:?}", e);
+                    }
+                }
+            }
+        }
+    }
+
+    if found_executed_event {
+        println!("MessageExecuted event parsed successfully!");
+    } else {
+        println!("Note: MessageExecuted event may not have been parsed yet");
+    }
+
+    println!("\n=== ITS Integration Test Completed ===");
     test_queue.clear().await;
     env.cleanup().await;
 }

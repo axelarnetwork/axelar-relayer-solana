@@ -137,7 +137,7 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
 
         let unit_price = self
             .gas_calculator
-            .compute_unit_price(ixs, 75.0)
+            .compute_unit_price(ixs, 75)
             .await
             .map_err(|e| TransactionBuilderError::ClientError(e.to_string()))?;
 
