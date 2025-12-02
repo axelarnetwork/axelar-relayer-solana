@@ -815,7 +815,7 @@ mod tests {
         // build_execute_instruction expects raw bytes (not base64) that can be decoded as GMPPayload
         let its_payload: Vec<u8> = gmp_payload.encode();
 
-        // Verify the payload can be decoded (this helps catch encoding issues early)
+        // Verify the payload can be decoded
         let _decoded =
             GMPPayload::decode(&its_payload).expect("Encoded GMPPayload should be decodable");
 

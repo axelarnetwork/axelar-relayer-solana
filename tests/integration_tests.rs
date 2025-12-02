@@ -144,9 +144,6 @@ struct TestEnvironment {
     pub memo_program_id: solana_sdk::pubkey::Pubkey,
     #[allow(dead_code)]
     pub db_container: ContainerAsync<postgres::Postgres>,
-    /// ITS root PDA (pre-initialized during genesis)
-    pub its_root_pda: solana_sdk::pubkey::Pubkey,
-    /// ITS hub address used for initialization
     pub its_hub_address: String,
 }
 
@@ -508,7 +505,6 @@ impl TestEnvironment {
             transaction_model,
             memo_program_id,
             db_container,
-            its_root_pda,
             its_hub_address,
         }
     }
@@ -1306,9 +1302,6 @@ async fn test_approve_and_execute_memo_message() {
     env.cleanup().await;
 }
 
-/// Full ITS integration test: Deploy token, then transfer tokens
-/// This test covers the complete approve + execute flow for both DeployInterchainToken
-/// and InterchainTransfer payloads, following the pattern from solana-axelar-its-test-fixtures.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_approve_and_execute_its_message() {
     use base64::prelude::BASE64_STANDARD;
@@ -1328,13 +1321,10 @@ async fn test_approve_and_execute_its_message() {
 
     let env = TestEnvironment::new().await;
 
-    // ITS is pre-initialized during genesis - use values from env
     println!("ITS service was pre-initialized during genesis");
     let its_hub_address = env.its_hub_address.clone();
-    let _its_root_pda = env.its_root_pda;
     let its_program_address = solana_axelar_its::ID.to_string();
 
-    // Setup includer and mocks (reused for both phases)
     let includer_client = IncluderClient::new(&env.rpc_url, CommitmentConfig::confirmed(), 3)
         .expect("Failed to create includer client");
 
@@ -1392,15 +1382,9 @@ async fn test_approve_and_execute_its_message() {
         Arc::new(mock_refunds_model),
     );
 
-    // =========================================================================
-    // PHASE 1: Deploy Interchain Token
-    // =========================================================================
-    println!("\n=== PHASE 1: Deploy Interchain Token ===");
-
     let deploy_message_id = "test-its-deploy-token-001";
     let source_address = its_hub_address.clone();
 
-    // Derive token_id from payer and salt (following the example pattern)
     let salt = [1u8; 32];
     let token_id = interchain_token_id(&env.payer.pubkey(), &salt);
 
@@ -1474,7 +1458,6 @@ async fn test_approve_and_execute_its_message() {
         },
     };
 
-    // Phase 1a: Approve deploy message
     println!("Approving deploy message...");
     let deploy_gateway_task = GatewayTxTask {
         common: CommonTaskFields {
@@ -1495,11 +1478,7 @@ async fn test_approve_and_execute_its_message() {
         .expect("Failed to approve deploy message");
     println!("Deploy message approved!");
 
-    // Phase 1b: Execute deploy
     println!("Executing deploy...");
-
-    // Note: The relayer will create all required accounts during execution.
-    // mpl_token_metadata exists as an executable account (added in TestEnvironment::new)
 
     let deploy_execute_task = ExecuteTask {
         common: CommonTaskFields {
@@ -1520,12 +1499,11 @@ async fn test_approve_and_execute_its_message() {
             payload: BASE64_STANDARD.encode(&deploy_payload_bytes),
             available_gas_balance: Amount {
                 token_id: None,
-                amount: "10000000000".to_string(), // Increased for complex ITS execution
+                amount: "10000000000".to_string(),
             },
         },
     };
 
-    // Verify MessageApproved event was emitted
     println!("Setting up poller to verify MessageApproved event...");
     let test_queue = Arc::new(TestQueue::new());
     let events_queue: Arc<dyn QueueTrait> = Arc::clone(&test_queue) as Arc<dyn QueueTrait>;
@@ -1855,10 +1833,7 @@ async fn test_approve_and_execute_its_message() {
         let queued_items = test_queue.get_items().await;
         for item in &queued_items {
             if let QueueItem::Transaction(tx_data) = item {
-                if tx_data.contains("Execute")
-                    || tx_data.contains("ValidateMessage")
-                    || tx_data.contains("MessageExecuted")
-                {
+                if tx_data.contains("Execute") {
                     found_execute_message_tx = true;
                     println!("Found MessageExecuted transaction in queue!");
                     break;
@@ -1902,7 +1877,7 @@ async fn test_approve_and_execute_its_message() {
     let mut found_executed_event = false;
     for item in &queued_items_execute {
         if let QueueItem::Transaction(tx_data) = item {
-            if tx_data.contains("MessageExecuted") || tx_data.contains("Execute") {
+            if tx_data.contains("MessageExecuted") {
                 match ingestor_execute
                     .handle_transaction(tx_data.to_string())
                     .await
