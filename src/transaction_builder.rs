@@ -306,7 +306,10 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
                 if !transfer.data.is_empty() {
                     match ExecutablePayload::decode(transfer.data.as_ref()) {
                         Ok(executable_payload) => {
-                            let gmp_accounts = executable_payload.account_meta();
+                            let mut gmp_accounts = executable_payload.account_meta();
+                            gmp_accounts.iter_mut().for_each(|account| {
+                                account.is_signer = false;
+                            });
                             accounts.extend(gmp_accounts);
                         }
                         Err(e) => {
@@ -471,7 +474,11 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
         let decoded_payload = ExecutablePayload::decode(payload)
             .map_err(|e| TransactionBuilderError::PayloadDecodeError(e.to_string()))?; // return custom error to send cannot_execute_message
 
-        let user_provided_accounts = decoded_payload.account_meta();
+        // safety check because if an account is singer it can drain funds
+        let mut user_provided_accounts = decoded_payload.account_meta();
+        user_provided_accounts.iter_mut().for_each(|account| {
+            account.is_signer = false;
+        });
 
         let (signing_pda, _) =
             get_validate_message_signing_pda(&message.command_id(), &destination_address);
@@ -1060,5 +1067,217 @@ mod tests {
             ),
             Ok(_) => panic!("Expected error but got success"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_build_its_instruction_interchain_transfer_removes_signer_flags() {
+        let keypair = Arc::new(Keypair::new());
+        let mock_gas = MockGasCalculatorTrait::new();
+        let mut mock_client = MockIncluderClientTrait::new();
+
+        let message = Message {
+            cc_id: CrossChainId {
+                chain: "ethereum".to_string(),
+                id: "test-message-id-remove-signers".to_string(),
+            },
+            source_address: "0x1234567890123456789012345678901234567890".to_string(),
+            destination_chain: "solana".to_string(),
+            destination_address: "test-destination".to_string(),
+            payload_hash: [0u8; 32],
+        };
+
+        mock_client
+            .expect_get_slot()
+            .times(1)
+            .returning(|| Box::pin(async { Ok(1000u64) }));
+
+        let builder =
+            TransactionBuilder::new(Arc::clone(&keypair), mock_gas, Arc::new(mock_client));
+
+        let its_destination = solana_axelar_its::ID;
+        let destination_pubkey = Pubkey::new_unique();
+        let destination_address_bytes = destination_pubkey.as_ref().to_vec();
+        let token_id = [3u8; 32];
+
+        // Create an ExecutablePayload with accounts that have is_signer: true
+        let gmp_account1 = Pubkey::new_unique();
+        let gmp_account2 = Pubkey::new_unique();
+        let gmp_account3 = Pubkey::new_unique();
+        let executable_payload = ExecutablePayload::new::<AccountMeta>(
+            &[10, 20, 30, 40], // payload data
+            &[
+                AccountMeta::new(gmp_account1, true),          // is_signer: true
+                AccountMeta::new_readonly(gmp_account2, true), // is_signer: true, readonly
+                AccountMeta::new(gmp_account3, false),         // is_signer: false (control)
+            ],
+            EncodingScheme::Borsh,
+        );
+        let executable_payload_bytes = executable_payload.encode().unwrap();
+
+        // Create InterchainTransfer with ExecutablePayload in data field
+        let inner_payload =
+            GMPPayload::InterchainTransfer(interchain_token_transfer_gmp::InterchainTransfer {
+                token_id: FixedBytes::from(token_id),
+                destination_address: Bytes::from(destination_address_bytes),
+                amount: Uint::from(1000u64),
+                data: Bytes::from(executable_payload_bytes.clone()),
+                selector: Uint::from(0),
+                source_address: Bytes::from(vec![5u8; 20]),
+            });
+
+        // Wrap in ReceiveFromHub as expected by build_its_instruction
+        let inner_payload_bytes: Vec<u8> = inner_payload.encode();
+        let gmp_payload =
+            GMPPayload::ReceiveFromHub(interchain_token_transfer_gmp::ReceiveFromHub {
+                payload: Bytes::from(inner_payload_bytes),
+                source_chain: "ethereum".to_string(),
+                selector: Uint::from(
+                    interchain_token_transfer_gmp::ReceiveFromHub::MESSAGE_TYPE_ID as u64,
+                ),
+            });
+        let its_payload: Vec<u8> = gmp_payload.encode();
+
+        let (its_instruction, _its_alt_info) = builder
+            .build_execute_instruction(&message, &its_payload, its_destination, None)
+            .await
+            .expect("ITS build_execute_instruction with ExecutablePayload should succeed");
+
+        assert_eq!(its_instruction.program_id, solana_axelar_its::ID);
+
+        let instruction_accounts = &its_instruction.accounts;
+
+        let user_account_indices: Vec<usize> = instruction_accounts
+            .iter()
+            .enumerate()
+            .filter(|(_, acc)| {
+                acc.pubkey == gmp_account1
+                    || acc.pubkey == gmp_account2
+                    || acc.pubkey == gmp_account3
+            })
+            .map(|(idx, _)| idx)
+            .collect();
+
+        assert_eq!(
+            user_account_indices.len(),
+            3,
+            "All three user-provided accounts should be present"
+        );
+
+        for idx in user_account_indices {
+            let account = &instruction_accounts[idx];
+            assert!(
+                !account.is_signer,
+                "User-provided account {} should have is_signer: false, but it's true",
+                account.pubkey
+            );
+        }
+
+        let account_pubkeys: Vec<Pubkey> =
+            instruction_accounts.iter().map(|acc| acc.pubkey).collect();
+        assert!(
+            account_pubkeys.contains(&gmp_account1),
+            "gmp_account1 should be in the instruction accounts"
+        );
+        assert!(
+            account_pubkeys.contains(&gmp_account2),
+            "gmp_account2 should be in the instruction accounts"
+        );
+        assert!(
+            account_pubkeys.contains(&gmp_account3),
+            "gmp_account3 should be in the instruction accounts"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_build_executable_instruction_removes_signer_flags() {
+        let keypair = Arc::new(Keypair::new());
+        let mock_gas = MockGasCalculatorTrait::new();
+        let mock_client = MockIncluderClientTrait::new();
+
+        let message = Message {
+            cc_id: CrossChainId {
+                chain: "ethereum".to_string(),
+                id: "test-message-id-executable-remove-signers".to_string(),
+            },
+            source_address: "0x1234567890123456789012345678901234567890".to_string(),
+            destination_chain: "solana".to_string(),
+            destination_address: "test-destination".to_string(),
+            payload_hash: [0u8; 32],
+        };
+
+        let builder =
+            TransactionBuilder::new(Arc::clone(&keypair), mock_gas, Arc::new(mock_client));
+
+        let destination_program = Pubkey::new_unique();
+
+        // Create an ExecutablePayload with accounts that have is_signer: true
+        let user_account1 = Pubkey::new_unique();
+        let user_account2 = Pubkey::new_unique();
+        let user_account3 = Pubkey::new_unique();
+        let executable_payload = ExecutablePayload::new::<AccountMeta>(
+            &[10, 20, 30, 40, 50], // payload data
+            &[
+                AccountMeta::new(user_account1, true), // is_signer: true
+                AccountMeta::new_readonly(user_account2, true), // is_signer: true, readonly
+                AccountMeta::new(user_account3, false), // is_signer: false (control)
+            ],
+            EncodingScheme::Borsh,
+        );
+        let executable_payload_bytes = executable_payload.encode().unwrap();
+
+        let (instruction, _alt_info) = builder
+            .build_executable_instruction(
+                &message,
+                &executable_payload_bytes,
+                Pubkey::new_unique(),
+                destination_program,
+            )
+            .await
+            .expect("build_executable_instruction should succeed");
+
+        assert_eq!(instruction.program_id, destination_program);
+
+        let instruction_accounts = &instruction.accounts;
+
+        let user_account_indices: Vec<usize> = instruction_accounts
+            .iter()
+            .enumerate()
+            .filter(|(_, acc)| {
+                acc.pubkey == user_account1
+                    || acc.pubkey == user_account2
+                    || acc.pubkey == user_account3
+            })
+            .map(|(idx, _)| idx)
+            .collect();
+
+        assert_eq!(
+            user_account_indices.len(),
+            3,
+            "All three user-provided accounts should be present"
+        );
+
+        for idx in user_account_indices {
+            let account = &instruction_accounts[idx];
+            assert!(
+                !account.is_signer,
+                "User-provided account {} should have is_signer: false, but it's true",
+                account.pubkey
+            );
+        }
+
+        let account_pubkeys: Vec<Pubkey> =
+            instruction_accounts.iter().map(|acc| acc.pubkey).collect();
+        assert!(
+            account_pubkeys.contains(&user_account1),
+            "user_account1 should be in the instruction accounts"
+        );
+        assert!(
+            account_pubkeys.contains(&user_account2),
+            "user_account2 should be in the instruction accounts"
+        );
+        assert!(
+            account_pubkeys.contains(&user_account3),
+            "user_account3 should be in the instruction accounts"
+        );
     }
 }
