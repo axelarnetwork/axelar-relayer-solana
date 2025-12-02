@@ -306,10 +306,15 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
                 if !transfer.data.is_empty() {
                     match ExecutablePayload::decode(transfer.data.as_ref()) {
                         Ok(executable_payload) => {
-                            let mut gmp_accounts = executable_payload.account_meta();
-                            gmp_accounts.iter_mut().for_each(|account| {
-                                account.is_signer = false;
-                            });
+                            let gmp_accounts = executable_payload.account_meta();
+                            for account in gmp_accounts.clone() {
+                                // signers are not supported for arbitrary executables
+                                if account.is_signer {
+                                    return Err(TransactionBuilderError::PayloadDecodeError(
+                                        "Signer account cannot be provided".to_string(),
+                                    ));
+                                };
+                            }
                             accounts.extend(gmp_accounts);
                         }
                         Err(e) => {
@@ -474,11 +479,15 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
         let decoded_payload = ExecutablePayload::decode(payload)
             .map_err(|e| TransactionBuilderError::PayloadDecodeError(e.to_string()))?; // return custom error to send cannot_execute_message
 
-        // safety check because if an account is singer it can drain funds
-        let mut user_provided_accounts = decoded_payload.account_meta();
-        user_provided_accounts.iter_mut().for_each(|account| {
-            account.is_signer = false;
-        });
+        // signers are not supported for arbitrary executables
+        let user_provided_accounts = decoded_payload.account_meta();
+        for account in user_provided_accounts.clone() {
+            if account.is_signer {
+                return Err(TransactionBuilderError::PayloadDecodeError(
+                    "Signer account cannot be provided".to_string(),
+                ));
+            };
+        }
 
         let (signing_pda, _) =
             get_validate_message_signing_pda(&message.command_id(), &destination_address);
@@ -1070,26 +1079,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_build_its_instruction_interchain_transfer_removes_signer_flags() {
+    async fn test_build_its_instruction_interchain_transfer_rejects_signer_accounts() {
         let keypair = Arc::new(Keypair::new());
         let mock_gas = MockGasCalculatorTrait::new();
-        let mut mock_client = MockIncluderClientTrait::new();
+        let mock_client = MockIncluderClientTrait::new();
 
         let message = Message {
             cc_id: CrossChainId {
                 chain: "ethereum".to_string(),
-                id: "test-message-id-remove-signers".to_string(),
+                id: "test-message-id-reject-signers".to_string(),
             },
             source_address: "0x1234567890123456789012345678901234567890".to_string(),
             destination_chain: "solana".to_string(),
             destination_address: "test-destination".to_string(),
             payload_hash: [0u8; 32],
         };
-
-        mock_client
-            .expect_get_slot()
-            .times(1)
-            .returning(|| Box::pin(async { Ok(1000u64) }));
 
         let builder =
             TransactionBuilder::new(Arc::clone(&keypair), mock_gas, Arc::new(mock_client));
@@ -1102,13 +1106,11 @@ mod tests {
         // Create an ExecutablePayload with accounts that have is_signer: true
         let gmp_account1 = Pubkey::new_unique();
         let gmp_account2 = Pubkey::new_unique();
-        let gmp_account3 = Pubkey::new_unique();
         let executable_payload = ExecutablePayload::new::<AccountMeta>(
             &[10, 20, 30, 40], // payload data
             &[
-                AccountMeta::new(gmp_account1, true),          // is_signer: true
-                AccountMeta::new_readonly(gmp_account2, true), // is_signer: true, readonly
-                AccountMeta::new(gmp_account3, false),         // is_signer: false (control)
+                AccountMeta::new(gmp_account1, true), // is_signer: true - should be rejected
+                AccountMeta::new_readonly(gmp_account2, true), // is_signer: true, readonly - should be rejected
             ],
             EncodingScheme::Borsh,
         );
@@ -1137,59 +1139,33 @@ mod tests {
             });
         let its_payload: Vec<u8> = gmp_payload.encode();
 
-        let (its_instruction, _its_alt_info) = builder
+        // Should fail with PayloadDecodeError when signer accounts are detected
+        let result = builder
             .build_execute_instruction(&message, &its_payload, its_destination, None)
-            .await
-            .expect("ITS build_execute_instruction with ExecutablePayload should succeed");
+            .await;
 
-        assert_eq!(its_instruction.program_id, solana_axelar_its::ID);
-
-        let instruction_accounts = &its_instruction.accounts;
-
-        let user_account_indices: Vec<usize> = instruction_accounts
-            .iter()
-            .enumerate()
-            .filter(|(_, acc)| {
-                acc.pubkey == gmp_account1
-                    || acc.pubkey == gmp_account2
-                    || acc.pubkey == gmp_account3
-            })
-            .map(|(idx, _)| idx)
-            .collect();
-
-        assert_eq!(
-            user_account_indices.len(),
-            3,
-            "All three user-provided accounts should be present"
+        assert!(
+            result.is_err(),
+            "build_execute_instruction should fail when signer accounts are provided"
         );
 
-        for idx in user_account_indices {
-            let account = &instruction_accounts[idx];
-            assert!(
-                !account.is_signer,
-                "User-provided account {} should have is_signer: false, but it's true",
-                account.pubkey
-            );
+        match result {
+            Err(TransactionBuilderError::PayloadDecodeError(msg)) => {
+                assert!(
+                    msg.contains("Signer account cannot be provided"),
+                    "Error message should indicate signer accounts are not allowed"
+                );
+            }
+            Err(e) => panic!(
+                "Expected PayloadDecodeError, but got different error: {:?}",
+                e
+            ),
+            Ok(_) => panic!("Expected error but got success"),
         }
-
-        let account_pubkeys: Vec<Pubkey> =
-            instruction_accounts.iter().map(|acc| acc.pubkey).collect();
-        assert!(
-            account_pubkeys.contains(&gmp_account1),
-            "gmp_account1 should be in the instruction accounts"
-        );
-        assert!(
-            account_pubkeys.contains(&gmp_account2),
-            "gmp_account2 should be in the instruction accounts"
-        );
-        assert!(
-            account_pubkeys.contains(&gmp_account3),
-            "gmp_account3 should be in the instruction accounts"
-        );
     }
 
     #[tokio::test]
-    async fn test_build_executable_instruction_removes_signer_flags() {
+    async fn test_build_executable_instruction_rejects_signer_accounts() {
         let keypair = Arc::new(Keypair::new());
         let mock_gas = MockGasCalculatorTrait::new();
         let mock_client = MockIncluderClientTrait::new();
@@ -1197,7 +1173,7 @@ mod tests {
         let message = Message {
             cc_id: CrossChainId {
                 chain: "ethereum".to_string(),
-                id: "test-message-id-executable-remove-signers".to_string(),
+                id: "test-message-id-executable-reject-signers".to_string(),
             },
             source_address: "0x1234567890123456789012345678901234567890".to_string(),
             destination_chain: "solana".to_string(),
@@ -1213,71 +1189,43 @@ mod tests {
         // Create an ExecutablePayload with accounts that have is_signer: true
         let user_account1 = Pubkey::new_unique();
         let user_account2 = Pubkey::new_unique();
-        let user_account3 = Pubkey::new_unique();
         let executable_payload = ExecutablePayload::new::<AccountMeta>(
             &[10, 20, 30, 40, 50], // payload data
             &[
-                AccountMeta::new(user_account1, true), // is_signer: true
-                AccountMeta::new_readonly(user_account2, true), // is_signer: true, readonly
-                AccountMeta::new(user_account3, false), // is_signer: false (control)
+                AccountMeta::new(user_account1, true), // is_signer: true - should be rejected
+                AccountMeta::new_readonly(user_account2, true), // is_signer: true, readonly - should be rejected
             ],
             EncodingScheme::Borsh,
         );
         let executable_payload_bytes = executable_payload.encode().unwrap();
 
-        let (instruction, _alt_info) = builder
+        // Should fail with PayloadDecodeError when signer accounts are detected
+        let result = builder
             .build_executable_instruction(
                 &message,
                 &executable_payload_bytes,
                 Pubkey::new_unique(),
                 destination_program,
             )
-            .await
-            .expect("build_executable_instruction should succeed");
+            .await;
 
-        assert_eq!(instruction.program_id, destination_program);
-
-        let instruction_accounts = &instruction.accounts;
-
-        let user_account_indices: Vec<usize> = instruction_accounts
-            .iter()
-            .enumerate()
-            .filter(|(_, acc)| {
-                acc.pubkey == user_account1
-                    || acc.pubkey == user_account2
-                    || acc.pubkey == user_account3
-            })
-            .map(|(idx, _)| idx)
-            .collect();
-
-        assert_eq!(
-            user_account_indices.len(),
-            3,
-            "All three user-provided accounts should be present"
+        assert!(
+            result.is_err(),
+            "build_executable_instruction should fail when signer accounts are provided"
         );
 
-        for idx in user_account_indices {
-            let account = &instruction_accounts[idx];
-            assert!(
-                !account.is_signer,
-                "User-provided account {} should have is_signer: false, but it's true",
-                account.pubkey
-            );
+        match result {
+            Err(TransactionBuilderError::PayloadDecodeError(msg)) => {
+                assert!(
+                    msg.contains("Signer account cannot be provided"),
+                    "Error message should indicate signer accounts are not allowed"
+                );
+            }
+            Err(e) => panic!(
+                "Expected PayloadDecodeError, but got different error: {:?}",
+                e
+            ),
+            Ok(_) => panic!("Expected error but got success"),
         }
-
-        let account_pubkeys: Vec<Pubkey> =
-            instruction_accounts.iter().map(|acc| acc.pubkey).collect();
-        assert!(
-            account_pubkeys.contains(&user_account1),
-            "user_account1 should be in the instruction accounts"
-        );
-        assert!(
-            account_pubkeys.contains(&user_account2),
-            "user_account2 should be in the instruction accounts"
-        );
-        assert!(
-            account_pubkeys.contains(&user_account3),
-            "user_account3 should be in the instruction accounts"
-        );
     }
 }
