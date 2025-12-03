@@ -26,6 +26,7 @@ use solana::models::solana_transaction::PgSolanaTransactionModel;
 use solana::poll_client::SolanaRpcClient;
 use solana::subscriber_poller::SolanaPoller;
 use solana::transaction_builder::TransactionBuilder;
+use solana_axelar_std::PayloadType;
 use solana_rpc::rpc::JsonRpcConfig;
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::account::AccountSharedData;
@@ -396,7 +397,8 @@ impl TestEnvironment {
         ]);
 
         // Pre-initialize ITS state during genesis to bypass the program_data deserialization issue
-        let its_hub_address = "0x1234567890123456789012345678901234567890".to_string();
+        let its_hub_address =
+            "axelar157hl7gpuknjmhtac2qnphuazv2yerfagva7lsu9vuj2pgn32z22qa26dk4".to_string();
         let its_chain_name = "solana-devnet".to_string();
         let (its_root_pda, its_root_bump) = solana_axelar_its::InterchainTokenService::find_pda();
 
@@ -409,7 +411,7 @@ impl TestEnvironment {
                 its_hub_address: its_hub_address.clone(),
                 chain_name: its_chain_name.clone(),
                 paused: false,
-                trusted_chains: vec!["ethereum".to_string()], // Pre-add ethereum as trusted
+                trusted_chains: vec!["axelar".to_string()], // Pre-add ethereum as trusted
                 bump: its_root_bump,
             };
 
@@ -588,7 +590,7 @@ impl TestEnvironment {
                 hash: verifier_set_hash,
                 pda: verifier_set_tracker_pda,
             },
-            minimum_rotation_delay: 3600,
+            minimum_rotation_delay: 0, // No cooldown for tests - allows immediate rotation
             operator: operator.pubkey(),
             previous_verifier_retention: U256::from(5u64),
         };
@@ -937,6 +939,7 @@ async fn test_approve_and_execute_memo_message() {
         &env.verifier_leaves[0],
         0,
         &env.verifier_merkle_tree,
+        PayloadType::ApproveMessages,
     );
     let verifier_info_2 = create_verifier_info(
         &env.verifier_secret_keys[1],
@@ -944,6 +947,7 @@ async fn test_approve_and_execute_memo_message() {
         &env.verifier_leaves[1],
         1,
         &env.verifier_merkle_tree,
+        PayloadType::ApproveMessages,
     );
 
     let execute_data = ExecuteData {
@@ -1341,7 +1345,6 @@ async fn test_approve_and_execute_its_message() {
 
     let env = TestEnvironment::new().await;
 
-    println!("ITS service was pre-initialized during genesis");
     let its_hub_address = env.its_hub_address.clone();
     let its_program_address = solana_axelar_its::ID.to_string();
 
@@ -1379,7 +1382,7 @@ async fn test_approve_and_execute_its_message() {
     let deploy_inner = GMPPayload::DeployInterchainToken(deploy_token).encode();
     let deploy_receive_from_hub = ReceiveFromHub {
         selector: Uint::from(4u64),
-        source_chain: "ethereum".to_string(),
+        source_chain: "axelar".to_string(), // Must be in trusted_chains
         payload: Bytes::from(deploy_inner),
     };
 
@@ -1390,7 +1393,7 @@ async fn test_approve_and_execute_its_message() {
     // Create message for deploy
     let deploy_message = Message {
         cc_id: CrossChainId {
-            chain: "ethereum".to_string(),
+            chain: "axelar".to_string(), // The hub chain
             id: deploy_message_id.to_string(),
         },
         source_address: source_address.clone(),
@@ -1415,6 +1418,7 @@ async fn test_approve_and_execute_its_message() {
         &env.verifier_leaves[0],
         0,
         &env.verifier_merkle_tree,
+        PayloadType::ApproveMessages,
     );
     let deploy_verifier_info_2 = create_verifier_info(
         &env.verifier_secret_keys[1],
@@ -1422,6 +1426,7 @@ async fn test_approve_and_execute_its_message() {
         &env.verifier_leaves[1],
         1,
         &env.verifier_merkle_tree,
+        PayloadType::ApproveMessages,
     );
 
     let deploy_execute_data = ExecuteData {
@@ -1469,7 +1474,7 @@ async fn test_approve_and_execute_its_message() {
         task: ExecuteTaskFields {
             message: GatewayV2Message {
                 message_id: deploy_message_id.to_string(),
-                source_chain: "ethereum".to_string(),
+                source_chain: "axelar".to_string(), // From the hub chain
                 source_address: source_address.clone(),
                 destination_address: its_program_address.clone(),
                 payload_hash: BASE64_STANDARD.encode(deploy_payload_hash),
@@ -1629,7 +1634,7 @@ async fn test_approve_and_execute_its_message() {
     let transfer_inner = GMPPayload::InterchainTransfer(transfer).encode();
     let transfer_receive_from_hub = ReceiveFromHub {
         selector: Uint::from(4u64),
-        source_chain: "ethereum".to_string(),
+        source_chain: "axelar".to_string(), // Must be in trusted_chains
         payload: Bytes::from(transfer_inner),
     };
 
@@ -1640,7 +1645,7 @@ async fn test_approve_and_execute_its_message() {
     // Create message for transfer
     let transfer_message = Message {
         cc_id: CrossChainId {
-            chain: "ethereum".to_string(),
+            chain: "axelar".to_string(), // The hub chain
             id: transfer_message_id.to_string(),
         },
         source_address: source_address.clone(),
@@ -1665,6 +1670,7 @@ async fn test_approve_and_execute_its_message() {
         &env.verifier_leaves[0],
         0,
         &env.verifier_merkle_tree,
+        PayloadType::ApproveMessages,
     );
     let transfer_verifier_info_2 = create_verifier_info(
         &env.verifier_secret_keys[1],
@@ -1672,6 +1678,7 @@ async fn test_approve_and_execute_its_message() {
         &env.verifier_leaves[1],
         1,
         &env.verifier_merkle_tree,
+        PayloadType::ApproveMessages,
     );
 
     let transfer_execute_data = ExecuteData {
@@ -2037,6 +2044,221 @@ async fn test_refund_task_handled_and_found_by_poller() {
     println!("Refund signature recorded in database: {}", signature);
 
     println!("Refund Integration Test Completed");
+    test_queue.clear().await;
+    env.cleanup().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_rotate_signers() {
+    use base64::prelude::BASE64_STANDARD;
+    use base64::Engine;
+    use borsh::BorshSerialize;
+    use solana_axelar_std::execute_data::{ExecuteData, MerklizedPayload, PayloadType};
+    use solana_transaction_parser::gmp_types::{
+        CommonTaskFields, GatewayTxTask, GatewayTxTaskFields,
+    };
+
+    let env = TestEnvironment::new().await;
+
+    let components = create_includer_components(&env.rpc_url, &env.payer);
+    let mock_redis = create_mock_redis();
+    let mock_gmp_api = MockGmpApiTrait::new();
+    let mock_refunds_model = MockRefundsModel::new();
+
+    let includer = SolanaIncluder::new(
+        Arc::new(components.includer_client),
+        components.keypair,
+        "solana-devnet".to_string(),
+        components.transaction_builder,
+        Arc::new(mock_gmp_api),
+        mock_redis,
+        Arc::new(mock_refunds_model),
+    );
+
+    // Current verifier set merkle root
+    let signing_verifier_set_merkle_root = env.verifier_set_hash;
+
+    // Generate new verifier set
+    let (_new_secret_key_1, new_compressed_pubkey_1) = generate_random_signer();
+    let (_new_secret_key_2, new_compressed_pubkey_2) = generate_random_signer();
+
+    let new_nonce = 1u64; // Increment nonce for the new set
+    let quorum_threshold = 100;
+
+    let new_verifier_leaves = [
+        VerifierSetLeaf {
+            nonce: new_nonce,
+            quorum: quorum_threshold,
+            signer_pubkey: PublicKey(new_compressed_pubkey_1),
+            signer_weight: 50,
+            position: 0,
+            set_size: 2,
+            domain_separator: env.domain_separator,
+        },
+        VerifierSetLeaf {
+            nonce: new_nonce,
+            quorum: quorum_threshold,
+            signer_pubkey: PublicKey(new_compressed_pubkey_2),
+            signer_weight: 50,
+            position: 1,
+            set_size: 2,
+            domain_separator: env.domain_separator,
+        },
+    ];
+
+    // Compute new verifier set merkle root
+    let new_verifier_leaf_hashes: Vec<[u8; 32]> = new_verifier_leaves
+        .iter()
+        .map(VerifierSetLeaf::hash)
+        .collect();
+    let new_verifier_merkle_tree = MerkleTree::from_leaves(&new_verifier_leaf_hashes);
+    let new_verifier_set_merkle_root = new_verifier_merkle_tree.root().expect("merkle root");
+
+    println!(
+        "New verifier set merkle root: {:?}",
+        hex::encode(new_verifier_set_merkle_root)
+    );
+
+    let payload_merkle_root = new_verifier_set_merkle_root;
+
+    // Sign the payload with existing verifiers
+    let verifier_info_1 = create_verifier_info(
+        &env.verifier_secret_keys[0],
+        payload_merkle_root,
+        &env.verifier_leaves[0],
+        0,
+        &env.verifier_merkle_tree,
+        PayloadType::RotateSigners,
+    );
+    let verifier_info_2 = create_verifier_info(
+        &env.verifier_secret_keys[1],
+        payload_merkle_root,
+        &env.verifier_leaves[1],
+        1,
+        &env.verifier_merkle_tree,
+        PayloadType::RotateSigners,
+    );
+
+    let execute_data = ExecuteData {
+        payload_merkle_root,
+        signing_verifier_set_merkle_root,
+        signing_verifier_set_leaves: vec![verifier_info_1, verifier_info_2],
+        payload_items: MerklizedPayload::VerifierSetRotation {
+            new_verifier_set_merkle_root,
+        },
+    };
+
+    let execute_data_b64 = BASE64_STANDARD.encode(execute_data.try_to_vec().unwrap());
+
+    let task = GatewayTxTask {
+        common: CommonTaskFields {
+            id: "test-rotate-signers-001".into(),
+            chain: "solana-devnet".into(),
+            timestamp: "2025-11-26T14:47:18.567796Z".into(),
+            r#type: "GATEWAY_TX".into(),
+            meta: None,
+        },
+        task: GatewayTxTaskFields {
+            execute_data: execute_data_b64,
+        },
+    };
+
+    println!("Processing rotate signers task...");
+    println!("Task ID: {}", task.common.id);
+    println!(
+        "Current verifier set root: {:?}",
+        hex::encode(signing_verifier_set_merkle_root)
+    );
+    println!(
+        "New verifier set root: {:?}",
+        hex::encode(new_verifier_set_merkle_root)
+    );
+
+    let result = includer.handle_gateway_tx_task(task).await;
+
+    match result {
+        Ok(()) => {
+            println!("Rotate signers task completed successfully!");
+        }
+        Err(e) => {
+            println!("Rotate signers task failed: {:?}", e);
+            let error_str = format!("{:?}", e);
+            panic!("{}", error_str);
+        }
+    }
+
+    println!("Setting up subscriber to verify SignersRotated event...");
+
+    let test_queue = Arc::new(TestQueue::new());
+    let events_queue: Arc<dyn QueueTrait> = Arc::clone(&test_queue) as Arc<dyn QueueTrait>;
+
+    let poller_handle = spawn_poller(
+        &env.rpc_url,
+        "test_rotate_signers_poller",
+        &env.transaction_model,
+        &env.postgres_db,
+        events_queue,
+    )
+    .await;
+
+    let mut found_rotate_signers_tx = false;
+    let max_wait = std::time::Duration::from_secs(30);
+    let start = std::time::Instant::now();
+
+    while start.elapsed() < max_wait && !found_rotate_signers_tx {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        let queued_items = test_queue.get_items().await;
+        for item in &queued_items {
+            if let QueueItem::Transaction(tx_data) = item {
+                if tx_data.contains("RotateSigners") {
+                    found_rotate_signers_tx = true;
+                    println!("Found SignersRotated transaction in queue!");
+                    break;
+                }
+            }
+        }
+    }
+
+    println!("Cancelling poller...");
+    poller_handle.stop().await;
+    println!("Poller stopped");
+
+    let queued_items = test_queue.get_items().await;
+    println!("Queue contains {} items total", queued_items.len());
+
+    for item in &queued_items {
+        if let QueueItem::Transaction(tx_data) = item {
+            if tx_data.len() > 200 {
+                println!("Transaction found: {}...", &tx_data[..200]);
+            } else {
+                println!("Transaction found: {}", tx_data);
+            }
+        }
+    }
+
+    assert!(
+        found_rotate_signers_tx,
+        "Should have found SignersRotated transaction in queue (proves rotation was executed on-chain)"
+    );
+
+    let new_verifier_set_tracker_pda =
+        solana_axelar_gateway::VerifierSetTracker::find_pda(&new_verifier_set_merkle_root).0;
+
+    let account_result = env
+        .rpc_client
+        .get_account(&new_verifier_set_tracker_pda)
+        .await;
+    assert!(
+        account_result.is_ok(),
+        "New verifier set tracker PDA should exist after rotation"
+    );
+    println!(
+        "New verifier set tracker PDA created: {}",
+        new_verifier_set_tracker_pda
+    );
+
+    println!("Rotate Signers Integration Test Completed");
     test_queue.clear().await;
     env.cleanup().await;
 }

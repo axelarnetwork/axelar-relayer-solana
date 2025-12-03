@@ -564,8 +564,13 @@ impl<
         new_verifier_set_merkle_root: &[u8; 32],
     ) -> Result<Option<u64>, SolanaIncluderError> {
         // Collect PDAs
-        let (new_verifier_set_tracker_pda, _) =
+        // Current verifier set tracker (the signers approving the rotation)
+        let (current_verifier_set_tracker_pda, _) =
             get_verifier_set_tracker_pda(&execute_data.signing_verifier_set_merkle_root);
+
+        // New verifier set tracker (the set we're rotating to)
+        let (new_verifier_set_tracker_pda, _) =
+            get_verifier_set_tracker_pda(new_verifier_set_merkle_root);
 
         let (gateway_root_pda, _) = get_gateway_root_config_internal();
 
@@ -586,7 +591,7 @@ impl<
             program: solana_axelar_gateway::ID,
             system_program: solana_program::system_program::id(),
             gateway_root_pda,
-            verifier_set_tracker_pda: new_verifier_set_tracker_pda, // TODO: this is probably wrong
+            verifier_set_tracker_pda: current_verifier_set_tracker_pda,
             operator: Some(self.keypair.pubkey()),
             new_verifier_set_tracker: new_verifier_set_tracker_pda,
             verification_session_account: verification_session_tracker_pda,
@@ -4401,6 +4406,7 @@ mod tests {
         let signing_verifier_set_merkle_root = [11u8; 32];
 
         let verifier_info = SigningVerifierSetInfo {
+            payload_type: PayloadType::ApproveMessages,
             leaf: VerifierSetLeaf {
                 nonce: 0,
                 quorum: 0,
@@ -4533,7 +4539,7 @@ mod tests {
         mock_client
             .expect_send_transaction()
             .times(4)
-            .returning(move |_| {
+            .returning(move |_, _| {
                 let idx = send_calls_clone.fetch_add(1, Ordering::SeqCst);
                 match idx {
                     0 => Box::pin(async move { Ok((init_sig, Some(10u64))) }),
@@ -5019,7 +5025,7 @@ mod tests {
         mock_client
             .expect_send_transaction()
             .times(2)
-            .returning(move |_| {
+            .returning(move |_, _| {
                 let idx = send_calls_clone.fetch_add(1, Ordering::SeqCst);
                 if idx == 0 {
                     Box::pin(async move { Ok((alt_signature, Some(alt_cost))) })
