@@ -344,8 +344,6 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
                 let (mpl_token_metadata_account, _) = get_mpl_token_metadata_account(&token_mint);
 
                 accounts.extend(execute_deploy_interchain_token_extra_accounts(
-                    deployer_ata,
-                    self.keypair.pubkey(),
                     solana_program::sysvar::instructions::ID,
                     mpl_token_metadata::ID,
                     mpl_token_metadata_account,
@@ -360,11 +358,7 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
                 let minter_roles_pda =
                     minter.map(|minter| get_minter_roles_pda(&token_manager_pda, &minter).0);
 
-                accounts.extend(execute_link_token_extra_accounts(
-                    deployer_ata,
-                    minter,
-                    minter_roles_pda,
-                ))
+                accounts.extend(execute_link_token_extra_accounts(minter, minter_roles_pda))
             }
             _ => {}
         }
