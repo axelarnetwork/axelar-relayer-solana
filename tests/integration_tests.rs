@@ -52,8 +52,6 @@ use solana_axelar_gateway::ID as GATEWAY_PROGRAM_ID;
 use solana_axelar_gateway_test_fixtures::create_verifier_info;
 use solana_axelar_std::{hasher::LeafHash, MerkleTree, PublicKey, VerifierSetLeaf, U256};
 
-/// A simple in-memory queue for testing that collects published items
-/// without starting any background workers or requiring Redis.
 struct TestQueue {
     items: Mutex<Vec<QueueItem>>,
 }
@@ -69,7 +67,6 @@ impl TestQueue {
         self.items.lock().await.clone()
     }
 
-    /// Clear all queued items. Useful to ensure no cross-test leakage.
     async fn clear(&self) {
         self.items.lock().await.clear();
     }
@@ -124,6 +121,138 @@ fn generate_random_signer() -> (libsecp256k1::SecretKey, [u8; 33]) {
     let public_key = libsecp256k1::PublicKey::from_secret_key(&secret_key);
     let compressed_pubkey = public_key.serialize_compressed();
     (secret_key, compressed_pubkey)
+}
+
+fn create_mock_redis() -> MockRedisConnectionTrait {
+    let mut mock_redis = MockRedisConnectionTrait::new();
+    mock_redis
+        .expect_add_gas_cost_for_task_id()
+        .returning(|_, _, _| ());
+    mock_redis
+        .expect_get_gas_cost_for_task_id()
+        .returning(|_, _| Ok(0u64));
+    mock_redis
+        .expect_write_gas_cost_for_message_id()
+        .returning(|_, _, _| ());
+    mock_redis.expect_get_alt_entry().returning(|_| Ok(None));
+    mock_redis
+}
+
+fn create_mock_gmp_api_for_execute() -> MockGmpApiTrait {
+    use relayer_core::gmp_api::gmp_types::Event;
+    let mut mock_gmp_api = MockGmpApiTrait::new();
+    mock_gmp_api
+        .expect_execute_message()
+        .returning(|msg_id, source_chain, status, cost| {
+            println!(
+                "GMP API execute_message called: msg_id={}, source_chain={}, status={:?}, cost={:?}",
+                msg_id, source_chain, status, cost
+            );
+            Event::MessageExecuted {
+                common: solana_transaction_parser::gmp_types::CommonEventFields {
+                    r#type: "MESSAGE_EXECUTED".to_string(),
+                    event_id: "mock-event-id".to_string(),
+                    meta: None,
+                },
+                message_id: msg_id,
+                source_chain,
+                status,
+                cost,
+            }
+        });
+    mock_gmp_api
+}
+
+struct IncluderComponents {
+    pub includer_client: IncluderClient,
+    pub keypair: Arc<Keypair>,
+    pub transaction_builder: TransactionBuilder<
+        GasCalculator<IncluderClient, FeesClient<IncluderClient>>,
+        IncluderClient,
+    >,
+}
+
+#[cfg(test)]
+fn create_includer_components(rpc_url: &str, payer: &Keypair) -> IncluderComponents {
+    let includer_client = IncluderClient::new(rpc_url, CommitmentConfig::confirmed(), 3)
+        .expect("Failed to create includer client");
+
+    let fees_client =
+        FeesClient::new(includer_client.clone(), 10).expect("Failed to create fees client");
+
+    let gas_calculator = GasCalculator::new(includer_client.clone(), fees_client);
+
+    let keypair = Arc::new(Keypair::from_bytes(&payer.to_bytes()).unwrap());
+
+    let transaction_builder = TransactionBuilder::new(
+        Arc::clone(&keypair),
+        gas_calculator,
+        Arc::new(includer_client.clone()),
+    );
+
+    IncluderComponents {
+        includer_client,
+        keypair,
+        transaction_builder,
+    }
+}
+
+struct PollerHandle {
+    #[allow(dead_code)]
+    pub poller: Arc<SolanaPoller<SolanaRpcClient, PostgresDB, PgSolanaTransactionModel>>,
+    pub cancellation: CancellationToken,
+    pub handle: tokio::task::JoinHandle<()>,
+}
+
+impl PollerHandle {
+    pub async fn stop(self) {
+        self.cancellation.cancel();
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), self.handle).await;
+    }
+}
+
+async fn spawn_poller(
+    rpc_url: &str,
+    name: &str,
+    transaction_model: &PgSolanaTransactionModel,
+    postgres_db: &PostgresDB,
+    events_queue: Arc<dyn QueueTrait>,
+) -> PollerHandle {
+    let poll_client = SolanaRpcClient::new(rpc_url, CommitmentConfig::confirmed(), 3)
+        .expect("Failed to create poll client");
+
+    let poller = Arc::new(
+        SolanaPoller::new(
+            poll_client,
+            name.to_string(),
+            Arc::new(transaction_model.clone()),
+            Arc::new(postgres_db.clone()),
+            events_queue,
+        )
+        .await
+        .expect("Failed to create poller"),
+    );
+
+    let cancellation = CancellationToken::new();
+    let cancellation_clone = cancellation.clone();
+
+    let poller_clone = Arc::clone(&poller);
+    let handle = tokio::spawn(async move {
+        poller_clone
+            .run(
+                solana_axelar_gas_service::ID,
+                solana_axelar_gateway::ID,
+                solana_axelar_its::ID,
+                cancellation_clone,
+            )
+            .await;
+    });
+
+    PollerHandle {
+        poller,
+        cancellation,
+        handle,
+    }
 }
 
 /// Test environment with deployed Axelar programs and initialized services.
@@ -286,7 +415,7 @@ impl TestEnvironment {
 
             // Serialize with Anchor format: 8-byte discriminator + Borsh data
             let mut data = Vec::new();
-            data.extend_from_slice(&solana_axelar_its::InterchainTokenService::DISCRIMINATOR);
+            data.extend_from_slice(solana_axelar_its::InterchainTokenService::DISCRIMINATOR);
             its_state
                 .serialize(&mut data)
                 .expect("Failed to serialize ITS state");
@@ -317,7 +446,7 @@ impl TestEnvironment {
             };
 
             let mut data = Vec::new();
-            data.extend_from_slice(&solana_axelar_its::state::UserRoles::DISCRIMINATOR);
+            data.extend_from_slice(solana_axelar_its::state::UserRoles::DISCRIMINATOR);
             user_roles_state
                 .serialize(&mut data)
                 .expect("Failed to serialize UserRoles state");
@@ -529,37 +658,14 @@ async fn test_call_contract_picked_up_and_sent_to_gmp() {
     let test_queue = Arc::new(TestQueue::new());
     let events_queue: Arc<dyn QueueTrait> = Arc::clone(&test_queue) as Arc<dyn QueueTrait>;
 
-    let solana_rpc_client = SolanaRpcClient::new(&env.rpc_url, CommitmentConfig::confirmed(), 3)
-        .expect("create rpc client");
-
-    let poller = Arc::new(
-        SolanaPoller::new(
-            solana_rpc_client,
-            "test_call_contract_poller".to_string(),
-            Arc::new(env.transaction_model.clone()),
-            Arc::new(env.postgres_db.clone()),
-            events_queue,
-        )
-        .await
-        .expect("Failed to create poller"),
-    );
-
-    let poller_cancellation = CancellationToken::new();
-    let poller_cancellation_clone = poller_cancellation.clone();
-
-    let poller_clone = Arc::clone(&poller);
-    let poller_handle = tokio::spawn(async move {
-        println!("Poller starting run()...");
-        poller_clone
-            .run(
-                solana_axelar_gas_service::ID,
-                solana_axelar_gateway::ID,
-                solana_axelar_its::ID,
-                poller_cancellation_clone,
-            )
-            .await;
-        println!("Poller run() completed");
-    });
+    let poller_handle = spawn_poller(
+        &env.rpc_url,
+        "test_call_contract_poller",
+        &env.transaction_model,
+        &env.postgres_db,
+        events_queue,
+    )
+    .await;
 
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
@@ -640,8 +746,7 @@ async fn test_call_contract_picked_up_and_sent_to_gmp() {
     }
 
     println!("Cancelling poller...");
-    poller_cancellation.cancel();
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), poller_handle).await;
+    poller_handle.stop().await;
     println!("Poller stopped");
 
     assert!(
@@ -774,54 +879,9 @@ async fn test_approve_and_execute_memo_message() {
 
     let env = TestEnvironment::new().await;
 
-    let includer_client = IncluderClient::new(&env.rpc_url, CommitmentConfig::confirmed(), 3)
-        .expect("Failed to create includer client");
-
-    let fees_client =
-        FeesClient::new(includer_client.clone(), 10).expect("Failed to create fees client");
-
-    let gas_calculator = GasCalculator::new(includer_client.clone(), fees_client);
-
-    let keypair = Arc::new(Keypair::from_bytes(&env.payer.to_bytes()).unwrap());
-
-    let transaction_builder = TransactionBuilder::new(
-        Arc::clone(&keypair),
-        gas_calculator,
-        Arc::new(includer_client.clone()),
-    );
-
-    let mut mock_redis = MockRedisConnectionTrait::new();
-    mock_redis
-        .expect_add_gas_cost_for_task_id()
-        .returning(|_, _, _| ());
-    mock_redis
-        .expect_get_gas_cost_for_task_id()
-        .returning(|_, _| Ok(0u64));
-    mock_redis
-        .expect_write_gas_cost_for_message_id()
-        .returning(|_, _, _| ());
-    mock_redis.expect_get_alt_entry().returning(|_| Ok(None));
-
-    let mut mock_gmp_api = MockGmpApiTrait::new();
-    mock_gmp_api
-        .expect_execute_message()
-        .returning(|msg_id, source_chain, status, cost| {
-            println!(
-                "GMP API execute_message called: msg_id={}, source_chain={}, status={:?}, cost={:?}",
-                msg_id, source_chain, status, cost
-            );
-            Event::MessageExecuted {
-                common: solana_transaction_parser::gmp_types::CommonEventFields {
-                    r#type: "MESSAGE_EXECUTED".to_string(),
-                    event_id: "mock-event-id".to_string(),
-                    meta: None,
-                },
-                message_id: msg_id,
-                source_chain,
-                status,
-                cost,
-            }
-        });
+    let components = create_includer_components(&env.rpc_url, &env.payer);
+    let mock_redis = create_mock_redis();
+    let mock_gmp_api = create_mock_gmp_api_for_execute();
     let mock_refunds_model = MockRefundsModel::new();
 
     let signing_verifier_set_merkle_root = env.verifier_set_hash;
@@ -918,10 +978,10 @@ async fn test_approve_and_execute_memo_message() {
     println!("Message ID: {}", message_id);
     println!("Destination: {}", memo_program_address);
     let includer = SolanaIncluder::new(
-        Arc::new(includer_client),
-        keypair,
+        Arc::new(components.includer_client),
+        components.keypair,
         "solana-devnet".to_string(),
-        transaction_builder,
+        components.transaction_builder,
         Arc::new(mock_gmp_api),
         mock_redis,
         Arc::new(mock_refunds_model),
@@ -945,35 +1005,14 @@ async fn test_approve_and_execute_memo_message() {
     let test_queue = Arc::new(TestQueue::new());
     let events_queue: Arc<dyn QueueTrait> = Arc::clone(&test_queue) as Arc<dyn QueueTrait>;
 
-    let poll_client = SolanaRpcClient::new(&env.rpc_url, CommitmentConfig::confirmed(), 3)
-        .expect("Failed to create poll client");
-
-    let poller = Arc::new(
-        SolanaPoller::new(
-            poll_client,
-            "test_gateway_tx_poller".to_string(),
-            Arc::new(env.transaction_model.clone()),
-            Arc::new(env.postgres_db.clone()),
-            Arc::clone(&events_queue),
-        )
-        .await
-        .expect("Failed to create poller"),
-    );
-
-    let poller_cancellation = CancellationToken::new();
-    let poller_cancellation_clone = poller_cancellation.clone();
-
-    let poller_clone = Arc::clone(&poller);
-    let poller_handle = tokio::spawn(async move {
-        poller_clone
-            .run(
-                solana_axelar_gas_service::ID,
-                solana_axelar_gateway::ID,
-                solana_axelar_its::ID,
-                poller_cancellation_clone,
-            )
-            .await;
-    });
+    let poller_handle = spawn_poller(
+        &env.rpc_url,
+        "test_gateway_tx_poller",
+        &env.transaction_model,
+        &env.postgres_db,
+        events_queue,
+    )
+    .await;
 
     let mut found_approve_message_tx = false;
     let max_wait = std::time::Duration::from_secs(30);
@@ -995,8 +1034,7 @@ async fn test_approve_and_execute_memo_message() {
     }
 
     println!("Cancelling poller...");
-    poller_cancellation.cancel();
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), poller_handle).await;
+    poller_handle.stop().await;
     println!("Poller stopped");
 
     let queued_items = test_queue.get_items().await;
@@ -1163,36 +1201,15 @@ async fn test_approve_and_execute_memo_message() {
 
     test_queue.clear().await;
 
-    let poll_client_execute = SolanaRpcClient::new(&env.rpc_url, CommitmentConfig::confirmed(), 3)
-        .expect("Failed to create poll client for execute");
-
     let events_queue_execute: Arc<dyn QueueTrait> = Arc::clone(&test_queue) as Arc<dyn QueueTrait>;
-    let poller_execute = Arc::new(
-        SolanaPoller::new(
-            poll_client_execute,
-            "test_execute_poller".to_string(),
-            Arc::new(env.transaction_model.clone()),
-            Arc::new(env.postgres_db.clone()),
-            events_queue_execute,
-        )
-        .await
-        .expect("Failed to create poller for execute"),
-    );
-
-    let poller_cancellation_execute = CancellationToken::new();
-    let poller_cancellation_execute_clone = poller_cancellation_execute.clone();
-
-    let poller_clone_execute = Arc::clone(&poller_execute);
-    let poller_handle_execute = tokio::spawn(async move {
-        poller_clone_execute
-            .run(
-                solana_axelar_gas_service::ID,
-                solana_axelar_gateway::ID,
-                solana_axelar_its::ID,
-                poller_cancellation_execute_clone,
-            )
-            .await;
-    });
+    let poller_handle_execute = spawn_poller(
+        &env.rpc_url,
+        "test_execute_poller",
+        &env.transaction_model,
+        &env.postgres_db,
+        events_queue_execute,
+    )
+    .await;
 
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
@@ -1216,8 +1233,7 @@ async fn test_approve_and_execute_memo_message() {
     }
 
     println!("Cancelling poller...");
-    poller_cancellation_execute.cancel();
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), poller_handle_execute).await;
+    poller_handle_execute.stop().await;
     println!("Poller stopped");
 
     let queued_items_execute = test_queue.get_items().await;
@@ -1329,58 +1345,16 @@ async fn test_approve_and_execute_its_message() {
     let its_hub_address = env.its_hub_address.clone();
     let its_program_address = solana_axelar_its::ID.to_string();
 
-    let includer_client = IncluderClient::new(&env.rpc_url, CommitmentConfig::confirmed(), 3)
-        .expect("Failed to create includer client");
-
-    let fees_client =
-        FeesClient::new(includer_client.clone(), 10).expect("Failed to create fees client");
-    let gas_calculator = GasCalculator::new(includer_client.clone(), fees_client);
-    let keypair = Arc::new(Keypair::from_bytes(&env.payer.to_bytes()).unwrap());
-    let transaction_builder = TransactionBuilder::new(
-        Arc::clone(&keypair),
-        gas_calculator,
-        Arc::new(includer_client.clone()),
-    );
-
-    let mut mock_redis = MockRedisConnectionTrait::new();
-    mock_redis
-        .expect_add_gas_cost_for_task_id()
-        .returning(|_, _, _| ());
-    mock_redis
-        .expect_get_gas_cost_for_task_id()
-        .returning(|_, _| Ok(0u64));
-    mock_redis
-        .expect_write_gas_cost_for_message_id()
-        .returning(|_, _, _| ());
-    mock_redis.expect_get_alt_entry().returning(|_| Ok(None));
-
-    let mut mock_gmp_api = MockGmpApiTrait::new();
-    mock_gmp_api
-        .expect_execute_message()
-        .returning(|msg_id, source_chain, status, cost| {
-            println!(
-                "GMP API execute_message: msg_id={}, source_chain={}, status={:?}",
-                msg_id, source_chain, status
-            );
-            Event::MessageExecuted {
-                common: solana_transaction_parser::gmp_types::CommonEventFields {
-                    r#type: "MESSAGE_EXECUTED".to_string(),
-                    event_id: "mock-event-id".to_string(),
-                    meta: None,
-                },
-                message_id: msg_id,
-                source_chain,
-                status,
-                cost,
-            }
-        });
+    let components = create_includer_components(&env.rpc_url, &env.payer);
+    let mock_redis = create_mock_redis();
+    let mock_gmp_api = create_mock_gmp_api_for_execute();
     let mock_refunds_model = MockRefundsModel::new();
 
     let includer = SolanaIncluder::new(
-        Arc::new(includer_client),
-        keypair,
+        Arc::new(components.includer_client),
+        components.keypair,
         "solana-devnet".to_string(),
-        transaction_builder,
+        components.transaction_builder,
         Arc::new(mock_gmp_api),
         mock_redis,
         Arc::new(mock_refunds_model),
@@ -1512,35 +1486,14 @@ async fn test_approve_and_execute_its_message() {
     let test_queue = Arc::new(TestQueue::new());
     let events_queue: Arc<dyn QueueTrait> = Arc::clone(&test_queue) as Arc<dyn QueueTrait>;
 
-    let poll_client = SolanaRpcClient::new(&env.rpc_url, CommitmentConfig::confirmed(), 3)
-        .expect("Failed to create poll client");
-
-    let poller = Arc::new(
-        SolanaPoller::new(
-            poll_client,
-            "test_its_deploy_poller".to_string(),
-            Arc::new(env.transaction_model.clone()),
-            Arc::new(env.postgres_db.clone()),
-            Arc::clone(&events_queue),
-        )
-        .await
-        .expect("Failed to create poller"),
-    );
-
-    let poller_cancellation = CancellationToken::new();
-    let poller_cancellation_clone = poller_cancellation.clone();
-
-    let poller_clone = Arc::clone(&poller);
-    let poller_handle = tokio::spawn(async move {
-        poller_clone
-            .run(
-                solana_axelar_gas_service::ID,
-                solana_axelar_gateway::ID,
-                solana_axelar_its::ID,
-                poller_cancellation_clone,
-            )
-            .await;
-    });
+    let poller_handle = spawn_poller(
+        &env.rpc_url,
+        "test_its_deploy_poller",
+        &env.transaction_model,
+        &env.postgres_db,
+        Arc::clone(&events_queue),
+    )
+    .await;
 
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
@@ -1564,8 +1517,7 @@ async fn test_approve_and_execute_its_message() {
     }
 
     println!("Cancelling poller...");
-    poller_cancellation.cancel();
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), poller_handle).await;
+    poller_handle.stop().await;
     println!("Poller stopped");
 
     let queued_items = test_queue.get_items().await;
@@ -1794,36 +1746,15 @@ async fn test_approve_and_execute_its_message() {
 
     test_queue.clear().await;
 
-    let poll_client_execute = SolanaRpcClient::new(&env.rpc_url, CommitmentConfig::confirmed(), 3)
-        .expect("Failed to create poll client for execute");
-
     let events_queue_execute: Arc<dyn QueueTrait> = Arc::clone(&test_queue) as Arc<dyn QueueTrait>;
-    let poller_execute = Arc::new(
-        SolanaPoller::new(
-            poll_client_execute,
-            "test_its_execute_poller".to_string(),
-            Arc::new(env.transaction_model.clone()),
-            Arc::new(env.postgres_db.clone()),
-            events_queue_execute,
-        )
-        .await
-        .expect("Failed to create poller for execute"),
-    );
-
-    let poller_cancellation_execute = CancellationToken::new();
-    let poller_cancellation_execute_clone = poller_cancellation_execute.clone();
-
-    let poller_clone_execute = Arc::clone(&poller_execute);
-    let poller_handle_execute = tokio::spawn(async move {
-        poller_clone_execute
-            .run(
-                solana_axelar_gas_service::ID,
-                solana_axelar_gateway::ID,
-                solana_axelar_its::ID,
-                poller_cancellation_execute_clone,
-            )
-            .await;
-    });
+    let poller_handle_execute = spawn_poller(
+        &env.rpc_url,
+        "test_its_execute_poller",
+        &env.transaction_model,
+        &env.postgres_db,
+        events_queue_execute,
+    )
+    .await;
 
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
@@ -1847,8 +1778,7 @@ async fn test_approve_and_execute_its_message() {
     }
 
     println!("Cancelling poller...");
-    poller_cancellation_execute.cancel();
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), poller_handle_execute).await;
+    poller_handle_execute.stop().await;
     println!("Poller stopped");
 
     let queued_items_execute = test_queue.get_items().await;
@@ -1939,62 +1869,18 @@ async fn test_refund_task_handled_and_found_by_poller() {
 
     let env = TestEnvironment::new().await;
 
-    let includer_client = IncluderClient::new(&env.rpc_url, CommitmentConfig::confirmed(), 3)
-        .expect("Failed to create includer client");
-
-    let fees_client =
-        FeesClient::new(includer_client.clone(), 10).expect("Failed to create fees client");
-
-    let gas_calculator = GasCalculator::new(includer_client.clone(), fees_client);
-
-    let keypair = Arc::new(Keypair::from_bytes(&env.operator.to_bytes()).unwrap());
-
-    let transaction_builder = TransactionBuilder::new(
-        Arc::clone(&keypair),
-        gas_calculator,
-        Arc::new(includer_client.clone()),
-    );
-
-    let mut mock_redis = MockRedisConnectionTrait::new();
-    mock_redis
-        .expect_add_gas_cost_for_task_id()
-        .returning(|_, _, _| ());
-    mock_redis
-        .expect_get_gas_cost_for_task_id()
-        .returning(|_, _| Ok(0u64));
-    mock_redis
-        .expect_write_gas_cost_for_message_id()
-        .returning(|_, _, _| ());
-    mock_redis.expect_get_alt_entry().returning(|_| Ok(None));
-
-    let mut mock_gmp_api = MockGmpApiTrait::new();
-    mock_gmp_api
-        .expect_execute_message()
-        .returning(|msg_id, source_chain, status, cost| {
-            println!(
-                "GMP API execute_message called: msg_id={}, source_chain={}, status={:?}, cost={:?}",
-                msg_id, source_chain, status, cost
-            );
-            Event::MessageExecuted {
-                common: solana_transaction_parser::gmp_types::CommonEventFields {
-                    r#type: "MESSAGE_EXECUTED".to_string(),
-                    event_id: "mock-event-id".to_string(),
-                    meta: None,
-                },
-                message_id: msg_id,
-                source_chain,
-                status,
-                cost,
-            }
-        });
+    // Note: uses operator instead of payer for the refund task
+    let components = create_includer_components(&env.rpc_url, &env.operator);
+    let mock_redis = create_mock_redis();
+    let mock_gmp_api = create_mock_gmp_api_for_execute();
 
     let refunds_model = Arc::new(env.postgres_db.clone());
 
     let includer = SolanaIncluder::new(
-        Arc::new(includer_client),
-        keypair,
+        Arc::new(components.includer_client),
+        components.keypair,
         "solana-devnet".to_string(),
-        transaction_builder,
+        components.transaction_builder,
         Arc::new(mock_gmp_api),
         mock_redis,
         refunds_model,
@@ -2077,35 +1963,14 @@ async fn test_refund_task_handled_and_found_by_poller() {
     let test_queue = Arc::new(TestQueue::new());
     let events_queue: Arc<dyn QueueTrait> = Arc::clone(&test_queue) as Arc<dyn QueueTrait>;
 
-    let poll_client = SolanaRpcClient::new(&env.rpc_url, CommitmentConfig::confirmed(), 3)
-        .expect("Failed to create poll client");
-
-    let poller = Arc::new(
-        SolanaPoller::new(
-            poll_client,
-            "test_refund_poller".to_string(),
-            Arc::new(env.transaction_model.clone()),
-            Arc::new(env.postgres_db.clone()),
-            Arc::clone(&events_queue),
-        )
-        .await
-        .expect("Failed to create poller"),
-    );
-
-    let poller_cancellation = CancellationToken::new();
-    let poller_cancellation_clone = poller_cancellation.clone();
-
-    let poller_clone = Arc::clone(&poller);
-    let poller_handle = tokio::spawn(async move {
-        poller_clone
-            .run(
-                solana_axelar_gas_service::ID,
-                solana_axelar_gateway::ID,
-                solana_axelar_its::ID,
-                poller_cancellation_clone,
-            )
-            .await;
-    });
+    let poller_handle = spawn_poller(
+        &env.rpc_url,
+        "test_refund_poller",
+        &env.transaction_model,
+        &env.postgres_db,
+        Arc::clone(&events_queue),
+    )
+    .await;
 
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
@@ -2129,8 +1994,7 @@ async fn test_refund_task_handled_and_found_by_poller() {
     }
 
     println!("Cancelling poller...");
-    poller_cancellation.cancel();
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), poller_handle).await;
+    poller_handle.stop().await;
     println!("Poller stopped");
 
     assert!(
