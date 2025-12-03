@@ -20,6 +20,7 @@ use solana::includer::SolanaIncluder;
 use solana::includer_client::IncluderClient;
 use solana::ingestor::SolanaIngestor;
 use solana::mocks::{MockRedisConnectionTrait, MockRefundsModel, MockUpdateEvents};
+use solana::models::refunds::RefundsModel;
 use solana::models::solana_subscriber_cursor::PostgresDB;
 use solana::models::solana_transaction::PgSolanaTransactionModel;
 use solana::poll_client::SolanaRpcClient;
@@ -32,6 +33,8 @@ use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::instruction::Instruction;
 use solana_sdk::native_token::LAMPORTS_PER_SOL;
 use solana_sdk::signature::{Keypair, Signer};
+#[allow(deprecated)]
+use solana_sdk::system_instruction;
 use solana_sdk::transaction::Transaction;
 use solana_sdk_ids::bpf_loader_upgradeable;
 use solana_system_interface::program::ID as SYSTEM_PROGRAM_ID;
@@ -152,9 +155,10 @@ impl TestEnvironment {
         cleanup_leftover_validators();
 
         let init_sql = format!(
-            "{}\n{}\n",
+            "{}\n{}\n{}\n",
             include_str!("../migrations/0006_solana_transactions.sql"),
             include_str!("../migrations/0007_solana_subscriber_cursors.sql"),
+            include_str!("../migrations/0008_solana_refunds.sql"),
         );
         let db_container = postgres::Postgres::default()
             .with_init_sql(init_sql.into_bytes())
@@ -1922,7 +1926,253 @@ async fn test_approve_and_execute_its_message() {
         println!("Note: MessageExecuted event may not have been parsed yet");
     }
 
-    println!("\n=== ITS Integration Test Completed ===");
+    println!("ITS Integration Test Completed");
+    test_queue.clear().await;
+    env.cleanup().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_refund_task_handled_and_found_by_poller() {
+    use solana_transaction_parser::gmp_types::{
+        Amount, CommonTaskFields, GatewayV2Message, RefundTask, RefundTaskFields,
+    };
+
+    let env = TestEnvironment::new().await;
+
+    let includer_client = IncluderClient::new(&env.rpc_url, CommitmentConfig::confirmed(), 3)
+        .expect("Failed to create includer client");
+
+    let fees_client =
+        FeesClient::new(includer_client.clone(), 10).expect("Failed to create fees client");
+
+    let gas_calculator = GasCalculator::new(includer_client.clone(), fees_client);
+
+    let keypair = Arc::new(Keypair::from_bytes(&env.operator.to_bytes()).unwrap());
+
+    let transaction_builder = TransactionBuilder::new(
+        Arc::clone(&keypair),
+        gas_calculator,
+        Arc::new(includer_client.clone()),
+    );
+
+    let mut mock_redis = MockRedisConnectionTrait::new();
+    mock_redis
+        .expect_add_gas_cost_for_task_id()
+        .returning(|_, _, _| ());
+    mock_redis
+        .expect_get_gas_cost_for_task_id()
+        .returning(|_, _| Ok(0u64));
+    mock_redis
+        .expect_write_gas_cost_for_message_id()
+        .returning(|_, _, _| ());
+    mock_redis.expect_get_alt_entry().returning(|_| Ok(None));
+
+    let mut mock_gmp_api = MockGmpApiTrait::new();
+    mock_gmp_api
+        .expect_execute_message()
+        .returning(|msg_id, source_chain, status, cost| {
+            println!(
+                "GMP API execute_message called: msg_id={}, source_chain={}, status={:?}, cost={:?}",
+                msg_id, source_chain, status, cost
+            );
+            Event::MessageExecuted {
+                common: solana_transaction_parser::gmp_types::CommonEventFields {
+                    r#type: "MESSAGE_EXECUTED".to_string(),
+                    event_id: "mock-event-id".to_string(),
+                    meta: None,
+                },
+                message_id: msg_id,
+                source_chain,
+                status,
+                cost,
+            }
+        });
+
+    let refunds_model = Arc::new(env.postgres_db.clone());
+
+    let includer = SolanaIncluder::new(
+        Arc::new(includer_client),
+        keypair,
+        "solana-devnet".to_string(),
+        transaction_builder,
+        Arc::new(mock_gmp_api),
+        mock_redis,
+        refunds_model,
+    );
+
+    use solana::utils::get_treasury_pda;
+    let (treasury, _) = get_treasury_pda();
+    let treasury_funding_amount = 20 * LAMPORTS_PER_SOL; // 20 SOL to ensure enough for refund + fees
+
+    #[allow(deprecated)]
+    let fund_treasury_ix =
+        system_instruction::transfer(&env.payer.pubkey(), &treasury, treasury_funding_amount);
+
+    let recent_blockhash = env
+        .rpc_client
+        .get_latest_blockhash()
+        .await
+        .expect("Failed to get blockhash");
+
+    let fund_treasury_tx = Transaction::new_signed_with_payer(
+        &[fund_treasury_ix],
+        Some(&env.payer.pubkey()),
+        &[&env.payer],
+        recent_blockhash,
+    );
+
+    env.rpc_client
+        .send_and_confirm_transaction(&fund_treasury_tx)
+        .await
+        .expect("Failed to fund treasury");
+
+    println!("Treasury funded with {} lamports", treasury_funding_amount);
+
+    // Create a RefundTask
+    let refund_recipient = Keypair::new().pubkey();
+    let refund_amount = 10_000_000_000u64; // 10 SOL in lamports
+    let message_id = "test-refund-message-001".to_string();
+    let refund_id = "test-refund-task-001".to_string();
+
+    let refund_task = RefundTask {
+        common: CommonTaskFields {
+            id: refund_id.clone(),
+            chain: "solana-devnet".to_string(),
+            timestamp: chrono::Utc::now().to_string(),
+            r#type: "refund".to_string(),
+            meta: None,
+        },
+        task: RefundTaskFields {
+            message: GatewayV2Message {
+                message_id: message_id.clone(),
+                source_chain: "ethereum".to_string(),
+                destination_address: "test-destination".to_string(),
+                payload_hash: "test-payload-hash".to_string(),
+                source_address: solana_sdk::pubkey::Pubkey::new_unique().to_string(),
+            },
+            refund_recipient_address: refund_recipient.to_string(),
+            remaining_gas_balance: Amount {
+                amount: refund_amount.to_string(),
+                token_id: None,
+            },
+        },
+    };
+
+    println!("Calling handle_refund_task...");
+    let result = includer.handle_refund_task(refund_task).await;
+
+    match result {
+        Ok(()) => {
+            println!("Refund task completed successfully!");
+        }
+        Err(e) => {
+            println!("Refund task result: {:?}", e);
+            let error_str = format!("{:?}", e);
+            panic!("{}", error_str);
+        }
+    }
+
+    println!("Setting up subscriber to verify RefundFees transaction...");
+
+    let test_queue = Arc::new(TestQueue::new());
+    let events_queue: Arc<dyn QueueTrait> = Arc::clone(&test_queue) as Arc<dyn QueueTrait>;
+
+    let poll_client = SolanaRpcClient::new(&env.rpc_url, CommitmentConfig::confirmed(), 3)
+        .expect("Failed to create poll client");
+
+    let poller = Arc::new(
+        SolanaPoller::new(
+            poll_client,
+            "test_refund_poller".to_string(),
+            Arc::new(env.transaction_model.clone()),
+            Arc::new(env.postgres_db.clone()),
+            Arc::clone(&events_queue),
+        )
+        .await
+        .expect("Failed to create poller"),
+    );
+
+    let poller_cancellation = CancellationToken::new();
+    let poller_cancellation_clone = poller_cancellation.clone();
+
+    let poller_clone = Arc::clone(&poller);
+    let poller_handle = tokio::spawn(async move {
+        poller_clone
+            .run(
+                solana_axelar_gas_service::ID,
+                solana_axelar_gateway::ID,
+                solana_axelar_its::ID,
+                poller_cancellation_clone,
+            )
+            .await;
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    let mut found_refund = false;
+    let start_time = std::time::Instant::now();
+    let timeout = std::time::Duration::from_secs(30);
+
+    while !found_refund && start_time.elapsed() < timeout {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        let queued_items = test_queue.get_items().await;
+        for item in &queued_items {
+            if let QueueItem::Transaction(tx_data) = item {
+                if tx_data.contains("RefundFees") || tx_data.contains(&refund_id) {
+                    found_refund = true;
+                    println!("Poller picked up RefundFees transaction!");
+                    break;
+                }
+            }
+        }
+    }
+
+    println!("Cancelling poller...");
+    poller_cancellation.cancel();
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), poller_handle).await;
+    println!("Poller stopped");
+
+    assert!(
+        found_refund,
+        "Poller should have picked up the RefundFees transaction within timeout"
+    );
+
+    let queued_items = test_queue.get_items().await;
+    println!("Queue contains {} items", queued_items.len());
+
+    let refund_tx_json = queued_items
+        .iter()
+        .find_map(|item| {
+            if let QueueItem::Transaction(tx_data) = item {
+                if tx_data.contains("RefundFees") || tx_data.contains(&refund_id) {
+                    Some(tx_data.clone())
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        })
+        .expect("Should have found RefundFees transaction in queue");
+
+    println!("RefundFees transaction captured: {}", refund_tx_json.len());
+
+    let refund_record = env
+        .postgres_db
+        .find(refund_id.clone())
+        .await
+        .expect("Should be able to query refund from database");
+
+    assert!(
+        refund_record.is_some(),
+        "Refund should be recorded in the database"
+    );
+
+    let (signature, _) = refund_record.unwrap();
+    println!("Refund signature recorded in database: {}", signature);
+
+    println!("Refund Integration Test Completed");
     test_queue.clear().await;
     env.cleanup().await;
 }
