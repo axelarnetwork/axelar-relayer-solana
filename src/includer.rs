@@ -13,6 +13,7 @@ use crate::utils::{
     get_signature_verification_pda, get_treasury_pda, get_verifier_set_tracker_pda,
     keypair_from_base58_string, not_enough_gas_event,
 };
+use anchor_lang::prelude::AccountMeta;
 use anchor_lang::{InstructionData, ToAccountMetas};
 use async_trait::async_trait;
 use base64::Engine as _;
@@ -210,22 +211,30 @@ impl<
         &self,
         instruction: Instruction,
         task: ExecuteTask,
-        alt_info: Option<ALTInfo>,
+        accounts: &[AccountMeta],
+        existing_alt_pubkey: Option<Pubkey>,
     ) -> Result<Vec<Event>, IncluderError> {
         let mut alt_cost = None;
         let mut available_gas_balance = i64::from_str(&task.task.available_gas_balance.amount)
             .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
-        if let Some(ALTInfo {
-            alt_ix_create: Some(ref alt_ix_create),
-            alt_ix_extend: Some(ref alt_ix_extend),
-            alt_pubkey: Some(ref alt_pubkey),
-            alt_addresses: Some(ref alt_addresses),
-            authority_keypair_str: Some(ref authority_keypair_str),
-        }) = alt_info
-        {
-            // ALT doesn't exist, create it
-            let authority_keypair = keypair_from_base58_string(authority_keypair_str)
+        let alt_info = if let Some(existing_alt_pubkey) = existing_alt_pubkey {
+            // if a key existed already for an ALT, we can reuse it as it will have been created previously
+            Some(ALTInfo::new(Some(existing_alt_pubkey)))
+        } else if !accounts.is_empty() {
+            // case where we need to create a new ALT
+            let recent_slot = self
+                .client
+                .get_slot()
+                .await
+                .map_err(|e| IncluderError::GenericError(e.to_string()))?
+                .saturating_sub(1);
+            let (alt_ix_create, alt_ix_extend, alt_pubkey, authority_keypair_str) = self
+                .transaction_builder
+                .build_lookup_table_instructions(recent_slot, accounts)
+                .await
+                .map_err(|e| IncluderError::GenericError(e.to_string()))?;
+            let authority_keypair = keypair_from_base58_string(&authority_keypair_str)
                 .map_err(|e| IncluderError::GenericError(e.to_string()))?;
             let (alt_tx_build, estimated_alt_cost) = self
                 .transaction_builder
@@ -253,8 +262,11 @@ impl<
                 .await
                 .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
-            self.wait_for_alt_activation(alt_pubkey, alt_addresses.len())
+            self.wait_for_alt_activation(&alt_pubkey, accounts.len())
                 .await?;
+
+            // Wait for ALT to be fully propagated before using it in the main transaction
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
             self.redis_conn
                 .write_gas_cost_for_message_id(
@@ -277,15 +289,21 @@ impl<
                 .redis_conn
                 .write_alt_entry(
                     task.task.message.message_id.clone(),
-                    *alt_pubkey,
+                    alt_pubkey,
                     authority_keypair_str.clone(),
                 )
                 .await
             {
                 error!("Failed to write ALT pubkey to Redis: {}", e);
             }
-        }
-
+            Some(
+                ALTInfo::new(Some(alt_pubkey))
+                    .with_addresses(accounts.iter().map(|acc| acc.pubkey).collect()),
+            )
+        } else {
+            // we set accounts to an empty vector when we do not want to create an ALT
+            None
+        };
         let (transaction, estimated_tx_cost) = self
             .transaction_builder
             .build(std::slice::from_ref(&instruction), alt_info.clone(), None)
@@ -870,7 +888,7 @@ impl<
 
         let existing_alt_pubkey = existing_alt_entry.map(|(pubkey, _)| pubkey);
 
-        let (instruction, alt_info) = match self
+        let (instruction, accounts) = match self
             .transaction_builder
             .build_execute_instruction(
                 &message,
@@ -879,11 +897,10 @@ impl<
                     .map_err(|e| IncluderError::GenericError(e.to_string()))?
                     .as_slice(),
                 destination_address,
-                existing_alt_pubkey,
             )
             .await
         {
-            Ok((instruction, alt_info)) => (instruction, alt_info),
+            Ok((instruction, accounts)) => (instruction, accounts),
             Err(e) => match e {
                 TransactionBuilderError::PayloadDecodeError(e) => {
                     let event = self.gmp_api.cannot_execute_message(
@@ -901,7 +918,7 @@ impl<
             },
         };
 
-        self.build_execute_transaction_and_send(instruction, task, alt_info)
+        self.build_execute_transaction_and_send(instruction, task, &accounts, existing_alt_pubkey)
             .await
             .map_err(|e| IncluderError::GenericError(e.to_string()))
     }
@@ -996,26 +1013,15 @@ impl<
 
 #[derive(Clone)]
 pub struct ALTInfo {
-    pub alt_ix_create: Option<Instruction>,
-    pub alt_ix_extend: Option<Instruction>,
     pub alt_pubkey: Option<Pubkey>,
     pub alt_addresses: Option<Vec<Pubkey>>,
-    pub authority_keypair_str: Option<String>,
 }
 
 impl ALTInfo {
-    pub fn new(
-        alt_ix_create: Option<Instruction>,
-        alt_ix_extend: Option<Instruction>,
-        alt_pubkey: Option<Pubkey>,
-        authority_keypair_str: Option<String>,
-    ) -> Self {
+    pub fn new(alt_pubkey: Option<Pubkey>) -> Self {
         Self {
-            alt_ix_create,
-            alt_ix_extend,
             alt_pubkey,
             alt_addresses: None,
-            authority_keypair_str,
         }
     }
 
@@ -1720,10 +1726,10 @@ mod tests {
         transaction_builder
             .expect_build_execute_instruction()
             .times(1)
-            .returning(move |_, _, _, _| {
+            .returning(move |_, _, _| {
                 Ok((
                     instruction_for_mock.clone(),
-                    None, // No ALT for governance
+                    vec![], // No ALT for governance
                 ))
             });
 
@@ -1816,7 +1822,7 @@ mod tests {
         transaction_builder
             .expect_build_execute_instruction()
             .times(1)
-            .returning(move |_, _, _, _| Ok((instruction_for_mock.clone(), None)));
+            .returning(move |_, _, _| Ok((instruction_for_mock.clone(), vec![])));
 
         let mut test_tx =
             solana_sdk::transaction::Transaction::new_with_payer(&[], Some(&keypair.pubkey()));
@@ -1922,10 +1928,10 @@ mod tests {
         transaction_builder
             .expect_build_execute_instruction()
             .times(1)
-            .returning(move |_, _, _, _| {
+            .returning(move |_, _, _| {
                 Ok((
                     test_instruction.clone(),
-                    None, // No ALT for executable
+                    vec![], // No ALT for executable
                 ))
             });
 
@@ -2020,7 +2026,7 @@ mod tests {
         transaction_builder
             .expect_build_execute_instruction()
             .times(1)
-            .returning(move |_, _, _, _| Ok((instruction_for_mock.clone(), None)));
+            .returning(move |_, _, _| Ok((instruction_for_mock.clone(), vec![])));
 
         let mut test_tx =
             solana_sdk::transaction::Transaction::new_with_payer(&[], Some(&keypair.pubkey()));
@@ -2199,7 +2205,7 @@ mod tests {
         transaction_builder
             .expect_build_execute_instruction()
             .times(1)
-            .returning(move |_, _, _, _| {
+            .returning(move |_, _, _| {
                 Err(TransactionBuilderError::PayloadDecodeError(
                     payload_decode_error_clone.clone(),
                 ))
@@ -2299,13 +2305,34 @@ mod tests {
 
         let alt_pubkey = Pubkey::new_unique();
         let alt_addresses = vec![Pubkey::new_unique()];
-        let alt_addresses_for_builder = alt_addresses.clone();
 
         let exec_ix = Instruction::new_with_bytes(
             solana_axelar_its::ID,
             &[],
             vec![AccountMeta::new(keypair.pubkey(), true)],
         );
+
+        // Create accounts for ALT - returned by build_execute_instruction for ITS
+        let alt_accounts_for_mock: Vec<AccountMeta> = alt_addresses
+            .iter()
+            .map(|pk| AccountMeta::new(*pk, false))
+            .collect();
+        let alt_accounts_clone = alt_accounts_for_mock.clone();
+
+        let exec_ix_for_builder = exec_ix.clone();
+
+        transaction_builder
+            .expect_build_execute_instruction()
+            .times(1)
+            .returning(move |_, _, _| {
+                Ok((exec_ix_for_builder.clone(), alt_accounts_clone.clone()))
+            });
+
+        // Mock get_slot for ALT creation
+        mock_client
+            .expect_get_slot()
+            .times(1)
+            .returning(|| Box::pin(async { Ok(1000u64) }));
 
         let alt_ix_create =
             Instruction::new_with_bytes(solana_program::system_program::ID, &[1], vec![]);
@@ -2315,24 +2342,20 @@ mod tests {
         // Create a valid base58-encoded keypair string for testing
         let test_authority_keypair = Keypair::new();
         let authority_keypair_str = test_authority_keypair.to_base58_string();
-        let alt_info = ALTInfo::new(
-            Some(alt_ix_create.clone()),
-            Some(alt_ix_extend.clone()),
-            Some(alt_pubkey),
-            Some(authority_keypair_str.clone()),
-        )
-        .with_addresses(alt_addresses_for_builder.clone());
 
-        let exec_ix_for_builder = exec_ix.clone();
-        let alt_info_for_builder = alt_info.clone();
-
+        // Mock build_lookup_table_instructions for ALT creation
+        let alt_ix_create_for_mock = alt_ix_create.clone();
+        let alt_ix_extend_for_mock = alt_ix_extend.clone();
+        let authority_keypair_str_clone = authority_keypair_str.clone();
         transaction_builder
-            .expect_build_execute_instruction()
+            .expect_build_lookup_table_instructions()
             .times(1)
-            .returning(move |_, _, _, _| {
+            .returning(move |_, _| {
                 Ok((
-                    exec_ix_for_builder.clone(),
-                    Some(alt_info_for_builder.clone()),
+                    alt_ix_create_for_mock.clone(),
+                    alt_ix_extend_for_mock.clone(),
+                    alt_pubkey,
+                    authority_keypair_str_clone.clone(),
                 ))
             });
 
@@ -2543,8 +2566,7 @@ mod tests {
             .returning(|_| Ok(None));
 
         let alt_pubkey = Pubkey::new_unique();
-        let alt_addresses = vec![Pubkey::new_unique()];
-        let alt_addresses_for_builder = alt_addresses.clone();
+        let alt_addresses = [Pubkey::new_unique()];
 
         let exec_ix = Instruction::new_with_bytes(
             solana_axelar_its::ID,
@@ -2555,6 +2577,28 @@ mod tests {
             ],
         );
 
+        // Create accounts for ALT
+        let alt_accounts_for_mock: Vec<AccountMeta> = alt_addresses
+            .iter()
+            .map(|pk| AccountMeta::new(*pk, false))
+            .collect();
+        let alt_accounts_clone = alt_accounts_for_mock.clone();
+
+        let exec_ix_for_builder = exec_ix.clone();
+
+        transaction_builder
+            .expect_build_execute_instruction()
+            .times(1)
+            .returning(move |_, _, _| {
+                Ok((exec_ix_for_builder.clone(), alt_accounts_clone.clone()))
+            });
+
+        // Mock get_slot for ALT creation
+        mock_client
+            .expect_get_slot()
+            .times(1)
+            .returning(|| Box::pin(async { Ok(1000u64) }));
+
         let alt_ix_create =
             Instruction::new_with_bytes(solana_program::system_program::ID, &[3], vec![]);
         let alt_ix_extend =
@@ -2563,24 +2607,20 @@ mod tests {
         // Create a valid base58-encoded keypair string for testing
         let test_authority_keypair = Keypair::new();
         let authority_keypair_str = test_authority_keypair.to_base58_string();
-        let alt_info = ALTInfo::new(
-            Some(alt_ix_create.clone()),
-            Some(alt_ix_extend.clone()),
-            Some(alt_pubkey),
-            Some(authority_keypair_str.clone()),
-        )
-        .with_addresses(alt_addresses_for_builder.clone());
 
-        let exec_ix_for_builder = exec_ix.clone();
-        let alt_info_for_builder = alt_info.clone();
-
+        // Mock build_lookup_table_instructions
+        let alt_ix_create_for_mock = alt_ix_create.clone();
+        let alt_ix_extend_for_mock = alt_ix_extend.clone();
+        let authority_keypair_str_clone = authority_keypair_str.clone();
         transaction_builder
-            .expect_build_execute_instruction()
+            .expect_build_lookup_table_instructions()
             .times(1)
-            .returning(move |_, _, _, _| {
+            .returning(move |_, _| {
                 Ok((
-                    exec_ix_for_builder.clone(),
-                    Some(alt_info_for_builder.clone()),
+                    alt_ix_create_for_mock.clone(),
+                    alt_ix_extend_for_mock.clone(),
+                    alt_pubkey,
+                    authority_keypair_str_clone.clone(),
                 ))
             });
 
@@ -2702,7 +2742,6 @@ mod tests {
 
         let alt_pubkey = Pubkey::new_unique();
         let alt_addresses = vec![Pubkey::new_unique()];
-        let alt_addresses_for_builder = alt_addresses.clone();
 
         let exec_ix = Instruction::new_with_bytes(
             solana_axelar_its::ID,
@@ -2713,6 +2752,28 @@ mod tests {
             ],
         );
 
+        // Create accounts for ALT
+        let alt_accounts_for_mock: Vec<AccountMeta> = alt_addresses
+            .iter()
+            .map(|pk| AccountMeta::new(*pk, false))
+            .collect();
+        let alt_accounts_clone = alt_accounts_for_mock.clone();
+
+        let exec_ix_for_builder = exec_ix.clone();
+
+        transaction_builder
+            .expect_build_execute_instruction()
+            .times(1)
+            .returning(move |_, _, _| {
+                Ok((exec_ix_for_builder.clone(), alt_accounts_clone.clone()))
+            });
+
+        // Mock get_slot for ALT creation
+        mock_client
+            .expect_get_slot()
+            .times(1)
+            .returning(|| Box::pin(async { Ok(1000u64) }));
+
         let alt_ix_create =
             Instruction::new_with_bytes(solana_program::system_program::ID, &[5], vec![]);
         let alt_ix_extend =
@@ -2720,24 +2781,20 @@ mod tests {
 
         let test_authority_keypair = Keypair::new();
         let authority_keypair_str = test_authority_keypair.to_base58_string();
-        let alt_info = ALTInfo::new(
-            Some(alt_ix_create.clone()),
-            Some(alt_ix_extend.clone()),
-            Some(alt_pubkey),
-            Some(authority_keypair_str.clone()),
-        )
-        .with_addresses(alt_addresses_for_builder.clone());
 
-        let exec_ix_for_builder = exec_ix.clone();
-        let alt_info_for_builder = alt_info.clone();
-
+        // Mock build_lookup_table_instructions
+        let alt_ix_create_for_mock = alt_ix_create.clone();
+        let alt_ix_extend_for_mock = alt_ix_extend.clone();
+        let authority_keypair_str_clone = authority_keypair_str.clone();
         transaction_builder
-            .expect_build_execute_instruction()
+            .expect_build_lookup_table_instructions()
             .times(1)
-            .returning(move |_, _, _, _| {
+            .returning(move |_, _| {
                 Ok((
-                    exec_ix_for_builder.clone(),
-                    Some(alt_info_for_builder.clone()),
+                    alt_ix_create_for_mock.clone(),
+                    alt_ix_extend_for_mock.clone(),
+                    alt_pubkey,
+                    authority_keypair_str_clone.clone(),
                 ))
             });
 
@@ -2975,7 +3032,6 @@ mod tests {
             });
 
         let alt_addresses = vec![Pubkey::new_unique()];
-        let alt_addresses_for_builder = alt_addresses.clone();
 
         let exec_ix = Instruction::new_with_bytes(
             solana_axelar_its::ID,
@@ -2983,24 +3039,19 @@ mod tests {
             vec![AccountMeta::new(keypair.pubkey(), true)],
         );
 
-        let alt_info = ALTInfo::new(
-            None,                                       // no alt_ix_create
-            None,                                       // no alt_ix_extend
-            Some(alt_pubkey),                           // existing ALT pubkey
-            Some("test-authority-keypair".to_string()), // authority from Redis
-        )
-        .with_addresses(alt_addresses_for_builder.clone());
+        // Create accounts for ALT - these will be used since ALT already exists
+        let alt_accounts_for_mock: Vec<AccountMeta> = alt_addresses
+            .iter()
+            .map(|pk| AccountMeta::new(*pk, false))
+            .collect();
+        let alt_accounts_clone = alt_accounts_for_mock.clone();
 
         let exec_ix_for_builder = exec_ix.clone();
-        let alt_info_for_builder = alt_info.clone();
         transaction_builder
             .expect_build_execute_instruction()
             .times(1)
-            .returning(move |_, _, _, _| {
-                Ok((
-                    exec_ix_for_builder.clone(),
-                    Some(alt_info_for_builder.clone()),
-                ))
+            .returning(move |_, _, _| {
+                Ok((exec_ix_for_builder.clone(), alt_accounts_clone.clone()))
             });
 
         let lookup_account = AddressLookupTableAccount {
@@ -4699,7 +4750,7 @@ mod tests {
         transaction_builder
             .expect_build_execute_instruction()
             .times(1)
-            .returning(move |_, _, _, _| Ok((exec_ix.clone(), None)));
+            .returning(move |_, _, _| Ok((exec_ix.clone(), vec![])));
 
         // Build transaction - will be called and return estimated cost
         let mut test_tx = Transaction::new_with_payer(&[], Some(&keypair.pubkey()));
@@ -4816,7 +4867,7 @@ mod tests {
         transaction_builder
             .expect_build_execute_instruction()
             .times(1)
-            .returning(move |_, _, _, _| Ok((exec_ix.clone(), None)));
+            .returning(move |_, _, _| Ok((exec_ix.clone(), vec![])));
 
         let includer = create_test_includer(
             mock_client,
@@ -4896,7 +4947,6 @@ mod tests {
 
         let alt_pubkey = Pubkey::new_unique();
         let alt_addresses = vec![Pubkey::new_unique(), Pubkey::new_unique()];
-        let alt_addresses_clone = alt_addresses.clone();
 
         let exec_ix = Instruction::new_with_bytes(
             solana_axelar_its::ID,
@@ -4907,6 +4957,28 @@ mod tests {
             ],
         );
 
+        // Create accounts for ALT
+        let alt_accounts_for_mock: Vec<AccountMeta> = alt_addresses
+            .iter()
+            .map(|pk| AccountMeta::new(*pk, false))
+            .collect();
+        let alt_accounts_clone = alt_accounts_for_mock.clone();
+
+        let exec_ix_for_builder = exec_ix.clone();
+
+        transaction_builder
+            .expect_build_execute_instruction()
+            .times(1)
+            .returning(move |_, _, _| {
+                Ok((exec_ix_for_builder.clone(), alt_accounts_clone.clone()))
+            });
+
+        // Mock get_slot for ALT creation
+        mock_client
+            .expect_get_slot()
+            .times(1)
+            .returning(|| Box::pin(async { Ok(1000u64) }));
+
         let alt_ix_create =
             Instruction::new_with_bytes(solana_program::system_program::ID, &[7], vec![]);
         let alt_ix_extend =
@@ -4914,24 +4986,20 @@ mod tests {
 
         let test_authority_keypair = Keypair::new();
         let authority_keypair_str = test_authority_keypair.to_base58_string();
-        let alt_info = ALTInfo::new(
-            Some(alt_ix_create.clone()),
-            Some(alt_ix_extend.clone()),
-            Some(alt_pubkey),
-            Some(authority_keypair_str.clone()),
-        )
-        .with_addresses(alt_addresses_clone.clone());
 
-        let exec_ix_for_builder = exec_ix.clone();
-        let alt_info_for_builder = alt_info.clone();
-
+        // Mock build_lookup_table_instructions
+        let alt_ix_create_for_mock = alt_ix_create.clone();
+        let alt_ix_extend_for_mock = alt_ix_extend.clone();
+        let authority_keypair_str_clone = authority_keypair_str.clone();
         transaction_builder
-            .expect_build_execute_instruction()
+            .expect_build_lookup_table_instructions()
             .times(1)
-            .returning(move |_, _, _, _| {
+            .returning(move |_, _| {
                 Ok((
-                    exec_ix_for_builder.clone(),
-                    Some(alt_info_for_builder.clone()),
+                    alt_ix_create_for_mock.clone(),
+                    alt_ix_extend_for_mock.clone(),
+                    alt_pubkey,
+                    authority_keypair_str_clone.clone(),
                 ))
             });
 

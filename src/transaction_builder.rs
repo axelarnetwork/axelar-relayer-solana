@@ -22,11 +22,11 @@ use interchain_token_transfer_gmp::GMPPayload;
 use mpl_token_metadata;
 use relayer_core::utils::ThreadSafe;
 use solana_axelar_gateway::executable::ExecutablePayload;
+use solana_axelar_gateway::Message;
 use solana_axelar_its::instructions::{
     execute_deploy_interchain_token_extra_accounts, execute_interchain_transfer_extra_accounts,
     execute_link_token_extra_accounts,
 };
-use solana_axelar_std::Message;
 use solana_sdk::address_lookup_table::instruction::{create_lookup_table, extend_lookup_table};
 use solana_sdk::address_lookup_table::state::AddressLookupTable;
 use solana_sdk::instruction::{AccountMeta, Instruction};
@@ -58,23 +58,21 @@ pub trait TransactionBuilderTrait<IC: IncluderClientTrait>: ThreadSafe {
         message: &Message,
         payload: &[u8],
         destination_address: Pubkey,
-        existing_alt_pubkey: Option<Pubkey>,
-    ) -> Result<(Instruction, Option<ALTInfo>), TransactionBuilderError>;
+    ) -> Result<(Instruction, Vec<AccountMeta>), TransactionBuilderError>;
 
     async fn build_its_instruction(
         &self,
         message: &Message,
         payload: &[u8],
         incoming_message_pda: Pubkey,
-        existing_alt_pubkey: Option<Pubkey>,
-    ) -> Result<(Instruction, Option<ALTInfo>), TransactionBuilderError>;
+    ) -> Result<(Instruction, Vec<AccountMeta>), TransactionBuilderError>;
 
     async fn build_governance_instruction(
         &self,
         message: &Message,
         payload: &[u8],
         incoming_message_pda: Pubkey,
-    ) -> Result<(Instruction, Option<ALTInfo>), TransactionBuilderError>;
+    ) -> Result<(Instruction, Vec<AccountMeta>), TransactionBuilderError>;
 
     async fn build_executable_instruction(
         &self,
@@ -82,7 +80,7 @@ pub trait TransactionBuilderTrait<IC: IncluderClientTrait>: ThreadSafe {
         payload: &[u8],
         incoming_message_pda: Pubkey,
         destination_address: Pubkey,
-    ) -> Result<(Instruction, Option<ALTInfo>), TransactionBuilderError>;
+    ) -> Result<(Instruction, Vec<AccountMeta>), TransactionBuilderError>;
 
     async fn build_lookup_table_instructions(
         &self,
@@ -200,19 +198,13 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
         message: &Message,
         payload: &[u8],
         destination_address: Pubkey,
-        existing_alt_pubkey: Option<Pubkey>,
-    ) -> Result<(Instruction, Option<ALTInfo>), TransactionBuilderError> {
+    ) -> Result<(Instruction, Vec<AccountMeta>), TransactionBuilderError> {
         let (incoming_message_pda, _) = get_incoming_message_pda(&message.command_id());
 
         match destination_address {
             x if x == solana_axelar_its::ID => {
-                self.build_its_instruction(
-                    message,
-                    payload,
-                    incoming_message_pda,
-                    existing_alt_pubkey,
-                )
-                .await
+                self.build_its_instruction(message, payload, incoming_message_pda)
+                    .await
             }
             x if x == solana_axelar_governance::ID => {
                 self.build_governance_instruction(message, payload, incoming_message_pda)
@@ -235,8 +227,7 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
         message: &Message,
         payload: &[u8],
         incoming_message_pda: Pubkey,
-        existing_alt_pubkey: Option<Pubkey>,
-    ) -> Result<(Instruction, Option<ALTInfo>), TransactionBuilderError> {
+    ) -> Result<(Instruction, Vec<AccountMeta>), TransactionBuilderError> {
         let gmp_decoded_payload = GMPPayload::decode(payload)
             .map_err(|e| TransactionBuilderError::PayloadDecodeError(e.to_string()))?;
 
@@ -279,7 +270,6 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
 
         debug!("GMP decoded payload: {:?}", gmp_decoded_payload);
 
-        // unwrap ReceiveFromHub payload
         let gmp_decoded_payload = match gmp_decoded_payload.clone() {
             GMPPayload::ReceiveFromHub(inner_payload) => {
                 GMPPayload::decode(inner_payload.payload.as_ref())
@@ -368,46 +358,13 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
         }
         .data();
 
-        let alt_info = if let Some(existing_alt_pubkey) = existing_alt_pubkey {
-            // Use existing ALT pubkey, no need to create new ALT transaction
-            // Addresses will be fetched from chain in build() method
-            debug!(
-                "Using existing ALT pubkey from Redis: {}",
-                existing_alt_pubkey
-            );
-            Some(ALTInfo::new(None, None, Some(existing_alt_pubkey), None))
-        } else {
-            // Create new ALT
-            let recent_slot = self
-                .includer_client
-                .get_slot()
-                .await
-                .map_err(|e| TransactionBuilderError::ClientError(e.to_string()))?;
-
-            let alt_accounts: Vec<Pubkey> = accounts.iter().map(|acc| acc.pubkey).collect();
-
-            let (alt_ix_create, alt_ix_extend, alt_pubkey, authority_keypair_str) = self
-                .build_lookup_table_instructions(recent_slot, &accounts)
-                .await
-                .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
-            Some(
-                ALTInfo::new(
-                    Some(alt_ix_create),
-                    Some(alt_ix_extend),
-                    Some(alt_pubkey),
-                    Some(authority_keypair_str),
-                )
-                .with_addresses(alt_accounts),
-            )
-        };
-
         Ok((
             Instruction {
                 program_id: solana_axelar_its::ID,
-                accounts,
+                accounts: accounts.clone(),
                 data,
             },
-            alt_info,
+            accounts,
         ))
     }
 
@@ -416,7 +373,7 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
         message: &Message,
         payload: &[u8],
         incoming_message_pda: Pubkey,
-    ) -> Result<(Instruction, Option<ALTInfo>), TransactionBuilderError> {
+    ) -> Result<(Instruction, Vec<AccountMeta>), TransactionBuilderError> {
         let (signing_pda, _) =
             get_validate_message_signing_pda(&message.command_id(), &solana_axelar_governance::ID);
         let (event_authority, _) = get_gateway_event_authority_pda();
@@ -461,7 +418,7 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
                 accounts,
                 data,
             },
-            None,
+            vec![], // we do not want to create an ALT for governance instructions
         ))
     }
 
@@ -471,7 +428,7 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
         payload: &[u8],
         incoming_message_pda: Pubkey,
         destination_address: Pubkey,
-    ) -> Result<(Instruction, Option<ALTInfo>), TransactionBuilderError> {
+    ) -> Result<(Instruction, Vec<AccountMeta>), TransactionBuilderError> {
         let decoded_payload = ExecutablePayload::decode(payload)
             .map_err(|e| TransactionBuilderError::PayloadDecodeError(e.to_string()))?; // return custom error to send cannot_execute_message
 
@@ -514,7 +471,7 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
                 accounts,
                 data,
             },
-            None,
+            vec![], // we do not want to create an ALT for executable instructions
         ))
     }
 
@@ -618,11 +575,7 @@ mod tests {
                 Box::pin(async move { Ok(hash) })
             });
 
-        let authority_keypair = Keypair::new();
-        let authority_keypair_str = authority_keypair.to_base58_string();
-
-        let alt_info = ALTInfo::new(None, None, Some(alt_pubkey), Some(authority_keypair_str))
-            .with_addresses(alt_addresses);
+        let alt_info = ALTInfo::new(Some(alt_pubkey)).with_addresses(alt_addresses);
 
         let builder =
             TransactionBuilder::new(Arc::clone(&keypair), mock_gas, Arc::new(mock_client));
@@ -771,7 +724,7 @@ mod tests {
     async fn test_build_execute_instruction_with_three_addresses() {
         let keypair = Arc::new(Keypair::new());
         let mock_gas = MockGasCalculatorTrait::new();
-        let mut mock_client = MockIncluderClientTrait::new();
+        let mock_client = MockIncluderClientTrait::new();
 
         let message = Message {
             cc_id: CrossChainId {
@@ -783,11 +736,6 @@ mod tests {
             destination_address: "test-destination".to_string(),
             payload_hash: [0u8; 32],
         };
-
-        mock_client
-            .expect_get_slot()
-            .times(1)
-            .returning(|| Box::pin(async { Ok(1000u64) }));
 
         let builder =
             TransactionBuilder::new(Arc::clone(&keypair), mock_gas, Arc::new(mock_client));
@@ -820,42 +768,19 @@ mod tests {
         let _decoded =
             GMPPayload::decode(&its_payload).expect("Encoded GMPPayload should be decodable");
 
-        let (its_instruction, its_alt_info) = builder
-            .build_execute_instruction(&message, &its_payload, its_destination, None)
+        let (its_instruction, its_accounts) = builder
+            .build_execute_instruction(&message, &its_payload, its_destination)
             .await
             .expect("ITS build_execute_instruction should succeed");
 
         assert_eq!(its_instruction.program_id, solana_axelar_its::ID);
-        assert!(its_alt_info.is_some(), "ITS should return Some(ALTInfo)");
-        let its_alt = its_alt_info.unwrap();
+        // ITS should return non-empty accounts for ALT creation
         assert!(
-            its_alt.alt_pubkey.is_some(),
-            "ALTInfo should have alt_pubkey"
+            !its_accounts.is_empty(),
+            "ITS should return accounts for ALT creation"
         );
-        assert!(
-            its_alt.alt_ix_create.is_some(),
-            "ALTInfo should have alt_ix_create"
-        );
-        assert!(
-            its_alt.alt_ix_extend.is_some(),
-            "ALTInfo should have alt_ix_extend"
-        );
-        assert!(
-            its_alt.alt_addresses.is_some(),
-            "ALTInfo should have alt_addresses"
-        );
-        assert!(
-            its_alt.authority_keypair_str.is_some(),
-            "ALTInfo should have authority_keypair_str from build_lookup_table_instructions"
-        );
-        let authority_str = its_alt.authority_keypair_str.unwrap();
-        assert!(
-            !authority_str.is_empty(),
-            "authority_keypair_str should not be empty"
-        );
-        let _authority_keypair = Keypair::from_base58_string(&authority_str);
 
-        // Governance address should return None for ALTInfo
+        // Governance address should return empty accounts (no ALT)
         let governance_destination = solana_axelar_governance::ID;
 
         // Create a valid governance payload
@@ -874,8 +799,8 @@ mod tests {
         };
         let governance_payload = gmp_payload.abi_encode();
 
-        let (governance_instruction, governance_alt_info) = builder
-            .build_execute_instruction(&message, &governance_payload, governance_destination, None)
+        let (governance_instruction, governance_accounts) = builder
+            .build_execute_instruction(&message, &governance_payload, governance_destination)
             .await
             .expect("Governance build_execute_instruction should succeed");
 
@@ -884,8 +809,8 @@ mod tests {
             solana_axelar_governance::ID
         );
         assert!(
-            governance_alt_info.is_none(),
-            "Governance should return None for ALTInfo"
+            governance_accounts.is_empty(),
+            "Governance should return empty accounts (no ALT)"
         );
 
         let arbitrary_destination = Pubkey::new_unique();
@@ -897,20 +822,15 @@ mod tests {
         );
         let executable_payload_bytes = executable_payload.encode().unwrap();
 
-        let (arbitrary_instruction, arbitrary_alt_info) = builder
-            .build_execute_instruction(
-                &message,
-                &executable_payload_bytes,
-                arbitrary_destination,
-                None,
-            )
+        let (arbitrary_instruction, arbitrary_accounts) = builder
+            .build_execute_instruction(&message, &executable_payload_bytes, arbitrary_destination)
             .await
             .expect("Arbitrary program build_execute_instruction should succeed");
 
         assert_eq!(arbitrary_instruction.program_id, arbitrary_destination);
         assert!(
-            arbitrary_alt_info.is_none(),
-            "Arbitrary program should return None for ALTInfo"
+            arbitrary_accounts.is_empty(),
+            "Arbitrary program should return empty accounts (no ALT)"
         );
     }
 
@@ -918,7 +838,7 @@ mod tests {
     async fn test_build_its_instruction_interchain_transfer_with_executable_payload() {
         let keypair = Arc::new(Keypair::new());
         let mock_gas = MockGasCalculatorTrait::new();
-        let mut mock_client = MockIncluderClientTrait::new();
+        let mock_client = MockIncluderClientTrait::new();
 
         let message = Message {
             cc_id: CrossChainId {
@@ -930,11 +850,6 @@ mod tests {
             destination_address: "test-destination".to_string(),
             payload_hash: [0u8; 32],
         };
-
-        mock_client
-            .expect_get_slot()
-            .times(1)
-            .returning(|| Box::pin(async { Ok(1000u64) }));
 
         let builder =
             TransactionBuilder::new(Arc::clone(&keypair), mock_gas, Arc::new(mock_client));
@@ -977,8 +892,8 @@ mod tests {
             });
         let its_payload: Vec<u8> = gmp_payload.encode();
 
-        let (its_instruction, its_alt_info) = builder
-            .build_execute_instruction(&message, &its_payload, its_destination, None)
+        let (its_instruction, its_accounts) = builder
+            .build_execute_instruction(&message, &its_payload, its_destination)
             .await
             .expect("ITS build_execute_instruction with ExecutablePayload should succeed");
 
@@ -997,12 +912,10 @@ mod tests {
             "gmp_account2 should be in the instruction accounts"
         );
 
-        // Verify ALTInfo is present
-        assert!(its_alt_info.is_some(), "ITS should return Some(ALTInfo)");
-        let its_alt = its_alt_info.unwrap();
+        // Verify accounts are returned for ALT creation
         assert!(
-            its_alt.alt_pubkey.is_some(),
-            "ALTInfo should have alt_pubkey"
+            !its_accounts.is_empty(),
+            "ITS should return accounts for ALT"
         );
     }
 
@@ -1057,7 +970,7 @@ mod tests {
 
         // This should fail with PayloadDecodeError because the data field contains malformed bytes
         let result = builder
-            .build_execute_instruction(&message, &its_payload, its_destination, None)
+            .build_execute_instruction(&message, &its_payload, its_destination)
             .await;
 
         assert!(

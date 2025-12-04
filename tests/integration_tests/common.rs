@@ -127,6 +127,9 @@ pub fn create_mock_redis() -> MockRedisConnectionTrait {
         .returning(|_, _, _| ());
     mock_redis.expect_get_alt_entry().returning(|_| Ok(None));
     mock_redis
+        .expect_write_alt_entry()
+        .returning(|_, _, _| Ok(()));
+    mock_redis
 }
 
 #[cfg(test)]

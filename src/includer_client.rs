@@ -106,7 +106,7 @@ impl IncluderClientTrait for IncluderClient {
 
     async fn get_slot(&self) -> Result<u64, IncluderClientError> {
         self.inner()
-            .get_slot()
+            .get_slot_with_commitment(self.commitment)
             .await
             .map_err(|e| IncluderClientError::GenericError(e.to_string()))
     }
