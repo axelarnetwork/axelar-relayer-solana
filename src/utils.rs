@@ -539,9 +539,42 @@ pub fn check_if_error_includes_an_expected_account(
     false
 }
 
+pub fn extract_proposal_hash_from_payload(payload: &[u8]) -> Result<[u8; 32], anyhow::Error> {
+    let cmd_payload =
+        <governance_gmp::GovernanceCommandPayload as alloy_sol_types::SolType>::abi_decode(
+            payload, true,
+        )
+        .map_err(|e| anyhow::anyhow!(format!("Failed to decode governance payload: {}", e)))?;
+
+    let target_bytes: [u8; 32] = cmd_payload
+        .target
+        .as_ref()
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("Invalid target length in governance payload"))?;
+    let target = Pubkey::from(target_bytes);
+
+    let call_data: solana_axelar_governance::ExecuteProposalCallData =
+        anchor_lang::AnchorDeserialize::try_from_slice(&cmd_payload.call_data)
+            .map_err(|e| anyhow::anyhow!("Failed to decode call_data: {}", e))?;
+
+    let proposal_hash =
+        solana_axelar_governance::state::proposal::ExecutableProposal::calculate_hash(
+            &target,
+            &call_data,
+            &cmd_payload.native_value.to_le_bytes::<32>(),
+        );
+
+    Ok(proposal_hash)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy_sol_types::SolValue;
+    use anchor_lang::InstructionData;
+    use governance_gmp::alloy_primitives::U256;
+    use solana_axelar_governance::state::proposal::ExecutableProposal;
+    use solana_axelar_governance::{ExecuteProposalCallData, SolanaAccountMetadata};
     use solana_axelar_std::execute_data::PayloadType;
     use solana_axelar_std::message::MessageLeaf;
     use solana_axelar_std::verifier_set::{SigningVerifierSetInfo, VerifierSetLeaf};
@@ -925,6 +958,193 @@ mod tests {
             &error_message,
             &execute_data
         ));
+    }
+
+    /// Helper to create memo instruction call data for governance tests
+    fn create_memo_call_data(
+        memo: &str,
+        value_receiver: Pubkey,
+        governance_config_pda: Pubkey,
+    ) -> ExecuteProposalCallData {
+        let memo_instruction_data = solana_axelar_memo::instruction::EmitMemo {
+            message: memo.to_string(),
+        }
+        .data();
+
+        let governance_config_pda_metadata = SolanaAccountMetadata {
+            pubkey: governance_config_pda.to_bytes(),
+            is_signer: true,
+            is_writable: false,
+        };
+
+        let value_receiver_metadata = SolanaAccountMetadata {
+            pubkey: value_receiver.to_bytes(),
+            is_signer: false,
+            is_writable: true,
+        };
+
+        ExecuteProposalCallData {
+            solana_accounts: vec![
+                value_receiver_metadata.clone(),
+                governance_config_pda_metadata,
+            ],
+            solana_native_value_receiver_account: Some(value_receiver_metadata),
+            call_data: memo_instruction_data,
+        }
+    }
+
+    #[test]
+    fn test_extract_proposal_hash_schedule_timelock() {
+        // Setup test data similar to governance program tests
+        let memo_program_id = solana_axelar_memo::ID;
+        let value_receiver = Pubkey::new_unique();
+        let governance_config_pda = Pubkey::new_unique();
+
+        let call_data = create_memo_call_data(
+            "Test governance memo",
+            value_receiver,
+            governance_config_pda,
+        );
+
+        let target_bytes: [u8; 32] = memo_program_id.to_bytes();
+        let native_value = U256::from(0u64);
+        let eta = U256::from(1800000000u64);
+
+        // Create the governance payload
+        let gmp_payload = governance_gmp::GovernanceCommandPayload {
+            command: governance_gmp::GovernanceCommand::ScheduleTimeLockProposal,
+            target: target_bytes.to_vec().into(),
+            call_data: borsh::to_vec(&call_data).unwrap().into(),
+            native_value,
+            eta,
+        };
+        let encoded_payload = gmp_payload.abi_encode();
+
+        // Extract the proposal hash
+        let result = extract_proposal_hash_from_payload(&encoded_payload);
+        assert!(result.is_ok(), "Should successfully extract proposal hash");
+
+        let proposal_hash = result.unwrap();
+
+        // Verify by computing expected hash
+        let expected_hash = ExecutableProposal::calculate_hash(
+            &memo_program_id,
+            &call_data,
+            &native_value.to_le_bytes::<32>(),
+        );
+
+        assert_eq!(
+            proposal_hash, expected_hash,
+            "Extracted hash should match expected"
+        );
+    }
+
+    #[test]
+    fn test_extract_proposal_hash_with_native_value() {
+        let memo_program_id = solana_axelar_memo::ID;
+        let value_receiver = Pubkey::new_unique();
+        let governance_config_pda = Pubkey::new_unique();
+
+        let call_data =
+            create_memo_call_data("Proposal with value", value_receiver, governance_config_pda);
+
+        let target_bytes: [u8; 32] = memo_program_id.to_bytes();
+        let native_value_u64 = 1_000_000u64; // 0.001 SOL
+        let native_value = U256::from(native_value_u64);
+        let eta = U256::from(1800000000u64);
+
+        let gmp_payload = governance_gmp::GovernanceCommandPayload {
+            command: governance_gmp::GovernanceCommand::ScheduleTimeLockProposal,
+            target: target_bytes.to_vec().into(),
+            call_data: borsh::to_vec(&call_data).unwrap().into(),
+            native_value,
+            eta,
+        };
+        let encoded_payload = gmp_payload.abi_encode();
+
+        let result = extract_proposal_hash_from_payload(&encoded_payload);
+        assert!(result.is_ok());
+
+        let proposal_hash = result.unwrap();
+        let expected_hash = ExecutableProposal::calculate_hash(
+            &memo_program_id,
+            &call_data,
+            &native_value.to_le_bytes::<32>(),
+        );
+
+        assert_eq!(proposal_hash, expected_hash);
+    }
+
+    #[test]
+    fn test_extract_proposal_hash_approve_operator() {
+        let memo_program_id = solana_axelar_memo::ID;
+        let value_receiver = Pubkey::new_unique();
+        let governance_config_pda = Pubkey::new_unique();
+
+        let call_data =
+            create_memo_call_data("Operator proposal", value_receiver, governance_config_pda);
+
+        let target_bytes: [u8; 32] = memo_program_id.to_bytes();
+        let native_value = U256::from(0u64);
+        let eta = U256::from(1800000000u64);
+
+        // Different command type
+        let gmp_payload = governance_gmp::GovernanceCommandPayload {
+            command: governance_gmp::GovernanceCommand::ApproveOperatorProposal,
+            target: target_bytes.to_vec().into(),
+            call_data: borsh::to_vec(&call_data).unwrap().into(),
+            native_value,
+            eta,
+        };
+        let encoded_payload = gmp_payload.abi_encode();
+
+        let result = extract_proposal_hash_from_payload(&encoded_payload);
+        assert!(result.is_ok());
+
+        // Hash should be the same regardless of command type
+        let proposal_hash = result.unwrap();
+        let expected_hash = ExecutableProposal::calculate_hash(
+            &memo_program_id,
+            &call_data,
+            &native_value.to_le_bytes::<32>(),
+        );
+
+        assert_eq!(proposal_hash, expected_hash);
+    }
+
+    #[test]
+    fn test_extract_proposal_hash_invalid_payload() {
+        // Invalid/malformed payload
+        let invalid_payload = vec![0u8; 32];
+        let result = extract_proposal_hash_from_payload(&invalid_payload);
+        assert!(result.is_err(), "Should fail for invalid payload");
+    }
+
+    #[test]
+    fn test_extract_proposal_hash_invalid_target_length() {
+        // Create payload with invalid target length (not 32 bytes)
+        let short_target = vec![1u8; 16]; // Only 16 bytes instead of 32
+        let call_data = ExecuteProposalCallData {
+            solana_accounts: vec![],
+            solana_native_value_receiver_account: None,
+            call_data: vec![],
+        };
+
+        let gmp_payload = governance_gmp::GovernanceCommandPayload {
+            command: governance_gmp::GovernanceCommand::ScheduleTimeLockProposal,
+            target: short_target.into(),
+            call_data: borsh::to_vec(&call_data).unwrap().into(),
+            native_value: U256::from(0u64),
+            eta: U256::from(0u64),
+        };
+        let encoded_payload = gmp_payload.abi_encode();
+
+        let result = extract_proposal_hash_from_payload(&encoded_payload);
+        assert!(
+            result.is_err(),
+            "Should fail for invalid target length: {:?}",
+            result
+        );
     }
 
     #[test]

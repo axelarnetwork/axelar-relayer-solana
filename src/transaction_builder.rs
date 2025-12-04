@@ -10,8 +10,9 @@ use crate::utils::{
     get_token_mint_pda, get_validate_message_signing_pda,
 };
 use crate::{
-    error::TransactionBuilderError, transaction_type::SolanaTransactionType,
-    utils::get_gateway_event_authority_pda,
+    error::TransactionBuilderError,
+    transaction_type::SolanaTransactionType,
+    utils::{extract_proposal_hash_from_payload, get_gateway_event_authority_pda},
 };
 use anchor_lang::InstructionData;
 use anchor_lang::ToAccountMetas;
@@ -417,7 +418,7 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
         incoming_message_pda: Pubkey,
     ) -> Result<(Instruction, Option<ALTInfo>), TransactionBuilderError> {
         let (signing_pda, _) =
-            get_validate_message_signing_pda(&message.command_id(), &solana_axelar_gateway::ID);
+            get_validate_message_signing_pda(&message.command_id(), &solana_axelar_governance::ID);
         let (event_authority, _) = get_gateway_event_authority_pda();
         let (gateway_root_pda, _) = get_gateway_root_config_internal();
         let executable = solana_axelar_governance::accounts::AxelarExecuteAccounts {
@@ -430,8 +431,11 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
 
         let (governance_config, _) = get_governance_config_pda();
         let (governance_event_authority, _) = get_governance_event_authority_pda();
-        let (proposal_pda, _) = get_proposal_pda(&message.command_id());
-        let (operator_proposal_pda, _) = get_operator_proposal_pda(&message.command_id());
+
+        let proposal_hash = extract_proposal_hash_from_payload(payload)
+            .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+        let (proposal_pda, _) = get_proposal_pda(&proposal_hash);
+        let (operator_proposal_pda, _) = get_operator_proposal_pda(&proposal_hash);
 
         let accounts = solana_axelar_governance::accounts::ProcessGmp {
             executable,
@@ -554,12 +558,15 @@ mod tests {
     use crate::includer_client::MockIncluderClientTrait;
     use crate::transaction_builder::{TransactionBuilder, TransactionBuilderTrait};
     use crate::transaction_type::SolanaTransactionType;
+    use alloy_sol_types::SolValue;
     use anchor_lang::prelude::AccountMeta;
+    use governance_gmp::alloy_primitives::U256;
     use interchain_token_transfer_gmp::alloy_primitives::{Bytes, FixedBytes, Uint};
     use interchain_token_transfer_gmp::GMPPayload;
     use solana_axelar_gateway::executable::ExecutablePayload;
     use solana_axelar_gateway::payload::EncodingScheme;
     use solana_axelar_governance;
+    use solana_axelar_governance::ExecuteProposalCallData;
     use solana_axelar_its;
     use solana_axelar_std::{CrossChainId, Message};
     use solana_sdk::hash::Hash;
@@ -785,10 +792,8 @@ mod tests {
         let builder =
             TransactionBuilder::new(Arc::clone(&keypair), mock_gas, Arc::new(mock_client));
 
-        // ITS address should return Some(ALTInfo)
         let its_destination = solana_axelar_its::ID;
 
-        // Use a valid Pubkey for destination address (32 bytes)
         let destination_pubkey = Pubkey::new_unique();
         let destination_address_bytes = destination_pubkey.as_ref().to_vec();
         let token_id = [1u8; 32];
@@ -801,7 +806,6 @@ mod tests {
                 selector: Uint::from(0),
                 source_address: Bytes::from(vec![3u8; 20]),
             });
-        // Wrap in ReceiveFromHub as expected by build_its_instruction
         let inner_payload_bytes: Vec<u8> = inner_payload.encode();
         let gmp_payload =
             GMPPayload::ReceiveFromHub(interchain_token_transfer_gmp::ReceiveFromHub {
@@ -811,11 +815,8 @@ mod tests {
                     interchain_token_transfer_gmp::ReceiveFromHub::MESSAGE_TYPE_ID as u64,
                 ),
             });
-        // Encode the GMPPayload to bytes for passing to build_execute_instruction
-        // build_execute_instruction expects raw bytes (not base64) that can be decoded as GMPPayload
         let its_payload: Vec<u8> = gmp_payload.encode();
 
-        // Verify the payload can be decoded
         let _decoded =
             GMPPayload::decode(&its_payload).expect("Encoded GMPPayload should be decodable");
 
@@ -847,8 +848,6 @@ mod tests {
             its_alt.authority_keypair_str.is_some(),
             "ALTInfo should have authority_keypair_str from build_lookup_table_instructions"
         );
-        // Verify authority_keypair_str is a valid base58 string and can be parsed back to a keypair
-        // This ensures build_lookup_table_instructions correctly returns (Instruction, Instruction, Pubkey, String)
         let authority_str = its_alt.authority_keypair_str.unwrap();
         assert!(
             !authority_str.is_empty(),
@@ -856,12 +855,27 @@ mod tests {
         );
         let _authority_keypair = Keypair::from_base58_string(&authority_str);
 
-        // Governance address should return None
+        // Governance address should return None for ALTInfo
         let governance_destination = solana_axelar_governance::ID;
-        let governance_payload = b"governance-payload-data";
+
+        // Create a valid governance payload
+        let call_data = ExecuteProposalCallData {
+            solana_accounts: vec![],
+            solana_native_value_receiver_account: None,
+            call_data: vec![1, 2, 3], // Simple instruction data
+        };
+        let target_bytes: [u8; 32] = Pubkey::new_unique().to_bytes();
+        let gmp_payload = governance_gmp::GovernanceCommandPayload {
+            command: governance_gmp::GovernanceCommand::ScheduleTimeLockProposal,
+            target: target_bytes.to_vec().into(),
+            call_data: borsh::to_vec(&call_data).unwrap().into(),
+            native_value: U256::from(0u64),
+            eta: U256::from(0u64),
+        };
+        let governance_payload = gmp_payload.abi_encode();
 
         let (governance_instruction, governance_alt_info) = builder
-            .build_execute_instruction(&message, governance_payload, governance_destination, None)
+            .build_execute_instruction(&message, &governance_payload, governance_destination, None)
             .await
             .expect("Governance build_execute_instruction should succeed");
 
@@ -874,7 +888,6 @@ mod tests {
             "Governance should return None for ALTInfo"
         );
 
-        // Arbitrary program address should return None
         let arbitrary_destination = Pubkey::new_unique();
 
         let executable_payload = ExecutablePayload::new::<AccountMeta>(
@@ -931,7 +944,6 @@ mod tests {
         let destination_address_bytes = destination_pubkey.as_ref().to_vec();
         let token_id = [2u8; 32];
 
-        // Create an ExecutablePayload with some accounts
         let gmp_account1 = Pubkey::new_unique();
         let gmp_account2 = Pubkey::new_unique();
         let executable_payload = ExecutablePayload::new::<AccountMeta>(
@@ -944,7 +956,6 @@ mod tests {
         );
         let executable_payload_bytes = executable_payload.encode().unwrap();
 
-        // Create InterchainTransfer with ExecutablePayload in data field
         let inner_payload =
             GMPPayload::InterchainTransfer(interchain_token_transfer_gmp::InterchainTransfer {
                 token_id: FixedBytes::from(token_id),
@@ -955,7 +966,6 @@ mod tests {
                 source_address: Bytes::from(vec![4u8; 20]),
             });
 
-        // Wrap in ReceiveFromHub as expected by build_its_instruction
         let inner_payload_bytes: Vec<u8> = inner_payload.encode();
         let gmp_payload =
             GMPPayload::ReceiveFromHub(interchain_token_transfer_gmp::ReceiveFromHub {
@@ -974,11 +984,8 @@ mod tests {
 
         assert_eq!(its_instruction.program_id, solana_axelar_its::ID);
 
-        // Verify that the accounts from ExecutablePayload were added
-        // The accounts should include: ITS accounts + transfer accounts + ExecutablePayload accounts
         let instruction_accounts = &its_instruction.accounts;
 
-        // Check that gmp_account1 and gmp_account2 are in the accounts list
         let account_pubkeys: Vec<Pubkey> =
             instruction_accounts.iter().map(|acc| acc.pubkey).collect();
         assert!(

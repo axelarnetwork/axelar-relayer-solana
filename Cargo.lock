@@ -9562,6 +9562,7 @@ dependencies = [
 name = "solana"
 version = "0.1.0"
 dependencies = [
+ "alloy-sol-types",
  "anchor-lang",
  "anchor-spl",
  "anyhow",
@@ -9577,6 +9578,7 @@ dependencies = [
  "error-stack 0.5.0",
  "futures 0.3.31",
  "futures-util",
+ "governance-gmp",
  "hex",
  "httpmock",
  "interchain-token-transfer-gmp",
