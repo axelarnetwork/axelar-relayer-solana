@@ -49,7 +49,7 @@ impl SolanaTransaction {
         let ixs = meta.inner_instructions.clone();
         let cost_units = meta.cost_units.unwrap_or(0) + meta.fee; // base fee + gas paid for the tx
 
-        let account_keys = result
+        let mut account_keys = result
             .transaction
             .message
             .account_keys
@@ -57,6 +57,13 @@ impl SolanaTransaction {
             .iter()
             .map(|s| s.to_string())
             .collect::<Vec<String>>();
+
+        // For versioned transactions with Address Lookup Tables (ALT),
+        // the loaded addresses must be appended to get the complete account list.
+        if let Some(loaded) = &meta.loaded_addresses {
+            account_keys.extend(loaded.writable.iter().cloned());
+            account_keys.extend(loaded.readonly.iter().cloned());
+        }
 
         Ok(Self {
             signature,

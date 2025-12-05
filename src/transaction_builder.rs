@@ -6,8 +6,8 @@ use crate::utils::{
     get_gateway_root_config_internal, get_governance_config_pda,
     get_governance_event_authority_pda, get_incoming_message_pda, get_its_event_authority_pda,
     get_its_root_pda, get_minter_roles_pda, get_mpl_token_metadata_account,
-    get_operator_proposal_pda, get_proposal_pda, get_token_manager_ata, get_token_manager_pda,
-    get_token_mint_pda, get_validate_message_signing_pda,
+    get_operator_proposal_pda, get_proposal_pda, get_token_manager_ata_with_program,
+    get_token_manager_pda, get_token_mint_pda, get_validate_message_signing_pda,
 };
 use crate::{
     error::TransactionBuilderError,
@@ -235,6 +235,18 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
             .token_id()
             .map_err(|e| TransactionBuilderError::PayloadDecodeError(e.to_string()))?;
 
+        // Decode the inner payload first to determine the correct token_mint
+        let inner_payload = match gmp_decoded_payload.clone() {
+            GMPPayload::ReceiveFromHub(inner) => GMPPayload::decode(inner.payload.as_ref())
+                .map_err(|e| TransactionBuilderError::PayloadDecodeError(e.to_string()))?,
+            _ => {
+                error!("Unexpected GMP payload type: {:?}", gmp_decoded_payload);
+                return Err(TransactionBuilderError::GenericError(
+                    "Unexpected GMP payload type".to_string(),
+                ));
+            }
+        };
+
         let (signing_pda, _) =
             get_validate_message_signing_pda(&message.command_id(), &solana_axelar_its::ID);
         let (event_authority, _) = get_gateway_event_authority_pda();
@@ -249,9 +261,43 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
         };
 
         let (its_root_pda, _) = get_its_root_pda();
-        let (token_manager_pda, _) = get_token_manager_pda(&its_root_pda, &token_id);
-        let (token_mint, _) = get_token_mint_pda(&its_root_pda, &token_id);
-        let (token_manager_ata, _) = get_token_manager_ata(&token_manager_pda, &token_mint);
+        let (token_manager_pda, _) = get_token_manager_pda(&its_root_pda, &token_id)
+            .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+
+        let (token_mint, token_program) = match &inner_payload {
+            GMPPayload::LinkToken(ref link) => {
+                let mint_pubkey = Pubkey::try_from(link.destination_token_address.as_ref())
+                    .map_err(|e| {
+                        TransactionBuilderError::PayloadDecodeError(format!(
+                            "Invalid destination_token_address: {}",
+                            e
+                        ))
+                    })?;
+
+                let token_program_id =
+                    match self.includer_client.get_account_owner(&mint_pubkey).await {
+                        Ok(owner) => {
+                            if owner == spl_token_2022::ID {
+                                spl_token_2022::ID
+                            } else {
+                                anchor_spl::token::ID
+                            }
+                        }
+                        Err(_) => anchor_spl::token::ID,
+                    };
+
+                (mint_pubkey, token_program_id)
+            }
+            _ => (
+                get_token_mint_pda(&its_root_pda, &token_id)
+                    .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?
+                    .0,
+                spl_token_2022::ID,
+            ),
+        };
+
+        let (token_manager_ata, _) =
+            get_token_manager_ata_with_program(&token_manager_pda, &token_mint, &token_program);
 
         let mut accounts = solana_axelar_its::accounts::Execute {
             executable,
@@ -262,7 +308,7 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
             token_manager_pda,
             token_mint,
             token_manager_ata,
-            token_program: spl_token_2022::ID,
+            token_program,
             associated_token_program: spl_associated_token_account::ID,
             program: solana_axelar_its::ID,
         }
@@ -270,20 +316,7 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
 
         debug!("GMP decoded payload: {:?}", gmp_decoded_payload);
 
-        let gmp_decoded_payload = match gmp_decoded_payload.clone() {
-            GMPPayload::ReceiveFromHub(inner_payload) => {
-                GMPPayload::decode(inner_payload.payload.as_ref())
-                    .map_err(|e| TransactionBuilderError::PayloadDecodeError(e.to_string()))?
-            }
-            _ => {
-                error!("Unexpected GMP payload type: {:?}", gmp_decoded_payload);
-                return Err(TransactionBuilderError::GenericError(
-                    "Unexpected GMP payload type".to_string(),
-                ));
-            }
-        };
-
-        match gmp_decoded_payload {
+        match inner_payload {
             GMPPayload::InterchainTransfer(ref transfer) => {
                 let destination_address =
                     Pubkey::try_from(transfer.destination_address.as_ref())

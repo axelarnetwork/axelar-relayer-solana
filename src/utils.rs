@@ -236,47 +236,51 @@ pub fn get_gateway_root_config_internal() -> (Pubkey, u8) {
 }
 
 pub fn get_its_root_pda() -> (Pubkey, u8) {
-    Pubkey::find_program_address(
-        &[solana_axelar_its::seed_prefixes::ITS_SEED],
-        &solana_axelar_its::ID,
-    )
+    solana_axelar_its::InterchainTokenService::find_pda()
 }
 
 pub fn get_its_event_authority_pda() -> (Pubkey, u8) {
     Pubkey::find_program_address(&[b"__event_authority"], &solana_axelar_its::ID)
 }
 
-pub fn get_token_manager_pda(its_root_pda: &Pubkey, token_id: &[u8]) -> (Pubkey, u8) {
-    Pubkey::find_program_address(
-        &[
-            solana_axelar_its::seed_prefixes::TOKEN_MANAGER_SEED,
-            its_root_pda.as_ref(),
-            token_id,
-        ],
-        &solana_axelar_its::ID,
-    )
+pub fn get_token_manager_pda(
+    its_root_pda: &Pubkey,
+    token_id: &[u8],
+) -> Result<(Pubkey, u8), anyhow::Error> {
+    let token_id_array: [u8; 32] = token_id
+        .try_into()
+        .map_err(|e| anyhow::anyhow!("token_id must be 32 bytes: {}", e))?;
+    Ok(solana_axelar_its::TokenManager::find_pda(
+        token_id_array,
+        *its_root_pda,
+    ))
 }
 
-pub fn get_token_mint_pda(its_root_pda: &Pubkey, token_id: &[u8]) -> (Pubkey, u8) {
-    Pubkey::find_program_address(
-        &[
-            solana_axelar_its::seed_prefixes::INTERCHAIN_TOKEN_SEED,
-            its_root_pda.as_ref(),
-            token_id,
-        ],
-        &solana_axelar_its::ID,
-    )
+pub fn get_token_mint_pda(
+    its_root_pda: &Pubkey,
+    token_id: &[u8],
+) -> Result<(Pubkey, u8), anyhow::Error> {
+    let token_id_array: [u8; 32] = token_id
+        .try_into()
+        .map_err(|e| anyhow::anyhow!("token_id must be 32 bytes: {}", e))?;
+    Ok(solana_axelar_its::TokenManager::find_token_mint(
+        token_id_array,
+        *its_root_pda,
+    ))
 }
 
-pub fn get_token_manager_ata(token_manager_pda: &Pubkey, token_mint_pda: &Pubkey) -> (Pubkey, u8) {
-    Pubkey::find_program_address(
-        &[
-            token_manager_pda.as_ref(),
-            spl_token_2022::id().as_ref(),
-            token_mint_pda.as_ref(),
-        ],
-        &spl_associated_token_account::id(),
-    )
+pub fn get_token_manager_ata_with_program(
+    token_manager_pda: &Pubkey,
+    token_mint: &Pubkey,
+    token_program: &Pubkey,
+) -> (Pubkey, u8) {
+    let ata = anchor_spl::associated_token::get_associated_token_address_with_program_id(
+        token_manager_pda,
+        token_mint,
+        token_program,
+    );
+    // bump not used by the relayer so set it to 0
+    (ata, 0)
 }
 
 pub fn get_mpl_token_metadata_account(token_mint_pda: &Pubkey) -> (Pubkey, u8) {
@@ -291,14 +295,7 @@ pub fn get_mpl_token_metadata_account(token_mint_pda: &Pubkey) -> (Pubkey, u8) {
 }
 
 pub fn get_minter_roles_pda(token_manager_pda: &Pubkey, minter: &Pubkey) -> (Pubkey, u8) {
-    Pubkey::find_program_address(
-        &[
-            solana_axelar_its::state::UserRoles::SEED_PREFIX,
-            token_manager_pda.as_ref(),
-            minter.as_ref(),
-        ],
-        &solana_axelar_its::ID,
-    )
+    solana_axelar_its::UserRoles::find_pda(token_manager_pda, minter)
 }
 
 pub fn get_operator_pda(operator: &Pubkey) -> (Pubkey, u8) {

@@ -7,7 +7,7 @@ use base64::Engine;
 use borsh::BorshSerialize;
 use interchain_token_transfer_gmp::alloy_primitives::{Bytes, FixedBytes, Uint};
 use interchain_token_transfer_gmp::{
-    DeployInterchainToken, GMPPayload, InterchainTransfer, ReceiveFromHub,
+    DeployInterchainToken, GMPPayload, InterchainTransfer, LinkToken, ReceiveFromHub,
 };
 use relayer_core::gmp_api::gmp_types::Event;
 use relayer_core::includer_worker::IncluderTrait;
@@ -213,10 +213,6 @@ async fn test_approve_and_execute_its_message() {
         }
     }
 
-    println!("Cancelling poller...");
-    poller_handle.stop().await;
-    println!("Poller stopped");
-
     let queued_items = test_queue.get_items().await;
     println!("Queue contains {} items total", queued_items.len());
 
@@ -405,7 +401,6 @@ async fn test_approve_and_execute_its_message() {
         .expect("Failed to approve transfer message");
     println!("Transfer message approved!");
 
-    println!("Executing transfer...");
     let transfer_execute_task = ExecuteTask {
         common: CommonTaskFields {
             id: "test-its-transfer-execute-001".into(),
@@ -417,7 +412,7 @@ async fn test_approve_and_execute_its_message() {
         task: ExecuteTaskFields {
             message: GatewayV2Message {
                 message_id: transfer_message_id.to_string(),
-                source_chain: "ethereum".to_string(),
+                source_chain: "axelar".to_string(),
                 source_address: source_address.clone(),
                 destination_address: its_program_address.clone(),
                 payload_hash: BASE64_STANDARD.encode(transfer_payload_hash),
@@ -430,63 +425,40 @@ async fn test_approve_and_execute_its_message() {
         },
     };
 
+    test_queue.clear().await;
+
+    // Now execute the transfer
+    println!("Executing transfer...");
     match includer.handle_execute_task(transfer_execute_task).await {
         Ok(events) => {
             println!("Transfer executed successfully! Events: {:?}", events.len());
         }
         Err(e) => {
-            println!("Transfer execution failed: {:?}", e);
+            panic!("Transfer execution failed: {:?}", e);
         }
     }
 
-    // Verify MessageExecuted event
-    println!("Setting up poller to verify MessageExecuted event...");
-    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+    let mut found_transfer_tx = false;
+    let max_wait_transfer = std::time::Duration::from_secs(30);
+    let start_transfer = std::time::Instant::now();
 
-    test_queue.clear().await;
-
-    let events_queue_execute: Arc<dyn QueueTrait> = Arc::clone(&test_queue) as Arc<dyn QueueTrait>;
-    let poller_handle_execute = spawn_poller(
-        &env.rpc_url,
-        "test_its_execute_poller",
-        &env.transaction_model,
-        &env.postgres_db,
-        events_queue_execute,
-    )
-    .await;
-
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-
-    let mut found_execute_message_tx = false;
-    let max_wait_execute = std::time::Duration::from_secs(30);
-    let start_execute = std::time::Instant::now();
-
-    while start_execute.elapsed() < max_wait_execute && !found_execute_message_tx {
+    while start_transfer.elapsed() < max_wait_transfer && !found_transfer_tx {
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
         let queued_items = test_queue.get_items().await;
         for item in &queued_items {
             if let QueueItem::Transaction(tx_data) = item {
-                if tx_data.contains("Execute") {
-                    found_execute_message_tx = true;
-                    println!("Found MessageExecuted transaction in queue!");
+                if tx_data.contains("InterchainTransfer") {
+                    found_transfer_tx = true;
+                    println!("Found InterchainTransfer transaction in queue!");
                     break;
                 }
             }
         }
     }
 
-    println!("Cancelling poller...");
-    poller_handle_execute.stop().await;
-    println!("Poller stopped");
-
     let queued_items_execute = test_queue.get_items().await;
     println!("Queue contains {} items total", queued_items_execute.len());
-
-    assert!(
-        found_execute_message_tx,
-        "Should have found MessageExecuted transaction in queue"
-    );
 
     let mut mock_cost_cache_execute = MockCostCacheTrait::new();
     mock_cost_cache_execute
@@ -510,40 +482,43 @@ async fn test_approve_and_execute_its_message() {
     let mut found_executed_event = false;
     for item in &queued_items_execute {
         if let QueueItem::Transaction(tx_data) = item {
-            if tx_data.contains("MessageExecuted") {
-                match ingestor_execute
-                    .handle_transaction(tx_data.to_string())
-                    .await
-                {
-                    Ok(events) => {
-                        for event in &events {
-                            if let Event::MessageExecuted {
-                                common,
-                                message_id: event_message_id,
-                                source_chain: event_source_chain,
-                                status,
-                                cost,
-                                ..
-                            } = event
-                            {
-                                println!("Parsed MessageExecuted event!");
-                                println!("Event ID: {}", common.event_id);
-                                println!("Message ID: {}", event_message_id);
-                                println!("Source Chain: {}", event_source_chain);
-                                println!("Status: {:?}", status);
-                                println!("Cost: {:?}", cost);
+            // Try to parse all transactions
+            match ingestor_execute
+                .handle_transaction(tx_data.to_string())
+                .await
+            {
+                Ok(events) => {
+                    for event in &events {
+                        if let Event::MessageExecuted {
+                            common,
+                            message_id: event_message_id,
+                            source_chain: event_source_chain,
+                            status,
+                            cost,
+                            ..
+                        } = event
+                        {
+                            println!("Parsed MessageExecuted event!");
+                            println!("Event ID: {}", common.event_id);
+                            println!("Message ID: {}", event_message_id);
+                            println!("Source Chain: {}", event_source_chain);
+                            println!("Status: {:?}", status);
+                            println!("Cost: {:?}", cost);
 
-                                if *event_message_id == deploy_message_id
-                                    || *event_message_id == transfer_message_id
-                                {
-                                    found_executed_event = true;
-                                }
+                            if *event_message_id == deploy_message_id
+                                || *event_message_id == transfer_message_id
+                            {
+                                found_executed_event = true;
                             }
                         }
                     }
-                    Err(e) => {
-                        println!("Transaction parse note: {:?}", e);
+                }
+                Err(e) => {
+                    // Only print errors for transactions that look relevant
+                    if tx_data.contains("itsmM2AJ27dSAXVhCfj34MtnFqyUmnLF7kbKbmyqRQA") {
+                        println!("Parse error for ITS transaction: {:?}", e);
                     }
+                    panic!("Parse error: {:?}", e);
                 }
             }
         }
@@ -552,10 +527,378 @@ async fn test_approve_and_execute_its_message() {
     if found_executed_event {
         println!("MessageExecuted event parsed successfully!");
     } else {
-        println!("Note: MessageExecuted event may not have been parsed yet");
+        panic!("MessageExecuted event not found");
     }
 
+    println!("Link Token Test");
+
+    let link_mint_keypair = solana_sdk::signature::Keypair::new();
+    let link_mint_pubkey = link_mint_keypair.pubkey();
+
+    // Create the mint account
+    let rent = env
+        .rpc_client
+        .get_minimum_balance_for_rent_exemption(82)
+        .await
+        .unwrap();
+    let create_mint_ix = solana_sdk::system_instruction::create_account(
+        &env.payer.pubkey(),
+        &link_mint_pubkey,
+        rent,
+        82, // Mint account size
+        &anchor_spl::token::ID,
+    );
+
+    let init_mint_ix = anchor_spl::token::spl_token::instruction::initialize_mint(
+        &anchor_spl::token::ID,
+        &link_mint_pubkey,
+        &env.payer.pubkey(), // mint authority
+        None,                // freeze authority
+        9,                   // decimals
+    )
+    .unwrap();
+
+    let recent_blockhash = env.rpc_client.get_latest_blockhash().await.unwrap();
+    let create_mint_tx = solana_sdk::transaction::Transaction::new_signed_with_payer(
+        &[create_mint_ix, init_mint_ix],
+        Some(&env.payer.pubkey()),
+        &[&env.payer, &link_mint_keypair],
+        recent_blockhash,
+    );
+
+    env.rpc_client
+        .send_and_confirm_transaction(&create_mint_tx)
+        .await
+        .expect("Failed to create mint for link token test");
+
+    println!("Created mint for link token: {}", link_mint_pubkey);
+
+    let link_salt = [3u8; 32];
+    let link_token_id = interchain_token_id(&env.payer.pubkey(), &link_salt);
+
+    let link_message_id = "test-its-link-token-001";
+
+    let link_token = LinkToken {
+        selector: Uint::from(5u64),
+        token_id: FixedBytes::from(link_token_id),
+        token_manager_type: Uint::from(2u64), // LockUnlock = 2
+        source_token_address: Bytes::from(link_mint_pubkey.to_bytes().to_vec()),
+        destination_token_address: Bytes::from(link_mint_pubkey.to_bytes().to_vec()),
+        link_params: Bytes::from(vec![]), // No operator
+    };
+
+    let link_inner = GMPPayload::LinkToken(link_token).encode();
+    let link_receive_from_hub = ReceiveFromHub {
+        selector: Uint::from(4u64),
+        source_chain: "axelar".to_string(),
+        payload: Bytes::from(link_inner),
+    };
+
+    let link_gmp_payload = GMPPayload::ReceiveFromHub(link_receive_from_hub);
+    let link_payload_bytes = link_gmp_payload.encode();
+    let link_payload_hash = solana_sdk::keccak::hashv(&[&link_payload_bytes]).to_bytes();
+
+    let link_message = Message {
+        cc_id: CrossChainId {
+            chain: "axelar".to_string(),
+            id: link_message_id.to_string(),
+        },
+        source_address: source_address.clone(),
+        destination_chain: "solana-devnet".to_string(),
+        destination_address: its_program_address.clone(),
+        payload_hash: link_payload_hash,
+    };
+
+    let link_message_leaf = MessageLeaf {
+        message: link_message.clone(),
+        position: 0,
+        set_size: 1,
+        domain_separator: env.domain_separator,
+    };
+
+    let link_leaf_hash = link_message_leaf.hash();
+    let link_merkle_tree = MerkleTree::from_leaves(&[link_leaf_hash]);
+    let link_merkle_root = link_merkle_tree.root().expect("merkle root");
+
+    let link_verifier_info_1 = create_verifier_info(
+        &env.verifier_secret_keys[0],
+        link_merkle_root,
+        &env.verifier_leaves[0],
+        0,
+        &env.verifier_merkle_tree,
+    );
+    let link_verifier_info_2 = create_verifier_info(
+        &env.verifier_secret_keys[1],
+        link_merkle_root,
+        &env.verifier_leaves[1],
+        1,
+        &env.verifier_merkle_tree,
+    );
+
+    let link_execute_data = ExecuteData {
+        payload_merkle_root: link_merkle_root,
+        signing_verifier_set_merkle_root: env.verifier_set_hash,
+        signing_verifier_set_leaves: vec![link_verifier_info_1, link_verifier_info_2],
+        payload_items: MerklizedPayload::NewMessages {
+            messages: vec![MerklizedMessage {
+                leaf: link_message_leaf,
+                proof: vec![],
+            }],
+        },
+    };
+
+    println!("Approving link token message...");
+    let link_gateway_task = GatewayTxTask {
+        common: CommonTaskFields {
+            id: "test-its-link-gateway-001".into(),
+            chain: "solana-devnet".into(),
+            timestamp: "2025-11-26T14:47:22.567796Z".into(),
+            r#type: "GATEWAY_TX".into(),
+            meta: None,
+        },
+        task: GatewayTxTaskFields {
+            execute_data: BASE64_STANDARD.encode(link_execute_data.try_to_vec().unwrap()),
+        },
+    };
+
+    includer
+        .handle_gateway_tx_task(link_gateway_task)
+        .await
+        .expect("Failed to approve link token message");
+    println!("Link token message approved!");
+
+    let link_execute_task = ExecuteTask {
+        common: CommonTaskFields {
+            id: "test-its-link-execute-001".into(),
+            chain: "solana-devnet".into(),
+            timestamp: "2025-11-26T14:47:23.567796Z".into(),
+            r#type: "EXECUTE".into(),
+            meta: None,
+        },
+        task: ExecuteTaskFields {
+            message: GatewayV2Message {
+                message_id: link_message_id.to_string(),
+                source_chain: "axelar".to_string(),
+                source_address: source_address.clone(),
+                destination_address: its_program_address.clone(),
+                payload_hash: BASE64_STANDARD.encode(link_payload_hash),
+            },
+            payload: BASE64_STANDARD.encode(&link_payload_bytes),
+            available_gas_balance: Amount {
+                token_id: None,
+                amount: "10000000000".to_string(),
+            },
+        },
+    };
+
+    println!("Executing link token...");
+    let link_result = includer.handle_execute_task(link_execute_task).await;
+    match &link_result {
+        Ok(events) => {
+            println!("Link token transaction sent! Events: {:?}", events.len());
+            for event in events {
+                println!("Event: {:?}", event);
+            }
+        }
+        Err(e) => {
+            panic!("Link token execution error: {:?}", e);
+        }
+    }
+
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+    println!("Link Token (SPL Token) test completed");
+
+    println!("Link Token Test (Token-2022)");
+
+    let link_mint_2022_keypair = solana_sdk::signature::Keypair::new();
+    let link_mint_2022_pubkey = link_mint_2022_keypair.pubkey();
+
+    let rent_2022 = env
+        .rpc_client
+        .get_minimum_balance_for_rent_exemption(82)
+        .await
+        .unwrap();
+    let create_mint_2022_ix = solana_sdk::system_instruction::create_account(
+        &env.payer.pubkey(),
+        &link_mint_2022_pubkey,
+        rent_2022,
+        82, // Mint account size
+        &anchor_spl::token_2022::ID,
+    );
+
+    let init_mint_2022_ix = anchor_spl::token_2022::spl_token_2022::instruction::initialize_mint(
+        &anchor_spl::token_2022::ID,
+        &link_mint_2022_pubkey,
+        &env.payer.pubkey(), // mint authority
+        None,                // freeze authority
+        9,                   // decimals
+    )
+    .unwrap();
+
+    let recent_blockhash_2022 = env.rpc_client.get_latest_blockhash().await.unwrap();
+    let create_mint_2022_tx = solana_sdk::transaction::Transaction::new_signed_with_payer(
+        &[create_mint_2022_ix, init_mint_2022_ix],
+        Some(&env.payer.pubkey()),
+        &[&env.payer, &link_mint_2022_keypair],
+        recent_blockhash_2022,
+    );
+
+    env.rpc_client
+        .send_and_confirm_transaction(&create_mint_2022_tx)
+        .await
+        .expect("Failed to create Token-2022 mint for link token test");
+
+    println!(
+        "Created Token-2022 mint for link token: {}",
+        link_mint_2022_pubkey
+    );
+
+    let link_salt_2022 = [4u8; 32];
+    let link_token_id_2022 = interchain_token_id(&env.payer.pubkey(), &link_salt_2022);
+
+    let link_message_id_2022 = "test-its-link-token-2022-001";
+
+    let link_token_2022 = LinkToken {
+        selector: Uint::from(5u64),
+        token_id: FixedBytes::from(link_token_id_2022),
+        token_manager_type: Uint::from(2u64), // LockUnlock = 2
+        source_token_address: Bytes::from(link_mint_2022_pubkey.to_bytes().to_vec()),
+        destination_token_address: Bytes::from(link_mint_2022_pubkey.to_bytes().to_vec()),
+        link_params: Bytes::from(vec![]), // No operator
+    };
+
+    let link_inner_2022 = GMPPayload::LinkToken(link_token_2022).encode();
+    let link_receive_from_hub_2022 = ReceiveFromHub {
+        selector: Uint::from(4u64),
+        source_chain: "axelar".to_string(),
+        payload: Bytes::from(link_inner_2022),
+    };
+
+    let link_gmp_payload_2022 = GMPPayload::ReceiveFromHub(link_receive_from_hub_2022);
+    let link_payload_bytes_2022 = link_gmp_payload_2022.encode();
+    let link_payload_hash_2022 = solana_sdk::keccak::hashv(&[&link_payload_bytes_2022]).to_bytes();
+
+    let link_message_2022 = Message {
+        cc_id: CrossChainId {
+            chain: "axelar".to_string(),
+            id: link_message_id_2022.to_string(),
+        },
+        source_address: source_address.clone(),
+        destination_chain: "solana-devnet".to_string(),
+        destination_address: its_program_address.clone(),
+        payload_hash: link_payload_hash_2022,
+    };
+
+    let link_message_leaf_2022 = MessageLeaf {
+        message: link_message_2022.clone(),
+        position: 0,
+        set_size: 1,
+        domain_separator: env.domain_separator,
+    };
+
+    let link_leaf_hash_2022 = link_message_leaf_2022.hash();
+    let link_merkle_tree_2022 = MerkleTree::from_leaves(&[link_leaf_hash_2022]);
+    let link_merkle_root_2022 = link_merkle_tree_2022.root().expect("merkle root");
+
+    let link_verifier_info_2022_1 = create_verifier_info(
+        &env.verifier_secret_keys[0],
+        link_merkle_root_2022,
+        &env.verifier_leaves[0],
+        0,
+        &env.verifier_merkle_tree,
+    );
+    let link_verifier_info_2022_2 = create_verifier_info(
+        &env.verifier_secret_keys[1],
+        link_merkle_root_2022,
+        &env.verifier_leaves[1],
+        1,
+        &env.verifier_merkle_tree,
+    );
+
+    let link_execute_data_2022 = ExecuteData {
+        payload_merkle_root: link_merkle_root_2022,
+        signing_verifier_set_merkle_root: env.verifier_set_hash,
+        signing_verifier_set_leaves: vec![link_verifier_info_2022_1, link_verifier_info_2022_2],
+        payload_items: MerklizedPayload::NewMessages {
+            messages: vec![MerklizedMessage {
+                leaf: link_message_leaf_2022,
+                proof: vec![],
+            }],
+        },
+    };
+
+    println!("Approving link token (Token-2022) message...");
+    let link_gateway_task_2022 = GatewayTxTask {
+        common: CommonTaskFields {
+            id: "test-its-link-gateway-2022-001".into(),
+            chain: "solana-devnet".into(),
+            timestamp: "2025-11-26T14:47:24.567796Z".into(),
+            r#type: "GATEWAY_TX".into(),
+            meta: None,
+        },
+        task: GatewayTxTaskFields {
+            execute_data: BASE64_STANDARD.encode(link_execute_data_2022.try_to_vec().unwrap()),
+        },
+    };
+
+    includer
+        .handle_gateway_tx_task(link_gateway_task_2022)
+        .await
+        .expect("Failed to approve link token (Token-2022) message");
+    println!("Link token (Token-2022) message approved!");
+
+    let link_execute_task_2022 = ExecuteTask {
+        common: CommonTaskFields {
+            id: "test-its-link-execute-2022-001".into(),
+            chain: "solana-devnet".into(),
+            timestamp: "2025-11-26T14:47:25.567796Z".into(),
+            r#type: "EXECUTE".into(),
+            meta: None,
+        },
+        task: ExecuteTaskFields {
+            message: GatewayV2Message {
+                message_id: link_message_id_2022.to_string(),
+                source_chain: "axelar".to_string(),
+                source_address: source_address.clone(),
+                destination_address: its_program_address.clone(),
+                payload_hash: BASE64_STANDARD.encode(link_payload_hash_2022),
+            },
+            payload: BASE64_STANDARD.encode(&link_payload_bytes_2022),
+            available_gas_balance: Amount {
+                token_id: None,
+                amount: "10000000000".to_string(),
+            },
+        },
+    };
+
+    println!("Executing link token (Token-2022)...");
+    let link_result_2022 = includer.handle_execute_task(link_execute_task_2022).await;
+    match &link_result_2022 {
+        Ok(events) => {
+            println!(
+                "Link token (Token-2022) transaction sent! Events: {:?}",
+                events.len()
+            );
+            for event in events {
+                println!("Event: {:?}", event);
+            }
+        }
+        Err(e) => {
+            panic!("Link token (Token-2022) execution error: {:?}", e);
+        }
+    }
+
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+    println!("Link Token (Token-2022) test completed");
+
     println!("ITS Integration Test Completed");
+
+    println!("Stopping poller...");
+    poller_handle.stop().await;
+    println!("Poller stopped");
+
     test_queue.clear().await;
     env.cleanup().await;
 }

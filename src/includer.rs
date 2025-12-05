@@ -211,8 +211,8 @@ impl<
         &self,
         instruction: Instruction,
         task: ExecuteTask,
-        accounts: &[AccountMeta],
-        existing_alt_pubkey: Option<Pubkey>,
+        accounts: &[AccountMeta], // The accounts for which we need to create an ALT. We skip creation if it's empty
+        existing_alt_pubkey: Option<Pubkey>, // The pubkey of an existing ALT. We skip creation if exists already and re-use it
     ) -> Result<Vec<Event>, IncluderError> {
         let mut alt_cost = None;
         let mut available_gas_balance = i64::from_str(&task.task.available_gas_balance.amount)
@@ -265,8 +265,11 @@ impl<
             self.wait_for_alt_activation(&alt_pubkey, accounts.len())
                 .await?;
 
-            // Wait for ALT to be fully propagated before using it in the main transaction
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            // Wait for ALT to be fully propagated before using it in the main transaction.
+            // The delay ensures that when we fetch a new blockhash for the main transaction,
+            // that blockhash's slot is AFTER the ALT creation slot. Otherwise, the transaction
+            // will fail with "Transaction address table lookup uses an invalid index".
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
             self.redis_conn
                 .write_gas_cost_for_message_id(

@@ -28,6 +28,7 @@ pub trait IncluderClientTrait: ThreadSafe {
     async fn get_latest_blockhash(&self) -> Result<Hash, IncluderClientError>;
     async fn get_account_data(&self, pubkey: &Pubkey) -> Result<Vec<u8>, IncluderClientError>;
     async fn get_account(&self, pubkey: &Pubkey) -> Result<Account, IncluderClientError>;
+    async fn get_account_owner(&self, pubkey: &Pubkey) -> Result<Pubkey, IncluderClientError>;
     async fn get_slot(&self) -> Result<u64, IncluderClientError>;
     async fn get_recent_prioritization_fees(
         &self,
@@ -102,6 +103,11 @@ impl IncluderClientTrait for IncluderClient {
             .get_account(pubkey)
             .await
             .map_err(|e| IncluderClientError::GenericError(e.to_string()))
+    }
+
+    async fn get_account_owner(&self, pubkey: &Pubkey) -> Result<Pubkey, IncluderClientError> {
+        let account = self.get_account(pubkey).await?;
+        Ok(account.owner)
     }
 
     async fn get_slot(&self) -> Result<u64, IncluderClientError> {
