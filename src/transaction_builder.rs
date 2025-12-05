@@ -1086,7 +1086,7 @@ mod tests {
 
         // Should fail with PayloadDecodeError when signer accounts are detected
         let result = builder
-            .build_execute_instruction(&message, &its_payload, its_destination, None)
+            .build_execute_instruction(&message, &its_payload, its_destination)
             .await;
 
         assert!(
