@@ -884,6 +884,131 @@ async fn test_refund_task_handled_and_found_by_poller() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_refund_task_duplicate_returns_already_processed() {
+    use solana_transaction_parser::gmp_types::{
+        Amount, CommonTaskFields, GatewayV2Message, RefundTask, RefundTaskFields,
+    };
+
+    let env = TestEnvironment::new().await;
+
+    let components = create_includer_components(&env.rpc_url, &env.operator);
+    let mock_redis = create_mock_redis();
+    let mock_gmp_api = create_mock_gmp_api_for_execute();
+
+    let refunds_model = Arc::new(env.postgres_db.clone());
+
+    let includer = SolanaIncluder::new(
+        Arc::new(components.includer_client),
+        components.keypair,
+        "solana-devnet".to_string(),
+        components.transaction_builder,
+        Arc::new(mock_gmp_api),
+        mock_redis,
+        Arc::clone(&refunds_model),
+    );
+
+    use solana::utils::get_treasury_pda;
+    let (treasury, _) = get_treasury_pda();
+    let treasury_funding_amount = 20 * LAMPORTS_PER_SOL;
+
+    #[allow(deprecated)]
+    let fund_treasury_ix =
+        system_instruction::transfer(&env.payer.pubkey(), &treasury, treasury_funding_amount);
+
+    let recent_blockhash = env
+        .rpc_client
+        .get_latest_blockhash()
+        .await
+        .expect("Failed to get blockhash");
+
+    let fund_treasury_tx = Transaction::new_signed_with_payer(
+        &[fund_treasury_ix],
+        Some(&env.payer.pubkey()),
+        &[&env.payer],
+        recent_blockhash,
+    );
+
+    env.rpc_client
+        .send_and_confirm_transaction(&fund_treasury_tx)
+        .await
+        .expect("Failed to fund treasury");
+
+    println!("Treasury funded");
+
+    let refund_recipient = Keypair::new().pubkey();
+    let refund_amount = 5_000_000_000u64; // 5 SOL
+    let message_id = "test-duplicate-refund-message-001".to_string();
+    let refund_id = "test-duplicate-refund-task-001".to_string();
+
+    let refund_task = RefundTask {
+        common: CommonTaskFields {
+            id: refund_id.clone(),
+            chain: "solana-devnet".to_string(),
+            timestamp: chrono::Utc::now().to_string(),
+            r#type: "refund".to_string(),
+            meta: None,
+        },
+        task: RefundTaskFields {
+            message: GatewayV2Message {
+                message_id: message_id.clone(),
+                source_chain: "ethereum".to_string(),
+                destination_address: "test-destination".to_string(),
+                payload_hash: "test-payload-hash".to_string(),
+                source_address: solana_sdk::pubkey::Pubkey::new_unique().to_string(),
+            },
+            refund_recipient_address: refund_recipient.to_string(),
+            remaining_gas_balance: Amount {
+                amount: refund_amount.to_string(),
+                token_id: None,
+            },
+        },
+    };
+
+    // First call - should process the refund
+    println!("Processing refund task first time...");
+    let first_result = includer.handle_refund_task(refund_task.clone()).await;
+    assert!(
+        first_result.is_ok(),
+        "First refund should succeed: {:?}",
+        first_result
+    );
+    println!("First refund processed successfully!");
+
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+    let refund_record = refunds_model
+        .find(refund_id.clone())
+        .await
+        .expect("Should query database");
+    assert!(
+        refund_record.is_some(),
+        "Refund should be recorded in database after first processing"
+    );
+    println!("Refund recorded in database");
+
+    println!("Processing same refund task second time...");
+    let second_result = includer.handle_refund_task(refund_task).await;
+    assert!(
+        second_result.is_ok(),
+        "Second refund should return Ok (already processed): {:?}",
+        second_result
+    );
+    println!("Second refund call returned Ok (correctly identified as already processed)");
+
+    let refund_record_after = refunds_model
+        .find(refund_id.clone())
+        .await
+        .expect("Should query database");
+    assert_eq!(
+        refund_record, refund_record_after,
+        "Database record should be unchanged after duplicate refund attempt"
+    );
+
+    println!("Duplicate Refund Task Test Completed");
+    env.cleanup().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_rotate_signers() {
     use base64::prelude::BASE64_STANDARD;
     use base64::Engine;
