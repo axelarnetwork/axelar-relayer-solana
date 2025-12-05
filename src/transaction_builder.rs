@@ -307,6 +307,14 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
                     match ExecutablePayload::decode(transfer.data.as_ref()) {
                         Ok(executable_payload) => {
                             let gmp_accounts = executable_payload.account_meta();
+                            for account in gmp_accounts.clone() {
+                                // signers are not supported for arbitrary executables
+                                if account.is_signer {
+                                    return Err(TransactionBuilderError::PayloadDecodeError(
+                                        "Signer account cannot be provided".to_string(),
+                                    ));
+                                };
+                            }
                             accounts.extend(gmp_accounts);
                         }
                         Err(e) => {
@@ -471,7 +479,15 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
         let decoded_payload = ExecutablePayload::decode(payload)
             .map_err(|e| TransactionBuilderError::PayloadDecodeError(e.to_string()))?; // return custom error to send cannot_execute_message
 
+        // signers are not supported for arbitrary executables
         let user_provided_accounts = decoded_payload.account_meta();
+        for account in user_provided_accounts.clone() {
+            if account.is_signer {
+                return Err(TransactionBuilderError::PayloadDecodeError(
+                    "Signer account cannot be provided".to_string(),
+                ));
+            };
+        }
 
         let (signing_pda, _) =
             get_validate_message_signing_pda(&message.command_id(), &destination_address);
@@ -1053,6 +1069,157 @@ mod tests {
         match result {
             Err(TransactionBuilderError::PayloadDecodeError(_)) => {
                 // Expected error type
+            }
+            Err(e) => panic!(
+                "Expected PayloadDecodeError, but got different error: {:?}",
+                e
+            ),
+            Ok(_) => panic!("Expected error but got success"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_build_its_instruction_interchain_transfer_rejects_signer_accounts() {
+        let keypair = Arc::new(Keypair::new());
+        let mock_gas = MockGasCalculatorTrait::new();
+        let mock_client = MockIncluderClientTrait::new();
+
+        let message = Message {
+            cc_id: CrossChainId {
+                chain: "ethereum".to_string(),
+                id: "test-message-id-reject-signers".to_string(),
+            },
+            source_address: "0x1234567890123456789012345678901234567890".to_string(),
+            destination_chain: "solana".to_string(),
+            destination_address: "test-destination".to_string(),
+            payload_hash: [0u8; 32],
+        };
+
+        let builder =
+            TransactionBuilder::new(Arc::clone(&keypair), mock_gas, Arc::new(mock_client));
+
+        let its_destination = solana_axelar_its::ID;
+        let destination_pubkey = Pubkey::new_unique();
+        let destination_address_bytes = destination_pubkey.as_ref().to_vec();
+        let token_id = [3u8; 32];
+
+        // Create an ExecutablePayload with accounts that have is_signer: true
+        let gmp_account1 = Pubkey::new_unique();
+        let gmp_account2 = Pubkey::new_unique();
+        let executable_payload = ExecutablePayload::new::<AccountMeta>(
+            &[10, 20, 30, 40], // payload data
+            &[
+                AccountMeta::new(gmp_account1, true), // is_signer: true - should be rejected
+                AccountMeta::new_readonly(gmp_account2, true), // is_signer: true, readonly - should be rejected
+            ],
+            EncodingScheme::Borsh,
+        );
+        let executable_payload_bytes = executable_payload.encode().unwrap();
+
+        // Create InterchainTransfer with ExecutablePayload in data field
+        let inner_payload =
+            GMPPayload::InterchainTransfer(interchain_token_transfer_gmp::InterchainTransfer {
+                token_id: FixedBytes::from(token_id),
+                destination_address: Bytes::from(destination_address_bytes),
+                amount: Uint::from(1000u64),
+                data: Bytes::from(executable_payload_bytes.clone()),
+                selector: Uint::from(0),
+                source_address: Bytes::from(vec![5u8; 20]),
+            });
+
+        // Wrap in ReceiveFromHub as expected by build_its_instruction
+        let inner_payload_bytes: Vec<u8> = inner_payload.encode();
+        let gmp_payload =
+            GMPPayload::ReceiveFromHub(interchain_token_transfer_gmp::ReceiveFromHub {
+                payload: Bytes::from(inner_payload_bytes),
+                source_chain: "ethereum".to_string(),
+                selector: Uint::from(
+                    interchain_token_transfer_gmp::ReceiveFromHub::MESSAGE_TYPE_ID as u64,
+                ),
+            });
+        let its_payload: Vec<u8> = gmp_payload.encode();
+
+        // Should fail with PayloadDecodeError when signer accounts are detected
+        let result = builder
+            .build_execute_instruction(&message, &its_payload, its_destination, None)
+            .await;
+
+        assert!(
+            result.is_err(),
+            "build_execute_instruction should fail when signer accounts are provided"
+        );
+
+        match result {
+            Err(TransactionBuilderError::PayloadDecodeError(msg)) => {
+                assert!(
+                    msg.contains("Signer account cannot be provided"),
+                    "Error message should indicate signer accounts are not allowed"
+                );
+            }
+            Err(e) => panic!(
+                "Expected PayloadDecodeError, but got different error: {:?}",
+                e
+            ),
+            Ok(_) => panic!("Expected error but got success"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_build_executable_instruction_rejects_signer_accounts() {
+        let keypair = Arc::new(Keypair::new());
+        let mock_gas = MockGasCalculatorTrait::new();
+        let mock_client = MockIncluderClientTrait::new();
+
+        let message = Message {
+            cc_id: CrossChainId {
+                chain: "ethereum".to_string(),
+                id: "test-message-id-executable-reject-signers".to_string(),
+            },
+            source_address: "0x1234567890123456789012345678901234567890".to_string(),
+            destination_chain: "solana".to_string(),
+            destination_address: "test-destination".to_string(),
+            payload_hash: [0u8; 32],
+        };
+
+        let builder =
+            TransactionBuilder::new(Arc::clone(&keypair), mock_gas, Arc::new(mock_client));
+
+        let destination_program = Pubkey::new_unique();
+
+        // Create an ExecutablePayload with accounts that have is_signer: true
+        let user_account1 = Pubkey::new_unique();
+        let user_account2 = Pubkey::new_unique();
+        let executable_payload = ExecutablePayload::new::<AccountMeta>(
+            &[10, 20, 30, 40, 50], // payload data
+            &[
+                AccountMeta::new(user_account1, true), // is_signer: true - should be rejected
+                AccountMeta::new_readonly(user_account2, true), // is_signer: true, readonly - should be rejected
+            ],
+            EncodingScheme::Borsh,
+        );
+        let executable_payload_bytes = executable_payload.encode().unwrap();
+
+        // Should fail with PayloadDecodeError when signer accounts are detected
+        let result = builder
+            .build_executable_instruction(
+                &message,
+                &executable_payload_bytes,
+                Pubkey::new_unique(),
+                destination_program,
+            )
+            .await;
+
+        assert!(
+            result.is_err(),
+            "build_executable_instruction should fail when signer accounts are provided"
+        );
+
+        match result {
+            Err(TransactionBuilderError::PayloadDecodeError(msg)) => {
+                assert!(
+                    msg.contains("Signer account cannot be provided"),
+                    "Error message should indicate signer accounts are not allowed"
+                );
             }
             Err(e) => panic!(
                 "Expected PayloadDecodeError, but got different error: {:?}",
