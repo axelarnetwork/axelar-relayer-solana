@@ -902,3 +902,604 @@ async fn test_approve_and_execute_its_message() {
     test_queue.clear().await;
     env.cleanup().await;
 }
+
+// DeployInterchainToken with minter
+// LinkToken with operator
+// Interchain transfer with execute data
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_its_messages_with_optional_fields() {
+    let env = TestEnvironment::new().await;
+
+    let its_hub_address = env.its_hub_address.clone();
+    let its_program_address = solana_axelar_its::ID.to_string();
+
+    let components = create_includer_components(&env.rpc_url, &env.payer);
+    let mock_redis = create_mock_redis();
+    let mock_gmp_api = create_mock_gmp_api_for_execute();
+    let mock_refunds_model = MockRefundsModel::new();
+
+    let includer = SolanaIncluder::new(
+        Arc::new(components.includer_client),
+        components.keypair,
+        "solana-devnet".to_string(),
+        components.transaction_builder,
+        Arc::new(mock_gmp_api),
+        mock_redis,
+        Arc::new(mock_refunds_model),
+    );
+
+    println!("DeployInterchainToken with Minter");
+
+    let deploy_message_id = "test-its-deploy-with-minter-001";
+    let source_address = its_hub_address.clone();
+
+    let salt = [10u8; 32];
+    let token_id = interchain_token_id(&env.payer.pubkey(), &salt);
+
+    let minter_pubkey = env.payer.pubkey();
+    let minter_bytes = minter_pubkey.to_bytes().to_vec();
+
+    let deploy_token = DeployInterchainToken {
+        selector: Uint::from(1u64),
+        token_id: FixedBytes::from(token_id),
+        name: "Minted Token".to_string(),
+        symbol: "MINT".to_string(),
+        decimals: 6,
+        minter: Bytes::from(minter_bytes),
+    };
+
+    let deploy_inner = GMPPayload::DeployInterchainToken(deploy_token).encode();
+    let deploy_receive_from_hub = ReceiveFromHub {
+        selector: Uint::from(4u64),
+        source_chain: "axelar".to_string(),
+        payload: Bytes::from(deploy_inner),
+    };
+
+    let deploy_gmp_payload = GMPPayload::ReceiveFromHub(deploy_receive_from_hub);
+    let deploy_payload_bytes = deploy_gmp_payload.encode();
+    let deploy_payload_hash = solana_sdk::keccak::hashv(&[&deploy_payload_bytes]).to_bytes();
+
+    let deploy_message = Message {
+        cc_id: CrossChainId {
+            chain: "axelar".to_string(),
+            id: deploy_message_id.to_string(),
+        },
+        source_address: source_address.clone(),
+        destination_chain: "solana-devnet".to_string(),
+        destination_address: its_program_address.clone(),
+        payload_hash: deploy_payload_hash,
+    };
+
+    let deploy_message_leaf = MessageLeaf {
+        message: deploy_message.clone(),
+        position: 0,
+        set_size: 1,
+        domain_separator: env.domain_separator,
+    };
+    let deploy_leaf_hash = deploy_message_leaf.hash();
+    let deploy_merkle_tree = MerkleTree::from_leaves(&[deploy_leaf_hash]);
+    let deploy_merkle_root = deploy_merkle_tree.root().expect("merkle root");
+
+    let deploy_verifier_info_1 = create_verifier_info(
+        &env.verifier_secret_keys[0],
+        deploy_merkle_root,
+        &env.verifier_leaves[0],
+        0,
+        &env.verifier_merkle_tree,
+    );
+    let deploy_verifier_info_2 = create_verifier_info(
+        &env.verifier_secret_keys[1],
+        deploy_merkle_root,
+        &env.verifier_leaves[1],
+        1,
+        &env.verifier_merkle_tree,
+    );
+
+    let deploy_execute_data = ExecuteData {
+        payload_merkle_root: deploy_merkle_root,
+        signing_verifier_set_merkle_root: env.verifier_set_hash,
+        signing_verifier_set_leaves: vec![deploy_verifier_info_1, deploy_verifier_info_2],
+        payload_items: MerklizedPayload::NewMessages {
+            messages: vec![MerklizedMessage {
+                leaf: deploy_message_leaf,
+                proof: vec![],
+            }],
+        },
+    };
+
+    println!("Approving deploy message with minter...");
+    let deploy_gateway_task = GatewayTxTask {
+        common: CommonTaskFields {
+            id: "test-its-deploy-minter-gateway-001".into(),
+            chain: "solana-devnet".into(),
+            timestamp: "2025-12-05T10:00:00.000000Z".into(),
+            r#type: "GATEWAY_TX".into(),
+            meta: None,
+        },
+        task: GatewayTxTaskFields {
+            execute_data: BASE64_STANDARD.encode(deploy_execute_data.try_to_vec().unwrap()),
+        },
+    };
+
+    includer
+        .handle_gateway_tx_task(deploy_gateway_task)
+        .await
+        .expect("Failed to approve deploy message with minter");
+    println!("Deploy message with minter approved!");
+
+    let deploy_execute_task = ExecuteTask {
+        common: CommonTaskFields {
+            id: "test-its-deploy-minter-execute-001".into(),
+            chain: "solana-devnet".into(),
+            timestamp: "2025-12-05T10:00:01.000000Z".into(),
+            r#type: "EXECUTE".into(),
+            meta: None,
+        },
+        task: ExecuteTaskFields {
+            message: GatewayV2Message {
+                message_id: deploy_message_id.to_string(),
+                source_chain: "axelar".to_string(),
+                source_address: source_address.clone(),
+                destination_address: its_program_address.clone(),
+                payload_hash: BASE64_STANDARD.encode(deploy_payload_hash),
+            },
+            payload: BASE64_STANDARD.encode(&deploy_payload_bytes),
+            available_gas_balance: Amount {
+                token_id: None,
+                amount: "15000000000".to_string(), // Different gas amount
+            },
+        },
+    };
+
+    println!("Executing deploy with minter...");
+    match includer.handle_execute_task(deploy_execute_task).await {
+        Ok(events) => {
+            println!(
+                "Deploy with minter executed successfully! Events: {:?}",
+                events.len()
+            );
+        }
+        Err(e) => {
+            panic!("Deploy with minter execution failed: {:?}", e);
+        }
+    }
+
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+    println!("DeployInterchainToken with minter test completed!");
+
+    println!("LinkToken with Operator");
+
+    let link_mint_keypair = solana_sdk::signature::Keypair::new();
+    let link_mint_pubkey = link_mint_keypair.pubkey();
+
+    // Create SPL Token
+    let rent = env
+        .rpc_client
+        .get_minimum_balance_for_rent_exemption(82)
+        .await
+        .unwrap();
+    let create_mint_ix = solana_sdk::system_instruction::create_account(
+        &env.payer.pubkey(),
+        &link_mint_pubkey,
+        rent,
+        82,
+        &anchor_spl::token::ID,
+    );
+
+    let init_mint_ix = anchor_spl::token::spl_token::instruction::initialize_mint(
+        &anchor_spl::token::ID,
+        &link_mint_pubkey,
+        &env.payer.pubkey(),
+        None,
+        8, // Different decimals
+    )
+    .unwrap();
+
+    let recent_blockhash = env.rpc_client.get_latest_blockhash().await.unwrap();
+    let create_mint_tx = solana_sdk::transaction::Transaction::new_signed_with_payer(
+        &[create_mint_ix, init_mint_ix],
+        Some(&env.payer.pubkey()),
+        &[&env.payer, &link_mint_keypair],
+        recent_blockhash,
+    );
+
+    env.rpc_client
+        .send_and_confirm_transaction(&create_mint_tx)
+        .await
+        .expect("Failed to create mint for link token with operator test");
+
+    println!("Created mint for link token: {}", link_mint_pubkey);
+
+    let link_salt = [20u8; 32];
+    let link_token_id = interchain_token_id(&env.payer.pubkey(), &link_salt);
+
+    let operator_pubkey = env.payer.pubkey();
+    let operator_bytes = operator_pubkey.to_bytes().to_vec();
+
+    let link = LinkToken {
+        selector: Uint::from(5u64),
+        token_id: FixedBytes::from(link_token_id),
+        token_manager_type: Uint::from(2u64), // LockUnlock = 2
+        source_token_address: Bytes::from(vec![0xAB; 20]), // Different source address
+        destination_token_address: Bytes::from(link_mint_pubkey.to_bytes().to_vec()),
+        link_params: Bytes::from(operator_bytes), // Non-empty operator!
+    };
+
+    let link_inner = GMPPayload::LinkToken(link).encode();
+    let link_receive_from_hub = ReceiveFromHub {
+        selector: Uint::from(4u64),
+        source_chain: "axelar".to_string(),
+        payload: Bytes::from(link_inner),
+    };
+
+    let link_gmp_payload = GMPPayload::ReceiveFromHub(link_receive_from_hub);
+    let link_payload_bytes = link_gmp_payload.encode();
+    let link_payload_hash = solana_sdk::keccak::hashv(&[&link_payload_bytes]).to_bytes();
+
+    let link_message_id = "test-its-link-with-operator-001";
+    let link_message = Message {
+        cc_id: CrossChainId {
+            chain: "axelar".to_string(),
+            id: link_message_id.to_string(),
+        },
+        source_address: source_address.clone(),
+        destination_chain: "solana-devnet".to_string(),
+        destination_address: its_program_address.clone(),
+        payload_hash: link_payload_hash,
+    };
+
+    let link_message_leaf = MessageLeaf {
+        message: link_message.clone(),
+        position: 0,
+        set_size: 1,
+        domain_separator: env.domain_separator,
+    };
+    let link_leaf_hash = link_message_leaf.hash();
+    let link_merkle_tree = MerkleTree::from_leaves(&[link_leaf_hash]);
+    let link_merkle_root = link_merkle_tree.root().expect("merkle root");
+
+    let link_verifier_info_1 = create_verifier_info(
+        &env.verifier_secret_keys[0],
+        link_merkle_root,
+        &env.verifier_leaves[0],
+        0,
+        &env.verifier_merkle_tree,
+    );
+    let link_verifier_info_2 = create_verifier_info(
+        &env.verifier_secret_keys[1],
+        link_merkle_root,
+        &env.verifier_leaves[1],
+        1,
+        &env.verifier_merkle_tree,
+    );
+
+    let link_execute_data = ExecuteData {
+        payload_merkle_root: link_merkle_root,
+        signing_verifier_set_merkle_root: env.verifier_set_hash,
+        signing_verifier_set_leaves: vec![link_verifier_info_1, link_verifier_info_2],
+        payload_items: MerklizedPayload::NewMessages {
+            messages: vec![MerklizedMessage {
+                leaf: link_message_leaf,
+                proof: vec![],
+            }],
+        },
+    };
+
+    println!("Approving link token message with operator...");
+    let link_gateway_task = GatewayTxTask {
+        common: CommonTaskFields {
+            id: "test-its-link-operator-gateway-001".into(),
+            chain: "solana-devnet".into(),
+            timestamp: "2025-12-05T10:01:00.000000Z".into(),
+            r#type: "GATEWAY_TX".into(),
+            meta: None,
+        },
+        task: GatewayTxTaskFields {
+            execute_data: BASE64_STANDARD.encode(link_execute_data.try_to_vec().unwrap()),
+        },
+    };
+
+    includer
+        .handle_gateway_tx_task(link_gateway_task)
+        .await
+        .expect("Failed to approve link token message with operator");
+    println!("Link token message with operator approved!");
+
+    let link_execute_task = ExecuteTask {
+        common: CommonTaskFields {
+            id: "test-its-link-operator-execute-001".into(),
+            chain: "solana-devnet".into(),
+            timestamp: "2025-12-05T10:01:01.000000Z".into(),
+            r#type: "EXECUTE".into(),
+            meta: None,
+        },
+        task: ExecuteTaskFields {
+            message: GatewayV2Message {
+                message_id: link_message_id.to_string(),
+                source_chain: "axelar".to_string(),
+                source_address: source_address.clone(),
+                destination_address: its_program_address.clone(),
+                payload_hash: BASE64_STANDARD.encode(link_payload_hash),
+            },
+            payload: BASE64_STANDARD.encode(&link_payload_bytes),
+            available_gas_balance: Amount {
+                token_id: None,
+                amount: "12000000000".to_string(),
+            },
+        },
+    };
+
+    println!("Executing link token with operator...");
+    let link_result = includer.handle_execute_task(link_execute_task).await;
+    match &link_result {
+        Ok(events) => {
+            println!(
+                "Link token with operator executed! Events: {:?}",
+                events.len()
+            );
+            for event in events {
+                println!("Event: {:?}", event);
+            }
+        }
+        Err(e) => {
+            panic!("Link token with operator execution error: {:?}", e);
+        }
+    }
+
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+    println!("LinkToken with operator test completed!");
+
+    println!("InterchainTransfer with Executable Data (Memo Program)");
+
+    println!("Initializing memo counter PDA...");
+    let (counter_pda, _counter_bump) =
+        solana_sdk::pubkey::Pubkey::find_program_address(&[b"counter"], &env.memo_program_id);
+
+    use anchor_lang::InstructionData as AnchorInstructionData;
+    use anchor_lang::ToAccountMetas;
+
+    let init_ix_data = solana_axelar_memo::instruction::Init {}.data();
+    let init_accounts = solana_axelar_memo::accounts::Init {
+        counter: counter_pda,
+        payer: env.payer.pubkey(),
+        system_program: solana_sdk::system_program::ID,
+    }
+    .to_account_metas(None);
+
+    let init_instruction = solana_sdk::instruction::Instruction {
+        program_id: env.memo_program_id,
+        accounts: init_accounts,
+        data: init_ix_data,
+    };
+
+    let init_blockhash = env.rpc_client.get_latest_blockhash().await.unwrap();
+    let init_tx = solana_sdk::transaction::Transaction::new_signed_with_payer(
+        &[init_instruction],
+        Some(&env.payer.pubkey()),
+        &[&env.payer],
+        init_blockhash,
+    );
+
+    env.rpc_client
+        .send_and_confirm_transaction(&init_tx)
+        .await
+        .expect("Failed to initialize memo counter PDA");
+    println!("Memo counter PDA initialized!");
+
+    println!("Minting tokens to token manager for transfer...");
+    let (its_root_pda, _) = solana_axelar_its::InterchainTokenService::find_pda();
+    let (token_manager_pda, _) = solana_axelar_its::TokenManager::find_pda(token_id, its_root_pda);
+    let (token_mint_pda, _) =
+        solana_axelar_its::TokenManager::find_token_mint(token_id, its_root_pda);
+
+    let token_manager_ata =
+        anchor_spl::associated_token::get_associated_token_address_with_program_id(
+            &token_manager_pda,
+            &token_mint_pda,
+            &anchor_spl::token_2022::ID,
+        );
+
+    // Get the minter roles PDA (created during deploy with minter)
+    let (minter_roles_pda, _) =
+        solana_axelar_its::UserRoles::find_pda(&token_manager_pda, &minter_pubkey);
+
+    // Use ITS MintInterchainToken instruction to mint tokens
+    let mint_amount = 10_000_000u64;
+    let mint_ix_data = solana_axelar_its::instruction::MintInterchainToken {
+        amount: mint_amount,
+    }
+    .data();
+    let mint_accounts = solana_axelar_its::accounts::MintInterchainToken {
+        mint: token_mint_pda,
+        destination_account: token_manager_ata,
+        its_root_pda,
+        token_manager_pda,
+        minter: minter_pubkey,
+        minter_roles_pda,
+        token_program: anchor_spl::token_2022::ID,
+    }
+    .to_account_metas(None);
+
+    let mint_ix = solana_sdk::instruction::Instruction {
+        program_id: solana_axelar_its::ID,
+        accounts: mint_accounts,
+        data: mint_ix_data,
+    };
+
+    let mint_blockhash = env.rpc_client.get_latest_blockhash().await.unwrap();
+    let mint_tx = solana_sdk::transaction::Transaction::new_signed_with_payer(
+        &[mint_ix],
+        Some(&env.payer.pubkey()),
+        &[&env.payer],
+        mint_blockhash,
+    );
+
+    env.rpc_client
+        .send_and_confirm_transaction(&mint_tx)
+        .await
+        .expect("Failed to mint tokens to token manager");
+    println!("Minted {} tokens to token manager", mint_amount);
+
+    let transfer_message_id = "test-its-transfer-with-data-001";
+    let transfer_amount = 500_000u64;
+
+    let memo_program_pubkey = env.memo_program_id;
+
+    use solana_axelar_gateway::executable::{ExecutablePayload, ExecutablePayloadEncodingScheme};
+
+    let memo_string = "Hello from ITS transfer!";
+    let encoding_scheme = ExecutablePayloadEncodingScheme::Borsh;
+
+    let executable_payload = ExecutablePayload::new(
+        memo_string.as_bytes(),
+        &[solana_sdk::instruction::AccountMeta::new(
+            counter_pda,
+            false,
+        )],
+        encoding_scheme,
+    );
+
+    let executable_data = executable_payload
+        .encode()
+        .expect("Failed to encode executable payload");
+
+    let source_address_bytes = "eth_sender_with_data".as_bytes().to_vec();
+    let destination_address_bytes = memo_program_pubkey.to_bytes().to_vec();
+
+    let transfer = InterchainTransfer {
+        selector: Uint::from(0u64),
+        token_id: FixedBytes::from(token_id),
+        source_address: Bytes::from(source_address_bytes),
+        destination_address: Bytes::from(destination_address_bytes), // Memo program!
+        amount: Uint::from(transfer_amount),
+        data: Bytes::from(executable_data), // Executable payload for memo
+    };
+
+    let transfer_inner = GMPPayload::InterchainTransfer(transfer).encode();
+    let transfer_receive_from_hub = ReceiveFromHub {
+        selector: Uint::from(4u64),
+        source_chain: "axelar".to_string(),
+        payload: Bytes::from(transfer_inner),
+    };
+
+    let transfer_gmp_payload = GMPPayload::ReceiveFromHub(transfer_receive_from_hub);
+    let transfer_payload_bytes = transfer_gmp_payload.encode();
+    let transfer_payload_hash = solana_sdk::keccak::hashv(&[&transfer_payload_bytes]).to_bytes();
+
+    let transfer_message = Message {
+        cc_id: CrossChainId {
+            chain: "axelar".to_string(),
+            id: transfer_message_id.to_string(),
+        },
+        source_address: source_address.clone(),
+        destination_chain: "solana-devnet".to_string(),
+        destination_address: its_program_address.clone(),
+        payload_hash: transfer_payload_hash,
+    };
+
+    let transfer_message_leaf = MessageLeaf {
+        message: transfer_message.clone(),
+        position: 0,
+        set_size: 1,
+        domain_separator: env.domain_separator,
+    };
+    let transfer_leaf_hash = transfer_message_leaf.hash();
+    let transfer_merkle_tree = MerkleTree::from_leaves(&[transfer_leaf_hash]);
+    let transfer_merkle_root = transfer_merkle_tree.root().expect("merkle root");
+
+    let transfer_verifier_info_1 = create_verifier_info(
+        &env.verifier_secret_keys[0],
+        transfer_merkle_root,
+        &env.verifier_leaves[0],
+        0,
+        &env.verifier_merkle_tree,
+    );
+    let transfer_verifier_info_2 = create_verifier_info(
+        &env.verifier_secret_keys[1],
+        transfer_merkle_root,
+        &env.verifier_leaves[1],
+        1,
+        &env.verifier_merkle_tree,
+    );
+
+    let transfer_execute_data = ExecuteData {
+        payload_merkle_root: transfer_merkle_root,
+        signing_verifier_set_merkle_root: env.verifier_set_hash,
+        signing_verifier_set_leaves: vec![transfer_verifier_info_1, transfer_verifier_info_2],
+        payload_items: MerklizedPayload::NewMessages {
+            messages: vec![MerklizedMessage {
+                leaf: transfer_message_leaf,
+                proof: vec![],
+            }],
+        },
+    };
+
+    println!("Approving transfer message with executable data...");
+    let transfer_gateway_task = GatewayTxTask {
+        common: CommonTaskFields {
+            id: "test-its-transfer-data-gateway-001".into(),
+            chain: "solana-devnet".into(),
+            timestamp: "2025-12-05T10:02:00.000000Z".into(),
+            r#type: "GATEWAY_TX".into(),
+            meta: None,
+        },
+        task: GatewayTxTaskFields {
+            execute_data: BASE64_STANDARD.encode(transfer_execute_data.try_to_vec().unwrap()),
+        },
+    };
+
+    includer
+        .handle_gateway_tx_task(transfer_gateway_task)
+        .await
+        .expect("Failed to approve transfer message with data");
+    println!("Transfer message with data approved!");
+
+    let transfer_execute_task = ExecuteTask {
+        common: CommonTaskFields {
+            id: "test-its-transfer-data-execute-001".into(),
+            chain: "solana-devnet".into(),
+            timestamp: "2025-12-05T10:02:01.000000Z".into(),
+            r#type: "EXECUTE".into(),
+            meta: None,
+        },
+        task: ExecuteTaskFields {
+            message: GatewayV2Message {
+                message_id: transfer_message_id.to_string(),
+                source_chain: "axelar".to_string(),
+                source_address: source_address.clone(),
+                destination_address: its_program_address.clone(),
+                payload_hash: BASE64_STANDARD.encode(transfer_payload_hash),
+            },
+            payload: BASE64_STANDARD.encode(&transfer_payload_bytes),
+            available_gas_balance: Amount {
+                token_id: None,
+                amount: "20000000000".to_string(),
+            },
+        },
+    };
+
+    println!("Executing transfer with executable data (calls memo program)...");
+    match includer.handle_execute_task(transfer_execute_task).await {
+        Ok(events) => {
+            println!(
+                "Transfer with data executed successfully! Events: {:?}",
+                events.len()
+            );
+            for event in events {
+                println!("Event: {:?}", event);
+            }
+        }
+        Err(e) => {
+            panic!("Transfer with data execution error: {:?}", e);
+        }
+    }
+
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+    println!("InterchainTransfer with executable data (memo callback) test completed!");
+
+    println!("ITS Messages with Optional Fields Test Completed");
+    env.cleanup().await;
+}
