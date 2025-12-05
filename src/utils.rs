@@ -8,6 +8,7 @@ use relayer_core::{
     queue::{QueueItem, QueueTrait},
 };
 use serde_json::json;
+use solana_axelar_std::execute_data::{ExecuteData, MerklizedPayload};
 use solana_transaction_parser::gmp_types::{CannotExecuteMessageReason, Event};
 use std::str::FromStr;
 use tracing::{debug, error};
@@ -343,6 +344,20 @@ pub fn get_destination_ata(destination_pubkey: &Pubkey, token_mint_pda: &Pubkey)
     )
 }
 
+pub fn get_initialize_verification_session_pda(
+    payload_merkle_root: &[u8; 32],
+    signing_verifier_set_hash: &[u8; 32],
+) -> (Pubkey, u8) {
+    Pubkey::find_program_address(
+        &[
+            seed_prefixes::SIGNATURE_VERIFICATION_SEED,
+            payload_merkle_root,
+            signing_verifier_set_hash,
+        ],
+        &solana_axelar_gateway::ID,
+    )
+}
+
 pub fn calculate_total_cost_lamports(
     tx: &SolanaTransactionType,
     units: u64,
@@ -456,13 +471,14 @@ pub fn is_recoverable(transaction_error: &TransactionError) -> bool {
 
 /// Checks if a string contains the "account already in use" error pattern.
 /// Matches: "Allocate: account Address { address: <address>, base: None } already in use"
-pub fn is_addr_in_use(s: &str) -> bool {
-    // Pattern matches: "Allocate: account Address { address: " followed by a base58 address
-    // (32-44 characters, excluding 0, O, I, l) followed by ", base: None } already in use"
-    // Base58 characters: 123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz
-    let pattern = r"Allocate: account Address \{ address: [1-9A-HJ-NP-Za-km-z]{32,44}, base: None \} already in use";
+/// Returns true only if the extracted address matches the expected_address exactly.
+pub fn is_addr_in_use(s: &str, expected_address: &str) -> bool {
+    let pattern = r"Allocate: account Address \{ address: ([1-9A-HJ-NP-Za-km-z]{32,44}), base: None \} already in use";
     Regex::new(pattern)
-        .map(|re| re.is_match(s))
+        .ok()
+        .and_then(|re| re.captures(s))
+        .and_then(|caps| caps.get(1))
+        .map(|m| m.as_str() == expected_address)
         .unwrap_or(false)
 }
 
@@ -487,10 +503,436 @@ pub fn keypair_from_base58_string(s: &str) -> Result<Keypair, anyhow::Error> {
     Keypair::try_from(&buf[..]).map_err(|e| anyhow!("Failed to create keypair from bytes: {}", e))
 }
 
+pub fn check_if_error_includes_an_expected_account(
+    error_message: &str,
+    execute_data: &ExecuteData,
+) -> bool {
+    let (initialize_verification_session_pda, _) = get_initialize_verification_session_pda(
+        &execute_data.payload_merkle_root,
+        &execute_data.signing_verifier_set_merkle_root,
+    );
+    if is_addr_in_use(
+        error_message,
+        &initialize_verification_session_pda.to_string(),
+    ) {
+        return true;
+    }
+    let command_ids: Option<Vec<[u8; 32]>> = match &execute_data.payload_items {
+        MerklizedPayload::NewMessages { messages } => {
+            let ids: Vec<[u8; 32]> = messages
+                .iter()
+                .map(|message| message.leaf.message.command_id())
+                .collect();
+            if ids.is_empty() {
+                None
+            } else {
+                Some(ids)
+            }
+        }
+        MerklizedPayload::VerifierSetRotation {
+            new_verifier_set_merkle_root: _,
+        } => None,
+    };
+    if let Some(command_ids) = command_ids {
+        let incoming_message_pdas: Vec<Pubkey> = command_ids
+            .iter()
+            .map(|command_id| {
+                let (pda, _) = get_incoming_message_pda(command_id);
+                pda
+            })
+            .collect();
+        for incoming_message_pda in incoming_message_pdas {
+            if is_addr_in_use(error_message, &incoming_message_pda.to_string()) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use solana_axelar_std::message::MessageLeaf;
+    use solana_axelar_std::verifier_set::{SigningVerifierSetInfo, VerifierSetLeaf};
+    use solana_axelar_std::{
+        CrossChainId, MerklizedMessage, Message, PublicKey, Signature as AxelarSignature,
+    };
     use solana_sdk::signature::Keypair;
+
+    fn create_test_execute_data_single_message(
+        payload_merkle_root: [u8; 32],
+        signing_verifier_set_merkle_root: [u8; 32],
+    ) -> ExecuteData {
+        let verifier_info = SigningVerifierSetInfo {
+            leaf: VerifierSetLeaf {
+                nonce: 0,
+                quorum: 0,
+                signer_pubkey: PublicKey([0; 33]),
+                signer_weight: 0,
+                position: 0,
+                set_size: 0,
+                domain_separator: [0; 32],
+            },
+            signature: AxelarSignature([0; 65]),
+            merkle_proof: vec![],
+        };
+
+        ExecuteData {
+            payload_merkle_root,
+            signing_verifier_set_merkle_root,
+            signing_verifier_set_leaves: vec![verifier_info],
+            payload_items: MerklizedPayload::NewMessages {
+                messages: vec![MerklizedMessage {
+                    leaf: MessageLeaf {
+                        message: Message {
+                            cc_id: CrossChainId {
+                                chain: "test-chain".to_string(),
+                                id: "test-message-id".to_string(),
+                            },
+                            source_address: "test-source-address".to_string(),
+                            destination_chain: "test-destination-chain".to_string(),
+                            destination_address: "test-destination-address".to_string(),
+                            payload_hash: [0; 32],
+                        },
+                        position: 0,
+                        set_size: 0,
+                        domain_separator: [0; 32],
+                    },
+                    proof: vec![],
+                }],
+            },
+        }
+    }
+
+    fn create_test_execute_data_multiple_messages(
+        payload_merkle_root: [u8; 32],
+        signing_verifier_set_merkle_root: [u8; 32],
+    ) -> ExecuteData {
+        let verifier_info = SigningVerifierSetInfo {
+            leaf: VerifierSetLeaf {
+                nonce: 0,
+                quorum: 0,
+                signer_pubkey: PublicKey([0; 33]),
+                signer_weight: 0,
+                position: 0,
+                set_size: 0,
+                domain_separator: [0; 32],
+            },
+            signature: AxelarSignature([0; 65]),
+            merkle_proof: vec![],
+        };
+
+        ExecuteData {
+            payload_merkle_root,
+            signing_verifier_set_merkle_root,
+            signing_verifier_set_leaves: vec![verifier_info],
+            payload_items: MerklizedPayload::NewMessages {
+                messages: vec![
+                    MerklizedMessage {
+                        leaf: MessageLeaf {
+                            message: Message {
+                                cc_id: CrossChainId {
+                                    chain: "test-chain-1".to_string(),
+                                    id: "test-message-id-1".to_string(),
+                                },
+                                source_address: "test-source-address-1".to_string(),
+                                destination_chain: "test-destination-chain-1".to_string(),
+                                destination_address: "test-destination-address-1".to_string(),
+                                payload_hash: [1; 32],
+                            },
+                            position: 0,
+                            set_size: 2,
+                            domain_separator: [0; 32],
+                        },
+                        proof: vec![],
+                    },
+                    MerklizedMessage {
+                        leaf: MessageLeaf {
+                            message: Message {
+                                cc_id: CrossChainId {
+                                    chain: "test-chain-2".to_string(),
+                                    id: "test-message-id-2".to_string(),
+                                },
+                                source_address: "test-source-address-2".to_string(),
+                                destination_chain: "test-destination-chain-2".to_string(),
+                                destination_address: "test-destination-address-2".to_string(),
+                                payload_hash: [2; 32],
+                            },
+                            position: 1,
+                            set_size: 2,
+                            domain_separator: [0; 32],
+                        },
+                        proof: vec![],
+                    },
+                    MerklizedMessage {
+                        leaf: MessageLeaf {
+                            message: Message {
+                                cc_id: CrossChainId {
+                                    chain: "test-chain-3".to_string(),
+                                    id: "test-message-id-3".to_string(),
+                                },
+                                source_address: "test-source-address-3".to_string(),
+                                destination_chain: "test-destination-chain-3".to_string(),
+                                destination_address: "test-destination-address-3".to_string(),
+                                payload_hash: [3; 32],
+                            },
+                            position: 2,
+                            set_size: 2,
+                            domain_separator: [0; 32],
+                        },
+                        proof: vec![],
+                    },
+                ],
+            },
+        }
+    }
+
+    fn create_test_execute_data_verifier_rotation(
+        payload_merkle_root: [u8; 32],
+        signing_verifier_set_merkle_root: [u8; 32],
+    ) -> ExecuteData {
+        let verifier_info = SigningVerifierSetInfo {
+            leaf: VerifierSetLeaf {
+                nonce: 0,
+                quorum: 0,
+                signer_pubkey: PublicKey([0; 33]),
+                signer_weight: 0,
+                position: 0,
+                set_size: 0,
+                domain_separator: [0; 32],
+            },
+            signature: AxelarSignature([0; 65]),
+            merkle_proof: vec![],
+        };
+
+        ExecuteData {
+            payload_merkle_root,
+            signing_verifier_set_merkle_root,
+            signing_verifier_set_leaves: vec![verifier_info],
+            payload_items: MerklizedPayload::VerifierSetRotation {
+                new_verifier_set_merkle_root: [99u8; 32],
+            },
+        }
+    }
+
+    // Tests for check_if_error_includes_an_expected_account
+    #[test]
+    fn test_check_error_returns_true_for_init_verification_session_pda() {
+        let payload_merkle_root = [1u8; 32];
+        let signing_verifier_set_merkle_root = [2u8; 32];
+        let execute_data = create_test_execute_data_single_message(
+            payload_merkle_root,
+            signing_verifier_set_merkle_root,
+        );
+
+        let (init_pda, _) = get_initialize_verification_session_pda(
+            &payload_merkle_root,
+            &signing_verifier_set_merkle_root,
+        );
+
+        let error_message = format!(
+            "Allocate: account Address {{ address: {}, base: None }} already in use",
+            init_pda
+        );
+
+        assert!(check_if_error_includes_an_expected_account(
+            &error_message,
+            &execute_data
+        ));
+    }
+
+    #[test]
+    fn test_check_error_returns_true_for_incoming_message_pda_single_message() {
+        let payload_merkle_root = [1u8; 32];
+        let signing_verifier_set_merkle_root = [2u8; 32];
+        let execute_data = create_test_execute_data_single_message(
+            payload_merkle_root,
+            signing_verifier_set_merkle_root,
+        );
+
+        let command_id = match &execute_data.payload_items {
+            MerklizedPayload::NewMessages { messages } => messages[0].leaf.message.command_id(),
+            _ => panic!("Expected NewMessages"),
+        };
+        let (incoming_msg_pda, _) = get_incoming_message_pda(&command_id);
+
+        let error_message = format!(
+            "Allocate: account Address {{ address: {}, base: None }} already in use",
+            incoming_msg_pda
+        );
+
+        assert!(check_if_error_includes_an_expected_account(
+            &error_message,
+            &execute_data
+        ));
+    }
+
+    #[test]
+    fn test_check_error_returns_true_for_first_message_pda_multiple_messages() {
+        let payload_merkle_root = [1u8; 32];
+        let signing_verifier_set_merkle_root = [2u8; 32];
+        let execute_data = create_test_execute_data_multiple_messages(
+            payload_merkle_root,
+            signing_verifier_set_merkle_root,
+        );
+
+        let command_id = match &execute_data.payload_items {
+            MerklizedPayload::NewMessages { messages } => messages[0].leaf.message.command_id(),
+            _ => panic!("Expected NewMessages"),
+        };
+        let (incoming_msg_pda, _) = get_incoming_message_pda(&command_id);
+
+        let error_message = format!(
+            "Allocate: account Address {{ address: {}, base: None }} already in use",
+            incoming_msg_pda
+        );
+
+        assert!(check_if_error_includes_an_expected_account(
+            &error_message,
+            &execute_data
+        ));
+    }
+
+    #[test]
+    fn test_check_error_returns_true_for_second_message_pda_multiple_messages() {
+        let payload_merkle_root = [1u8; 32];
+        let signing_verifier_set_merkle_root = [2u8; 32];
+        let execute_data = create_test_execute_data_multiple_messages(
+            payload_merkle_root,
+            signing_verifier_set_merkle_root,
+        );
+
+        let command_id = match &execute_data.payload_items {
+            MerklizedPayload::NewMessages { messages } => messages[1].leaf.message.command_id(),
+            _ => panic!("Expected NewMessages"),
+        };
+        let (incoming_msg_pda, _) = get_incoming_message_pda(&command_id);
+
+        let error_message = format!(
+            "Allocate: account Address {{ address: {}, base: None }} already in use",
+            incoming_msg_pda
+        );
+
+        assert!(check_if_error_includes_an_expected_account(
+            &error_message,
+            &execute_data
+        ));
+    }
+
+    #[test]
+    fn test_check_error_returns_true_for_third_message_pda_multiple_messages() {
+        let payload_merkle_root = [1u8; 32];
+        let signing_verifier_set_merkle_root = [2u8; 32];
+        let execute_data = create_test_execute_data_multiple_messages(
+            payload_merkle_root,
+            signing_verifier_set_merkle_root,
+        );
+
+        let command_id = match &execute_data.payload_items {
+            MerklizedPayload::NewMessages { messages } => messages[2].leaf.message.command_id(),
+            _ => panic!("Expected NewMessages"),
+        };
+        let (incoming_msg_pda, _) = get_incoming_message_pda(&command_id);
+
+        let error_message = format!(
+            "Allocate: account Address {{ address: {}, base: None }} already in use",
+            incoming_msg_pda
+        );
+
+        assert!(check_if_error_includes_an_expected_account(
+            &error_message,
+            &execute_data
+        ));
+    }
+
+    #[test]
+    fn test_check_error_returns_false_for_different_address() {
+        let payload_merkle_root = [1u8; 32];
+        let signing_verifier_set_merkle_root = [2u8; 32];
+        let execute_data = create_test_execute_data_single_message(
+            payload_merkle_root,
+            signing_verifier_set_merkle_root,
+        );
+
+        let different_address = "11111111111111111111111111111111";
+        let error_message = format!(
+            "Allocate: account Address {{ address: {}, base: None }} already in use",
+            different_address
+        );
+
+        assert!(!check_if_error_includes_an_expected_account(
+            &error_message,
+            &execute_data
+        ));
+    }
+
+    #[test]
+    fn test_check_error_returns_false_for_no_pattern_match() {
+        let payload_merkle_root = [1u8; 32];
+        let signing_verifier_set_merkle_root = [2u8; 32];
+        let execute_data = create_test_execute_data_single_message(
+            payload_merkle_root,
+            signing_verifier_set_merkle_root,
+        );
+
+        let error_message = "Some other error occurred";
+
+        assert!(!check_if_error_includes_an_expected_account(
+            error_message,
+            &execute_data
+        ));
+    }
+
+    #[test]
+    fn test_check_error_returns_false_for_verifier_set_rotation() {
+        let payload_merkle_root = [1u8; 32];
+        let signing_verifier_set_merkle_root = [2u8; 32];
+        let execute_data = create_test_execute_data_verifier_rotation(
+            payload_merkle_root,
+            signing_verifier_set_merkle_root,
+        );
+
+        // Use a random address that isn't the init_pda
+        let different_address = "11111111111111111111111111111111";
+        let error_message = format!(
+            "Allocate: account Address {{ address: {}, base: None }} already in use",
+            different_address
+        );
+
+        // Should return false because VerifierSetRotation has no incoming message PDAs
+        // and the address doesn't match init_pda
+        assert!(!check_if_error_includes_an_expected_account(
+            &error_message,
+            &execute_data
+        ));
+    }
+
+    #[test]
+    fn test_check_error_returns_true_for_init_pda_with_verifier_set_rotation() {
+        let payload_merkle_root = [1u8; 32];
+        let signing_verifier_set_merkle_root = [2u8; 32];
+        let execute_data = create_test_execute_data_verifier_rotation(
+            payload_merkle_root,
+            signing_verifier_set_merkle_root,
+        );
+
+        let (init_pda, _) = get_initialize_verification_session_pda(
+            &payload_merkle_root,
+            &signing_verifier_set_merkle_root,
+        );
+
+        let error_message = format!(
+            "Allocate: account Address {{ address: {}, base: None }} already in use",
+            init_pda
+        );
+
+        // Should return true because init_pda matches (even for VerifierSetRotation)
+        assert!(check_if_error_includes_an_expected_account(
+            &error_message,
+            &execute_data
+        ));
+    }
 
     #[test]
     fn test_keypair_roundtrip() {
@@ -539,20 +981,43 @@ mod tests {
     #[test]
     fn test_is_addr_in_use() {
         let error_msg = "Allocate: account Address { address: FAVDxWyV1GcvRxaDjv12jo1foDbU7uDYfrbuky68JGHK, base: None } already in use";
-        assert!(is_addr_in_use(error_msg));
+        assert!(is_addr_in_use(
+            error_msg,
+            "FAVDxWyV1GcvRxaDjv12jo1foDbU7uDYfrbuky68JGHK"
+        ));
+        assert!(!is_addr_in_use(
+            error_msg,
+            "DifferentAddress1111111111111111111111111"
+        ));
 
         let error_msg2 = "Allocate: account Address { address: 11111111111111111111111111111111, base: None } already in use";
-        assert!(is_addr_in_use(error_msg2));
+        assert!(is_addr_in_use(
+            error_msg2,
+            "11111111111111111111111111111111"
+        ));
+        assert!(!is_addr_in_use(
+            error_msg2,
+            "FAVDxWyV1GcvRxaDjv12jo1foDbU7uDYfrbuky68JGHK"
+        ));
 
         let normal_msg = "Some other error message";
-        assert!(!is_addr_in_use(normal_msg));
+        assert!(!is_addr_in_use(
+            normal_msg,
+            "FAVDxWyV1GcvRxaDjv12jo1foDbU7uDYfrbuky68JGHK"
+        ));
 
         let partial_msg =
             "Allocate: account Address { address: FAVDxWyV1GcvRxaDjv12jo1foDbU7uDYfrbuky68JGHK";
-        assert!(!is_addr_in_use(partial_msg));
+        assert!(!is_addr_in_use(
+            partial_msg,
+            "FAVDxWyV1GcvRxaDjv12jo1foDbU7uDYfrbuky68JGHK"
+        ));
 
         let embedded_msg = "Error: Allocate: account Address { address: FAVDxWyV1GcvRxaDjv12jo1foDbU7uDYfrbuky68JGHK, base: None } already in use - transaction failed";
-        assert!(is_addr_in_use(embedded_msg));
+        assert!(is_addr_in_use(
+            embedded_msg,
+            "FAVDxWyV1GcvRxaDjv12jo1foDbU7uDYfrbuky68JGHK"
+        ));
 
         let full_message = r#"2025-11-25T18:02:30.415586Z DEBUG solana_rpc_client::nonblocking::rpc_client: -32002 Transaction simulation failed: Error processing Instruction 2: custom program error: 0x0
 2025-11-25T18:02:30.415641Z DEBUG solana_rpc_client::nonblocking::rpc_client:   1: Program ComputeBudget111111111111111111111111111111 invoke [1]
@@ -568,7 +1033,14 @@ mod tests {
 2025-11-25T18:02:30.415919Z DEBUG solana_rpc_client::nonblocking::rpc_client:  11: Program gtw3LYHmSe3y1cRqCeBuTpyB4KDQHfaqqHQs6Rw19DX failed: custom program error: 0x0
 2025-11-25T18:02:30.415947Z DEBUG solana_rpc_client::nonblocking::rpc_client: 
 2025-11-25T18:02:30.416016Z ERROR relayer_core::includer: Failed to consume delivery: GatewayTxTaskError("Generic error: Generic error: Generic error: TransactionError: Error processing Instruction 2: custom program error: 0x0")"#;
-        assert!(is_addr_in_use(full_message));
+        assert!(is_addr_in_use(
+            full_message,
+            "FAVDxWyV1GcvRxaDjv12jo1foDbU7uDYfrbuky68JGHK"
+        ));
+        assert!(!is_addr_in_use(
+            full_message,
+            "DifferentAddress1111111111111111111111111"
+        ));
     }
 
     #[test]

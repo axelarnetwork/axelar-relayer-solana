@@ -239,7 +239,7 @@ async fn deactivate_alt(
     );
 
     match includer_client
-        .send_transaction(SolanaTransactionType::Legacy(transaction))
+        .send_transaction(SolanaTransactionType::Legacy(transaction), None)
         .await
     {
         Ok((signature, _)) => {
@@ -281,7 +281,7 @@ async fn close_alt(
     );
 
     match includer_client
-        .send_transaction(SolanaTransactionType::Legacy(transaction))
+        .send_transaction(SolanaTransactionType::Legacy(transaction), None)
         .await
     {
         Ok((signature, _)) => {
