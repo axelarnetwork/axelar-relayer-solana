@@ -1503,3 +1503,369 @@ async fn test_its_messages_with_optional_fields() {
     println!("ITS Messages with Optional Fields Test Completed");
     env.cleanup().await;
 }
+
+// Test concurrent ITS task processing to verify ALT and transaction handling under load
+#[tokio::test(flavor = "multi_thread", worker_threads = 16)]
+async fn test_its_concurrent_task_processing() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    const NUM_CONCURRENT_TASKS: usize = 10;
+
+    let env = TestEnvironment::new().await;
+
+    let its_hub_address = env.its_hub_address.clone();
+    let its_program_address = solana_axelar_its::ID.to_string();
+
+    #[allow(clippy::too_many_arguments)]
+    fn create_transfer_task(
+        index: usize,
+        token_id: [u8; 32],
+        destination_pubkey: solana_sdk::pubkey::Pubkey,
+        source_address: &str,
+        its_program_address: &str,
+        domain_separator: [u8; 32],
+        verifier_secret_keys: &[libsecp256k1::SecretKey],
+        verifier_leaves: &[solana_axelar_std::VerifierSetLeaf],
+        verifier_merkle_tree: &MerkleTree,
+        verifier_set_hash: [u8; 32],
+    ) -> (GatewayTxTask, ExecuteTask) {
+        let transfer_message_id = format!("test-concurrent-transfer-{:03}", index);
+        let transfer_amount = 1_000u64 + (index as u64 * 100); // Vary amount slightly
+
+        let source_address_bytes = format!("eth_sender_{}", index).as_bytes().to_vec();
+        let destination_address_bytes = destination_pubkey.to_bytes().to_vec();
+
+        let transfer = InterchainTransfer {
+            selector: Uint::from(0u64),
+            token_id: FixedBytes::from(token_id),
+            source_address: Bytes::from(source_address_bytes),
+            destination_address: Bytes::from(destination_address_bytes),
+            amount: Uint::from(transfer_amount),
+            data: Bytes::from(vec![]),
+        };
+
+        let transfer_inner = GMPPayload::InterchainTransfer(transfer).encode();
+        let transfer_receive_from_hub = ReceiveFromHub {
+            selector: Uint::from(4u64),
+            source_chain: "axelar".to_string(),
+            payload: Bytes::from(transfer_inner),
+        };
+
+        let transfer_gmp_payload = GMPPayload::ReceiveFromHub(transfer_receive_from_hub);
+        let transfer_payload_bytes = transfer_gmp_payload.encode();
+        let transfer_payload_hash =
+            solana_sdk::keccak::hashv(&[&transfer_payload_bytes]).to_bytes();
+
+        let transfer_message = Message {
+            cc_id: CrossChainId {
+                chain: "axelar".to_string(),
+                id: transfer_message_id.clone(),
+            },
+            source_address: source_address.to_string(),
+            destination_chain: "solana-devnet".to_string(),
+            destination_address: its_program_address.to_string(),
+            payload_hash: transfer_payload_hash,
+        };
+
+        let transfer_message_leaf = MessageLeaf {
+            message: transfer_message,
+            position: 0,
+            set_size: 1,
+            domain_separator,
+        };
+        let transfer_leaf_hash = transfer_message_leaf.hash();
+        let transfer_merkle_tree = MerkleTree::from_leaves(&[transfer_leaf_hash]);
+        let transfer_merkle_root = transfer_merkle_tree.root().expect("merkle root");
+
+        let transfer_verifier_info_1 = create_verifier_info(
+            &verifier_secret_keys[0],
+            transfer_merkle_root,
+            &verifier_leaves[0],
+            0,
+            verifier_merkle_tree,
+        );
+        let transfer_verifier_info_2 = create_verifier_info(
+            &verifier_secret_keys[1],
+            transfer_merkle_root,
+            &verifier_leaves[1],
+            1,
+            verifier_merkle_tree,
+        );
+
+        let transfer_execute_data = ExecuteData {
+            payload_merkle_root: transfer_merkle_root,
+            signing_verifier_set_merkle_root: verifier_set_hash,
+            signing_verifier_set_leaves: vec![transfer_verifier_info_1, transfer_verifier_info_2],
+            payload_items: MerklizedPayload::NewMessages {
+                messages: vec![MerklizedMessage {
+                    leaf: transfer_message_leaf,
+                    proof: vec![],
+                }],
+            },
+        };
+
+        let gateway_task = GatewayTxTask {
+            common: CommonTaskFields {
+                id: format!("test-concurrent-gateway-{:03}", index),
+                chain: "solana-devnet".into(),
+                timestamp: format!("2025-12-05T11:{:02}:00.000000Z", index % 60),
+                r#type: "GATEWAY_TX".into(),
+                meta: None,
+            },
+            task: GatewayTxTaskFields {
+                execute_data: BASE64_STANDARD.encode(transfer_execute_data.try_to_vec().unwrap()),
+            },
+        };
+
+        let execute_task = ExecuteTask {
+            common: CommonTaskFields {
+                id: format!("test-concurrent-execute-{:03}", index),
+                chain: "solana-devnet".into(),
+                timestamp: format!("2025-12-05T11:{:02}:01.000000Z", index % 60),
+                r#type: "EXECUTE".into(),
+                meta: None,
+            },
+            task: ExecuteTaskFields {
+                message: GatewayV2Message {
+                    message_id: transfer_message_id,
+                    source_chain: "axelar".to_string(),
+                    source_address: source_address.to_string(),
+                    destination_address: its_program_address.to_string(),
+                    payload_hash: BASE64_STANDARD.encode(transfer_payload_hash),
+                },
+                payload: BASE64_STANDARD.encode(&transfer_payload_bytes),
+                available_gas_balance: Amount {
+                    token_id: None,
+                    amount: "10000000000".to_string(),
+                },
+            },
+        };
+
+        (gateway_task, execute_task)
+    }
+
+    println!("Concurrent ITS Task Processing Test");
+    println!("Testing {} concurrent tasks", NUM_CONCURRENT_TASKS);
+
+    println!("Deploying token for concurrent transfers...");
+
+    let salt = [99u8; 32];
+    let token_id = interchain_token_id(&env.payer.pubkey(), &salt);
+    let source_address = its_hub_address.clone();
+
+    let deploy_token = DeployInterchainToken {
+        selector: Uint::from(1u64),
+        token_id: FixedBytes::from(token_id),
+        name: "Concurrent Test Token".to_string(),
+        symbol: "CONC".to_string(),
+        decimals: 9,
+        minter: Bytes::from(env.payer.pubkey().to_bytes().to_vec()),
+    };
+
+    let deploy_inner = GMPPayload::DeployInterchainToken(deploy_token).encode();
+    let deploy_receive_from_hub = ReceiveFromHub {
+        selector: Uint::from(4u64),
+        source_chain: "axelar".to_string(),
+        payload: Bytes::from(deploy_inner),
+    };
+
+    let deploy_gmp_payload = GMPPayload::ReceiveFromHub(deploy_receive_from_hub);
+    let deploy_payload_bytes = deploy_gmp_payload.encode();
+    let deploy_payload_hash = solana_sdk::keccak::hashv(&[&deploy_payload_bytes]).to_bytes();
+
+    let deploy_message = Message {
+        cc_id: CrossChainId {
+            chain: "axelar".to_string(),
+            id: "test-concurrent-deploy-001".to_string(),
+        },
+        source_address: source_address.clone(),
+        destination_chain: "solana-devnet".to_string(),
+        destination_address: its_program_address.clone(),
+        payload_hash: deploy_payload_hash,
+    };
+
+    let deploy_message_leaf = MessageLeaf {
+        message: deploy_message.clone(),
+        position: 0,
+        set_size: 1,
+        domain_separator: env.domain_separator,
+    };
+    let deploy_leaf_hash = deploy_message_leaf.hash();
+    let deploy_merkle_tree = MerkleTree::from_leaves(&[deploy_leaf_hash]);
+    let deploy_merkle_root = deploy_merkle_tree.root().expect("merkle root");
+
+    let deploy_verifier_info_1 = create_verifier_info(
+        &env.verifier_secret_keys[0],
+        deploy_merkle_root,
+        &env.verifier_leaves[0],
+        0,
+        &env.verifier_merkle_tree,
+    );
+    let deploy_verifier_info_2 = create_verifier_info(
+        &env.verifier_secret_keys[1],
+        deploy_merkle_root,
+        &env.verifier_leaves[1],
+        1,
+        &env.verifier_merkle_tree,
+    );
+
+    let deploy_execute_data = ExecuteData {
+        payload_merkle_root: deploy_merkle_root,
+        signing_verifier_set_merkle_root: env.verifier_set_hash,
+        signing_verifier_set_leaves: vec![deploy_verifier_info_1, deploy_verifier_info_2],
+        payload_items: MerklizedPayload::NewMessages {
+            messages: vec![MerklizedMessage {
+                leaf: deploy_message_leaf,
+                proof: vec![],
+            }],
+        },
+    };
+
+    let components = create_includer_components(&env.rpc_url, &env.payer);
+    let mock_redis = create_mock_redis();
+    let mock_gmp_api = create_mock_gmp_api_for_execute();
+    let mock_refunds_model = MockRefundsModel::new();
+
+    let includer = Arc::new(SolanaIncluder::new(
+        Arc::new(components.includer_client),
+        components.keypair,
+        "solana-devnet".to_string(),
+        components.transaction_builder,
+        Arc::new(mock_gmp_api),
+        mock_redis,
+        Arc::new(mock_refunds_model),
+    ));
+
+    let deploy_gateway_task = GatewayTxTask {
+        common: CommonTaskFields {
+            id: "test-concurrent-deploy-gateway".into(),
+            chain: "solana-devnet".into(),
+            timestamp: "2025-12-05T11:00:00.000000Z".into(),
+            r#type: "GATEWAY_TX".into(),
+            meta: None,
+        },
+        task: GatewayTxTaskFields {
+            execute_data: BASE64_STANDARD.encode(deploy_execute_data.try_to_vec().unwrap()),
+        },
+    };
+
+    includer
+        .handle_gateway_tx_task(deploy_gateway_task)
+        .await
+        .expect("Failed to approve deploy");
+
+    let deploy_execute_task = ExecuteTask {
+        common: CommonTaskFields {
+            id: "test-concurrent-deploy-execute".into(),
+            chain: "solana-devnet".into(),
+            timestamp: "2025-12-05T11:00:01.000000Z".into(),
+            r#type: "EXECUTE".into(),
+            meta: None,
+        },
+        task: ExecuteTaskFields {
+            message: GatewayV2Message {
+                message_id: "test-concurrent-deploy-001".to_string(),
+                source_chain: "axelar".to_string(),
+                source_address: source_address.clone(),
+                destination_address: its_program_address.clone(),
+                payload_hash: BASE64_STANDARD.encode(deploy_payload_hash),
+            },
+            payload: BASE64_STANDARD.encode(&deploy_payload_bytes),
+            available_gas_balance: Amount {
+                token_id: None,
+                amount: "10000000000".to_string(),
+            },
+        },
+    };
+
+    includer
+        .handle_execute_task(deploy_execute_task)
+        .await
+        .expect("Failed to execute deploy");
+
+    println!("Token deployed successfully!");
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+    println!("Generating {} transfer tasks...", NUM_CONCURRENT_TASKS);
+    let destination_pubkey = env.payer.pubkey();
+
+    let tasks: Vec<(GatewayTxTask, ExecuteTask)> = (0..NUM_CONCURRENT_TASKS)
+        .map(|i| {
+            create_transfer_task(
+                i,
+                token_id,
+                destination_pubkey,
+                &source_address,
+                &its_program_address,
+                env.domain_separator,
+                &env.verifier_secret_keys,
+                &env.verifier_leaves,
+                &env.verifier_merkle_tree,
+                env.verifier_set_hash,
+            )
+        })
+        .collect();
+
+    println!("Approving all {} messages...", NUM_CONCURRENT_TASKS);
+    for (i, (gateway_task, _)) in tasks.iter().enumerate() {
+        includer
+            .handle_gateway_tx_task(gateway_task.clone())
+            .await
+            .unwrap_or_else(|e| panic!("Failed to approve message {}: {:?}", i, e));
+    }
+    println!("All messages approved!");
+
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+    println!(
+        "Executing {} transfers in FULL parallel (no semaphore)...",
+        NUM_CONCURRENT_TASKS
+    );
+
+    let success_count = Arc::new(AtomicUsize::new(0));
+    let failure_count = Arc::new(AtomicUsize::new(0));
+
+    let mut handles = vec![];
+
+    for (i, (_, execute_task)) in tasks.into_iter().enumerate() {
+        let includer = Arc::clone(&includer);
+        let success_count = Arc::clone(&success_count);
+        let failure_count = Arc::clone(&failure_count);
+
+        let handle = tokio::spawn(async move {
+            match includer.handle_execute_task(execute_task).await {
+                Ok(_) => {
+                    success_count.fetch_add(1, Ordering::SeqCst);
+                    println!("Task {} completed successfully", i);
+                }
+                Err(e) => {
+                    failure_count.fetch_add(1, Ordering::SeqCst);
+                    println!("Task {} failed: {:?}", i, e);
+                }
+            }
+        });
+
+        handles.push(handle);
+    }
+
+    for handle in handles {
+        handle.await.expect("Task panicked");
+    }
+
+    let successes = success_count.load(Ordering::SeqCst);
+    let failures = failure_count.load(Ordering::SeqCst);
+
+    println!("Concurrent Test Results");
+    println!("Total tasks: {}", NUM_CONCURRENT_TASKS);
+    println!("Successes: {}", successes);
+    println!("Failures: {}", failures);
+
+    assert_eq!(
+        successes, NUM_CONCURRENT_TASKS,
+        "Expected all {} tasks to succeed, but {} failed",
+        NUM_CONCURRENT_TASKS, failures
+    );
+
+    println!("Concurrent ITS task processing test completed successfully!");
+    env.cleanup().await;
+}
