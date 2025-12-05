@@ -199,7 +199,8 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
         payload: &[u8],
         destination_address: Pubkey,
     ) -> Result<(Instruction, Vec<AccountMeta>), TransactionBuilderError> {
-        let (incoming_message_pda, _) = get_incoming_message_pda(&message.command_id());
+        let (incoming_message_pda, _) = get_incoming_message_pda(&message.command_id())
+            .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
 
         match destination_address {
             x if x == solana_axelar_its::ID => {
@@ -248,9 +249,12 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
         };
 
         let (signing_pda, _) =
-            get_validate_message_signing_pda(&message.command_id(), &solana_axelar_its::ID);
-        let (event_authority, _) = get_gateway_event_authority_pda();
-        let (gateway_root_pda, _) = get_gateway_root_config_internal();
+            get_validate_message_signing_pda(&message.command_id(), &solana_axelar_its::ID)
+                .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+        let (event_authority, _) = get_gateway_event_authority_pda()
+            .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+        let (gateway_root_pda, _) = get_gateway_root_config_internal()
+            .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
 
         let executable = solana_axelar_its::accounts::AxelarExecuteAccounts {
             incoming_message_pda,
@@ -303,7 +307,9 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
             executable,
             payer: self.keypair.pubkey(),
             system_program: solana_program::system_program::id(),
-            event_authority: get_its_event_authority_pda().0,
+            event_authority: get_its_event_authority_pda()
+                .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?
+                .0,
             its_root_pda,
             token_manager_pda,
             token_mint,
@@ -321,7 +327,9 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
                 let destination_address =
                     Pubkey::try_from(transfer.destination_address.as_ref())
                         .map_err(|e| TransactionBuilderError::PayloadDecodeError(e.to_string()))?;
-                let (destination_ata, _) = get_destination_ata(&destination_address, &token_mint);
+                let (destination_ata, _) =
+                    get_destination_ata(&destination_address, &token_mint)
+                        .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
                 accounts.extend(execute_interchain_transfer_extra_accounts(
                     destination_address,
                     destination_ata,
@@ -364,7 +372,9 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
                 let minter_roles_pda =
                     minter.map(|minter| get_minter_roles_pda(&token_manager_pda, &minter).0);
 
-                let (mpl_token_metadata_account, _) = get_mpl_token_metadata_account(&token_mint);
+                let (mpl_token_metadata_account, _) =
+                    get_mpl_token_metadata_account(&token_mint)
+                        .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
 
                 accounts.extend(execute_deploy_interchain_token_extra_accounts(
                     solana_program::sysvar::instructions::ID,
@@ -408,9 +418,12 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
         incoming_message_pda: Pubkey,
     ) -> Result<(Instruction, Vec<AccountMeta>), TransactionBuilderError> {
         let (signing_pda, _) =
-            get_validate_message_signing_pda(&message.command_id(), &solana_axelar_governance::ID);
-        let (event_authority, _) = get_gateway_event_authority_pda();
-        let (gateway_root_pda, _) = get_gateway_root_config_internal();
+            get_validate_message_signing_pda(&message.command_id(), &solana_axelar_governance::ID)
+                .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+        let (event_authority, _) = get_gateway_event_authority_pda()
+            .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+        let (gateway_root_pda, _) = get_gateway_root_config_internal()
+            .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
         let executable = solana_axelar_governance::accounts::AxelarExecuteAccounts {
             incoming_message_pda,
             signing_pda,
@@ -419,13 +432,17 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
             gateway_root_pda,
         };
 
-        let (governance_config, _) = get_governance_config_pda();
-        let (governance_event_authority, _) = get_governance_event_authority_pda();
+        let (governance_config, _) = get_governance_config_pda()
+            .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+        let (governance_event_authority, _) = get_governance_event_authority_pda()
+            .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
 
         let proposal_hash = extract_proposal_hash_from_payload(payload)
             .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
-        let (proposal_pda, _) = get_proposal_pda(&proposal_hash);
-        let (operator_proposal_pda, _) = get_operator_proposal_pda(&proposal_hash);
+        let (proposal_pda, _) = get_proposal_pda(&proposal_hash)
+            .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+        let (operator_proposal_pda, _) = get_operator_proposal_pda(&proposal_hash)
+            .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
 
         let accounts = solana_axelar_governance::accounts::ProcessGmp {
             executable,
@@ -476,9 +493,12 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
         }
 
         let (signing_pda, _) =
-            get_validate_message_signing_pda(&message.command_id(), &destination_address);
-        let (event_authority, _) = get_gateway_event_authority_pda();
-        let (gateway_root_pda, _) = get_gateway_root_config_internal();
+            get_validate_message_signing_pda(&message.command_id(), &destination_address)
+                .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+        let (event_authority, _) = get_gateway_event_authority_pda()
+            .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+        let (gateway_root_pda, _) = get_gateway_root_config_internal()
+            .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
 
         let mut accounts = solana_axelar_gateway::executable::helpers::AxelarExecuteAccounts {
             incoming_message_pda,

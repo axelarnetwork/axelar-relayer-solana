@@ -161,86 +161,101 @@ pub async fn upsert_and_publish<SM: SolanaTransactionModel>(
 pub fn get_signature_verification_pda(
     payload_merkle_root: &[u8; 32],
     signing_verifier_set_merkle_root: &[u8; 32],
-) -> (Pubkey, u8) {
-    let (pubkey, bump) = Pubkey::find_program_address(
+) -> Result<(Pubkey, u8), anyhow::Error> {
+    Pubkey::try_find_program_address(
         &[
             seed_prefixes::SIGNATURE_VERIFICATION_SEED,
             payload_merkle_root,
             signing_verifier_set_merkle_root,
         ],
         &ID,
-    );
-    (pubkey, bump)
+    )
+    .ok_or_else(|| anyhow::anyhow!("Failed to get signature verification PDA"))
 }
 
-pub fn get_verifier_set_tracker_pda(signing_verifier_set_merkle_root: &[u8; 32]) -> (Pubkey, u8) {
-    Pubkey::find_program_address(
+pub fn get_verifier_set_tracker_pda(
+    signing_verifier_set_merkle_root: &[u8; 32],
+) -> Result<(Pubkey, u8), anyhow::Error> {
+    Pubkey::try_find_program_address(
         &[
             seed_prefixes::VERIFIER_SET_TRACKER_SEED,
             signing_verifier_set_merkle_root,
         ],
         &ID,
     )
+    .ok_or_else(|| anyhow::anyhow!("Failed to get verifier set tracker PDA"))
 }
 
-pub fn get_incoming_message_pda(command_id: &[u8]) -> (Pubkey, u8) {
-    Pubkey::find_program_address(&[seed_prefixes::INCOMING_MESSAGE_SEED, command_id], &ID)
+pub fn get_incoming_message_pda(command_id: &[u8]) -> Result<(Pubkey, u8), anyhow::Error> {
+    Pubkey::try_find_program_address(&[seed_prefixes::INCOMING_MESSAGE_SEED, command_id], &ID)
+        .ok_or_else(|| anyhow::anyhow!("Failed to get incoming message PDA"))
 }
-pub fn get_gateway_event_authority_pda() -> (Pubkey, u8) {
-    Pubkey::find_program_address(&[b"__event_authority"], &solana_axelar_gateway::ID)
+pub fn get_gateway_event_authority_pda() -> Result<(Pubkey, u8), anyhow::Error> {
+    Pubkey::try_find_program_address(&[b"__event_authority"], &solana_axelar_gateway::ID)
+        .ok_or_else(|| anyhow!("Failed to derive gateway event authority PDA"))
 }
 
-pub fn get_governance_config_pda() -> (Pubkey, u8) {
-    Pubkey::find_program_address(
+pub fn get_governance_config_pda() -> Result<(Pubkey, u8), anyhow::Error> {
+    Pubkey::try_find_program_address(
         &[solana_axelar_governance::GovernanceConfig::SEED_PREFIX],
         &solana_axelar_governance::ID,
     )
+    .ok_or_else(|| anyhow!("Failed to derive governance config PDA"))
 }
 
-pub fn get_governance_event_authority_pda() -> (Pubkey, u8) {
-    Pubkey::find_program_address(&[b"__event_authority"], &solana_axelar_governance::ID)
+pub fn get_governance_event_authority_pda() -> Result<(Pubkey, u8), anyhow::Error> {
+    Pubkey::try_find_program_address(&[b"__event_authority"], &solana_axelar_governance::ID)
+        .ok_or_else(|| anyhow!("Failed to derive governance event authority PDA"))
 }
 
-pub fn get_proposal_pda(command_id: &[u8]) -> (Pubkey, u8) {
-    Pubkey::find_program_address(
+pub fn get_proposal_pda(command_id: &[u8]) -> Result<(Pubkey, u8), anyhow::Error> {
+    Pubkey::try_find_program_address(
         &[
             solana_axelar_governance::seed_prefixes::PROPOSAL_PDA,
             command_id,
         ],
         &solana_axelar_governance::ID,
     )
+    .ok_or_else(|| anyhow!("Failed to derive proposal PDA"))
 }
 
-pub fn get_operator_proposal_pda(command_id: &[u8]) -> (Pubkey, u8) {
-    Pubkey::find_program_address(
+pub fn get_operator_proposal_pda(command_id: &[u8]) -> Result<(Pubkey, u8), anyhow::Error> {
+    Pubkey::try_find_program_address(
         &[b"operator_proposal", command_id],
         &solana_axelar_governance::ID,
     )
+    .ok_or_else(|| anyhow!("Failed to derive operator proposal PDA"))
 }
 
-pub fn get_validate_message_signing_pda(command_id: &[u8], program_id: &Pubkey) -> (Pubkey, u8) {
-    Pubkey::find_program_address(
+pub fn get_validate_message_signing_pda(
+    command_id: &[u8],
+    program_id: &Pubkey,
+) -> Result<(Pubkey, u8), anyhow::Error> {
+    Pubkey::try_find_program_address(
         &[
             solana_axelar_gateway::seed_prefixes::VALIDATE_MESSAGE_SIGNING_SEED,
             command_id,
         ],
         program_id,
     )
+    .ok_or_else(|| anyhow!("Failed to derive validate message signing PDA"))
 }
 
-pub fn get_gateway_root_config_internal() -> (Pubkey, u8) {
-    Pubkey::find_program_address(
+pub fn get_gateway_root_config_internal() -> Result<(Pubkey, u8), anyhow::Error> {
+    Pubkey::try_find_program_address(
         &[solana_axelar_gateway::seed_prefixes::GATEWAY_SEED],
         &solana_axelar_gateway::ID,
     )
+    .ok_or_else(|| anyhow!("Failed to derive gateway root config PDA"))
 }
 
 pub fn get_its_root_pda() -> (Pubkey, u8) {
     solana_axelar_its::InterchainTokenService::find_pda()
 }
 
-pub fn get_its_event_authority_pda() -> (Pubkey, u8) {
-    Pubkey::find_program_address(&[b"__event_authority"], &solana_axelar_its::ID)
+pub fn get_its_event_authority_pda() -> Result<(Pubkey, u8), anyhow::Error> {
+    Pubkey::try_find_program_address(&[b"__event_authority"], &solana_axelar_its::ID)
+        .ok_or_else(|| anyhow!("Failed to derive ITS event authority PDA"))
 }
 
 pub fn get_token_manager_pda(
@@ -283,8 +298,10 @@ pub fn get_token_manager_ata_with_program(
     (ata, 0)
 }
 
-pub fn get_mpl_token_metadata_account(token_mint_pda: &Pubkey) -> (Pubkey, u8) {
-    Pubkey::find_program_address(
+pub fn get_mpl_token_metadata_account(
+    token_mint_pda: &Pubkey,
+) -> Result<(Pubkey, u8), anyhow::Error> {
+    Pubkey::try_find_program_address(
         &[
             b"metadata",
             mpl_token_metadata::ID.as_ref(),
@@ -292,35 +309,42 @@ pub fn get_mpl_token_metadata_account(token_mint_pda: &Pubkey) -> (Pubkey, u8) {
         ],
         &mpl_token_metadata::ID,
     )
+    .ok_or_else(|| anyhow!("Failed to derive MPL token metadata PDA"))
 }
 
 pub fn get_minter_roles_pda(token_manager_pda: &Pubkey, minter: &Pubkey) -> (Pubkey, u8) {
     solana_axelar_its::UserRoles::find_pda(token_manager_pda, minter)
 }
 
-pub fn get_operator_pda(operator: &Pubkey) -> (Pubkey, u8) {
-    Pubkey::find_program_address(
+pub fn get_operator_pda(operator: &Pubkey) -> Result<(Pubkey, u8), anyhow::Error> {
+    Pubkey::try_find_program_address(
         &[
             solana_axelar_operators::OperatorAccount::SEED_PREFIX,
             operator.key().as_ref(),
         ],
         &solana_axelar_operators::ID,
     )
+    .ok_or_else(|| anyhow!("Failed to derive operator PDA"))
 }
 
-pub fn get_treasury_pda() -> (Pubkey, u8) {
-    Pubkey::find_program_address(
+pub fn get_treasury_pda() -> Result<(Pubkey, u8), anyhow::Error> {
+    Pubkey::try_find_program_address(
         &[solana_axelar_gas_service::state::Treasury::SEED_PREFIX],
         &solana_axelar_gas_service::ID,
     )
+    .ok_or_else(|| anyhow!("Failed to derive treasury PDA"))
 }
 
-pub fn get_gas_service_event_authority_pda() -> (Pubkey, u8) {
-    Pubkey::find_program_address(&[b"__event_authority"], &solana_axelar_gas_service::ID)
+pub fn get_gas_service_event_authority_pda() -> Result<(Pubkey, u8), anyhow::Error> {
+    Pubkey::try_find_program_address(&[b"__event_authority"], &solana_axelar_gas_service::ID)
+        .ok_or_else(|| anyhow!("Failed to derive gas service event authority PDA"))
 }
 
-pub fn get_destination_ata(destination_pubkey: &Pubkey, token_mint_pda: &Pubkey) -> (Pubkey, u8) {
-    Pubkey::find_program_address(
+pub fn get_destination_ata(
+    destination_pubkey: &Pubkey,
+    token_mint_pda: &Pubkey,
+) -> Result<(Pubkey, u8), anyhow::Error> {
+    Pubkey::try_find_program_address(
         &[
             destination_pubkey.as_ref(),
             spl_token_2022::id().as_ref(),
@@ -328,13 +352,14 @@ pub fn get_destination_ata(destination_pubkey: &Pubkey, token_mint_pda: &Pubkey)
         ],
         &spl_associated_token_account::id(),
     )
+    .ok_or_else(|| anyhow!("Failed to derive destination ATA PDA"))
 }
 
 pub fn get_initialize_verification_session_pda(
     payload_merkle_root: &[u8; 32],
     signing_verifier_set_hash: &[u8; 32],
-) -> (Pubkey, u8) {
-    Pubkey::find_program_address(
+) -> Result<(Pubkey, u8), anyhow::Error> {
+    Pubkey::try_find_program_address(
         &[
             seed_prefixes::SIGNATURE_VERIFICATION_SEED,
             payload_merkle_root,
@@ -342,6 +367,7 @@ pub fn get_initialize_verification_session_pda(
         ],
         &solana_axelar_gateway::ID,
     )
+    .ok_or_else(|| anyhow!("Failed to derive verification session PDA"))
 }
 
 pub fn calculate_total_cost_lamports(
@@ -492,16 +518,16 @@ pub fn keypair_from_base58_string(s: &str) -> Result<Keypair, anyhow::Error> {
 pub fn check_if_error_includes_an_expected_account(
     error_message: &str,
     execute_data: &ExecuteData,
-) -> bool {
+) -> Result<bool, anyhow::Error> {
     let (initialize_verification_session_pda, _) = get_initialize_verification_session_pda(
         &execute_data.payload_merkle_root,
         &execute_data.signing_verifier_set_merkle_root,
-    );
+    )?;
     if is_addr_in_use(
         error_message,
         &initialize_verification_session_pda.to_string(),
     ) {
-        return true;
+        return Ok(true);
     }
     let command_ids: Option<Vec<[u8; 32]>> = match &execute_data.payload_items {
         MerklizedPayload::NewMessages { messages } => {
@@ -523,17 +549,18 @@ pub fn check_if_error_includes_an_expected_account(
         let incoming_message_pdas: Vec<Pubkey> = command_ids
             .iter()
             .map(|command_id| {
-                let (pda, _) = get_incoming_message_pda(command_id);
-                pda
+                let (pda, _) = get_incoming_message_pda(command_id)
+                    .map_err(|e| anyhow::anyhow!("Failed to get incoming message PDA: {}", e))?;
+                Ok(pda)
             })
-            .collect();
+            .collect::<Result<Vec<_>, anyhow::Error>>()?;
         for incoming_message_pda in incoming_message_pdas {
             if is_addr_in_use(error_message, &incoming_message_pda.to_string()) {
-                return true;
+                return Ok(true);
             }
         }
     }
-    false
+    Ok(false)
 }
 
 pub fn extract_proposal_hash_from_payload(payload: &[u8]) -> Result<[u8; 32], anyhow::Error> {
@@ -752,17 +779,17 @@ mod tests {
         let (init_pda, _) = get_initialize_verification_session_pda(
             &payload_merkle_root,
             &signing_verifier_set_merkle_root,
-        );
+        )
+        .unwrap();
 
         let error_message = format!(
             "Allocate: account Address {{ address: {}, base: None }} already in use",
             init_pda
         );
 
-        assert!(check_if_error_includes_an_expected_account(
-            &error_message,
-            &execute_data
-        ));
+        assert!(
+            check_if_error_includes_an_expected_account(&error_message, &execute_data).unwrap()
+        );
     }
 
     #[test]
@@ -778,17 +805,16 @@ mod tests {
             MerklizedPayload::NewMessages { messages } => messages[0].leaf.message.command_id(),
             _ => panic!("Expected NewMessages"),
         };
-        let (incoming_msg_pda, _) = get_incoming_message_pda(&command_id);
+        let (incoming_msg_pda, _) = get_incoming_message_pda(&command_id).unwrap();
 
         let error_message = format!(
             "Allocate: account Address {{ address: {}, base: None }} already in use",
             incoming_msg_pda
         );
 
-        assert!(check_if_error_includes_an_expected_account(
-            &error_message,
-            &execute_data
-        ));
+        assert!(
+            check_if_error_includes_an_expected_account(&error_message, &execute_data).unwrap()
+        );
     }
 
     #[test]
@@ -804,17 +830,16 @@ mod tests {
             MerklizedPayload::NewMessages { messages } => messages[0].leaf.message.command_id(),
             _ => panic!("Expected NewMessages"),
         };
-        let (incoming_msg_pda, _) = get_incoming_message_pda(&command_id);
+        let (incoming_msg_pda, _) = get_incoming_message_pda(&command_id).unwrap();
 
         let error_message = format!(
             "Allocate: account Address {{ address: {}, base: None }} already in use",
             incoming_msg_pda
         );
 
-        assert!(check_if_error_includes_an_expected_account(
-            &error_message,
-            &execute_data
-        ));
+        assert!(
+            check_if_error_includes_an_expected_account(&error_message, &execute_data).unwrap()
+        );
     }
 
     #[test]
@@ -830,17 +855,16 @@ mod tests {
             MerklizedPayload::NewMessages { messages } => messages[1].leaf.message.command_id(),
             _ => panic!("Expected NewMessages"),
         };
-        let (incoming_msg_pda, _) = get_incoming_message_pda(&command_id);
+        let (incoming_msg_pda, _) = get_incoming_message_pda(&command_id).unwrap();
 
         let error_message = format!(
             "Allocate: account Address {{ address: {}, base: None }} already in use",
             incoming_msg_pda
         );
 
-        assert!(check_if_error_includes_an_expected_account(
-            &error_message,
-            &execute_data
-        ));
+        assert!(
+            check_if_error_includes_an_expected_account(&error_message, &execute_data).unwrap()
+        );
     }
 
     #[test]
@@ -856,17 +880,16 @@ mod tests {
             MerklizedPayload::NewMessages { messages } => messages[2].leaf.message.command_id(),
             _ => panic!("Expected NewMessages"),
         };
-        let (incoming_msg_pda, _) = get_incoming_message_pda(&command_id);
+        let (incoming_msg_pda, _) = get_incoming_message_pda(&command_id).unwrap();
 
         let error_message = format!(
             "Allocate: account Address {{ address: {}, base: None }} already in use",
             incoming_msg_pda
         );
 
-        assert!(check_if_error_includes_an_expected_account(
-            &error_message,
-            &execute_data
-        ));
+        assert!(
+            check_if_error_includes_an_expected_account(&error_message, &execute_data).unwrap()
+        );
     }
 
     #[test]
@@ -884,10 +907,9 @@ mod tests {
             different_address
         );
 
-        assert!(!check_if_error_includes_an_expected_account(
-            &error_message,
-            &execute_data
-        ));
+        assert!(
+            !check_if_error_includes_an_expected_account(&error_message, &execute_data).unwrap()
+        );
     }
 
     #[test]
@@ -901,10 +923,9 @@ mod tests {
 
         let error_message = "Some other error occurred";
 
-        assert!(!check_if_error_includes_an_expected_account(
-            error_message,
-            &execute_data
-        ));
+        assert!(
+            !check_if_error_includes_an_expected_account(error_message, &execute_data).unwrap()
+        );
     }
 
     #[test]
@@ -925,10 +946,9 @@ mod tests {
 
         // Should return false because VerifierSetRotation has no incoming message PDAs
         // and the address doesn't match init_pda
-        assert!(!check_if_error_includes_an_expected_account(
-            &error_message,
-            &execute_data
-        ));
+        assert!(
+            !check_if_error_includes_an_expected_account(&error_message, &execute_data).unwrap()
+        );
     }
 
     #[test]
@@ -943,7 +963,8 @@ mod tests {
         let (init_pda, _) = get_initialize_verification_session_pda(
             &payload_merkle_root,
             &signing_verifier_set_merkle_root,
-        );
+        )
+        .unwrap();
 
         let error_message = format!(
             "Allocate: account Address {{ address: {}, base: None }} already in use",
@@ -951,10 +972,9 @@ mod tests {
         );
 
         // Should return true because init_pda matches (even for VerifierSetRotation)
-        assert!(check_if_error_includes_an_expected_account(
-            &error_message,
-            &execute_data
-        ));
+        assert!(
+            check_if_error_includes_an_expected_account(&error_message, &execute_data).unwrap()
+        );
     }
 
     /// Helper to create memo instruction call data for governance tests

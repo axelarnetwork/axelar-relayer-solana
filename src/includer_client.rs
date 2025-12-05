@@ -164,6 +164,7 @@ impl IncluderClientTrait for IncluderClient {
                     // We might have to manually implement send_and_confirm()
                     if let Some(execute_data) = execute_data {
                         if check_if_error_includes_an_expected_account(&e.to_string(), execute_data)
+                            .map_err(|e| IncluderClientError::GenericError(e.to_string()))?
                         {
                             return Err(IncluderClientError::AccountInUseError(e.to_string()));
                         }
@@ -360,7 +361,7 @@ mod tests {
 
     /// Simulates the error handling logic in send_transaction when execute_data is provided.
     fn simulate_error_handling(error_message: &str, execute_data: &ExecuteData) -> ExpectedError {
-        if check_if_error_includes_an_expected_account(error_message, execute_data) {
+        if check_if_error_includes_an_expected_account(error_message, execute_data).unwrap() {
             return ExpectedError::AccountInUse;
         }
 
@@ -391,7 +392,8 @@ mod tests {
         let (init_pda, _) = get_initialize_verification_session_pda(
             &payload_merkle_root,
             &signing_verifier_set_merkle_root,
-        );
+        )
+        .unwrap();
 
         let error_message = format!(
             "Allocate: account Address {{ address: {}, base: None }} already in use",
@@ -417,7 +419,7 @@ mod tests {
         }
         .expect("Expected a message");
 
-        let (incoming_msg_pda, _) = crate::utils::get_incoming_message_pda(&command_id);
+        let (incoming_msg_pda, _) = crate::utils::get_incoming_message_pda(&command_id).unwrap();
         let error_message = format!(
             "Allocate: account Address {{ address: {}, base: None }} already in use",
             incoming_msg_pda
@@ -480,7 +482,8 @@ mod tests {
         let (init_pda, _) = get_initialize_verification_session_pda(
             &payload_merkle_root,
             &signing_verifier_set_merkle_root,
-        );
+        )
+        .unwrap();
 
         // Error message contains both AccountInUse and SlotAlreadyVerified patterns
         let error_message = format!(
@@ -530,7 +533,8 @@ mod tests {
         let (expected_pda, _) = get_initialize_verification_session_pda(
             &payload_merkle_root,
             &signing_verifier_set_merkle_root,
-        );
+        )
+        .unwrap();
 
         let error_message = format!(
             "Allocate: account Address {{ address: {}, base: None }} already in use",
@@ -548,7 +552,8 @@ mod tests {
         let (expected_pda, _) = get_initialize_verification_session_pda(
             &payload_merkle_root,
             &signing_verifier_set_merkle_root,
-        );
+        )
+        .unwrap();
 
         let different_address = "11111111111111111111111111111111";
         let error_message = format!(

@@ -460,7 +460,8 @@ impl<
         let (verification_session_tracker_pda, _) = get_signature_verification_pda(
             &execute_data.payload_merkle_root,
             &execute_data.signing_verifier_set_merkle_root,
-        );
+        )
+        .map_err(|e| SolanaIncluderError::GenericError(e.to_string()))?;
 
         let ix_data = solana_axelar_gateway::instruction::InitializePayloadVerificationSession {
             merkle_root: execute_data.payload_merkle_root,
@@ -469,9 +470,11 @@ impl<
         .data();
 
         let (verifier_set_tracker_pda, _) =
-            get_verifier_set_tracker_pda(&execute_data.signing_verifier_set_merkle_root);
+            get_verifier_set_tracker_pda(&execute_data.signing_verifier_set_merkle_root)
+                .map_err(|e| SolanaIncluderError::GenericError(e.to_string()))?;
 
-        let (gateway_root_pda, _) = get_gateway_root_config_internal();
+        let (gateway_root_pda, _) = get_gateway_root_config_internal()
+            .map_err(|e| SolanaIncluderError::GenericError(e.to_string()))?;
 
         let accounts = solana_axelar_gateway::accounts::InitializePayloadVerificationSession {
             payer: self.keypair.pubkey(),
@@ -523,12 +526,15 @@ impl<
         let (verification_session_tracker_pda, _) = get_signature_verification_pda(
             &execute_data.payload_merkle_root,
             &execute_data.signing_verifier_set_merkle_root,
-        );
+        )
+        .map_err(|e| SolanaIncluderError::GenericError(e.to_string()))?;
 
         let (verifier_set_tracker_pda, _) =
-            get_verifier_set_tracker_pda(&execute_data.signing_verifier_set_merkle_root);
+            get_verifier_set_tracker_pda(&execute_data.signing_verifier_set_merkle_root)
+                .map_err(|e| SolanaIncluderError::GenericError(e.to_string()))?;
 
-        let (gateway_root_pda, _) = get_gateway_root_config_internal();
+        let (gateway_root_pda, _) = get_gateway_root_config_internal()
+            .map_err(|e| SolanaIncluderError::GenericError(e.to_string()))?;
 
         // Build and submit verification txs
         let signing_verifier_set_leaves = execute_data.signing_verifier_set_leaves.clone();
@@ -584,23 +590,27 @@ impl<
         execute_data: &ExecuteData,
         new_verifier_set_merkle_root: &[u8; 32],
     ) -> Result<Option<u64>, SolanaIncluderError> {
-        // Collect PDAs
         // Current verifier set tracker (the signers approving the rotation)
         let (current_verifier_set_tracker_pda, _) =
-            get_verifier_set_tracker_pda(&execute_data.signing_verifier_set_merkle_root);
+            get_verifier_set_tracker_pda(&execute_data.signing_verifier_set_merkle_root)
+                .map_err(|e| SolanaIncluderError::GenericError(e.to_string()))?;
 
         // New verifier set tracker (the set we're rotating to)
         let (new_verifier_set_tracker_pda, _) =
-            get_verifier_set_tracker_pda(new_verifier_set_merkle_root);
+            get_verifier_set_tracker_pda(new_verifier_set_merkle_root)
+                .map_err(|e| SolanaIncluderError::GenericError(e.to_string()))?;
 
-        let (gateway_root_pda, _) = get_gateway_root_config_internal();
+        let (gateway_root_pda, _) = get_gateway_root_config_internal()
+            .map_err(|e| SolanaIncluderError::GenericError(e.to_string()))?;
 
         let (verification_session_tracker_pda, _) = get_signature_verification_pda(
             &execute_data.payload_merkle_root,
             &execute_data.signing_verifier_set_merkle_root,
-        );
+        )
+        .map_err(|e| SolanaIncluderError::GenericError(e.to_string()))?;
 
-        let (event_authority, _) = get_gateway_event_authority_pda();
+        let (event_authority, _) = get_gateway_event_authority_pda()
+            .map_err(|e| SolanaIncluderError::GenericError(e.to_string()))?;
 
         // Build RotateSigners instruction
         let ix_data = solana_axelar_gateway::instruction::RotateSigners {
@@ -638,23 +648,26 @@ impl<
         &self,
         messages: Vec<MerklizedMessage>,
         execute_data: &ExecuteData,
-    ) -> Vec<(CrossChainId, u64)> {
-        // Collect PDAs
-        let (gateway_root_pda, _) = get_gateway_root_config_internal();
+    ) -> Result<Vec<(CrossChainId, u64)>, SolanaIncluderError> {
+        let (gateway_root_pda, _) = get_gateway_root_config_internal()
+            .map_err(|e| SolanaIncluderError::GenericError(e.to_string()))?;
 
         let (verification_session_tracker_pda, _) = get_signature_verification_pda(
             &execute_data.payload_merkle_root,
             &execute_data.signing_verifier_set_merkle_root,
-        );
+        )
+        .map_err(|e| SolanaIncluderError::GenericError(e.to_string()))?;
 
-        let (event_authority, _) = get_gateway_event_authority_pda();
+        let (event_authority, _) = get_gateway_event_authority_pda()
+            .map_err(|e| SolanaIncluderError::GenericError(e.to_string()))?;
 
         // Build ApproveMessage instruction for each message
         let mut merkelised_message_futures = messages
             .into_iter()
             .map(|merklized_message| {
                 let command_id = merklized_message.leaf.message.command_id();
-                let (pda, _) = get_incoming_message_pda(&command_id);
+                let (pda, _) = get_incoming_message_pda(&command_id)
+                    .map_err(|e| SolanaIncluderError::GenericError(e.to_string()))?;
 
                 let ix_data = solana_axelar_gateway::instruction::ApproveMessage {
                     merklized_message: merklized_message.clone(),
@@ -679,15 +692,15 @@ impl<
                 };
 
                 let cc_id = merklized_message.leaf.message.cc_id;
-                async {
+                Ok(async move {
                     (
                         cc_id,
                         self.build_and_send_transaction(vec![ix], Some(execute_data))
                             .await,
                     )
-                }
+                })
             })
-            .collect::<FuturesUnordered<_>>();
+            .collect::<Result<FuturesUnordered<_>, SolanaIncluderError>>()?;
 
         let mut approved_messages = vec![];
         while let Some((cc_id, result)) = merkelised_message_futures.next().await {
@@ -712,7 +725,7 @@ impl<
             }
         }
 
-        approved_messages
+        Ok(approved_messages)
     }
 }
 
@@ -795,8 +808,10 @@ impl<
                     .map_err(|e| IncluderError::GenericError(e.to_string()))?;
             }
             MerklizedPayload::NewMessages { messages } => {
-                let approved_messages =
-                    self.approve_messages(messages.clone(), &execute_data).await;
+                let approved_messages = self
+                    .approve_messages(messages.clone(), &execute_data)
+                    .await
+                    .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
                 // The overhead cost is the initialize payload verification session and the total cost of verifying all signatures
                 // divided by the number of messages. The total cost for the message is the overhead plus its own cost.
@@ -856,7 +871,8 @@ impl<
                 })?,
         };
         let command_id = message.command_id();
-        let (gateway_incoming_message_pda, ..) = get_incoming_message_pda(&command_id);
+        let (gateway_incoming_message_pda, ..) = get_incoming_message_pda(&command_id)
+            .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
         if self
             .client
@@ -939,9 +955,12 @@ impl<
 
         let receiver = Pubkey::from_str(&task.task.refund_recipient_address.clone())
             .map_err(|e| IncluderError::GenericError(e.to_string()))?;
-        let (operator_pda, _) = get_operator_pda(&self.keypair.pubkey());
-        let (treasury, _) = get_treasury_pda();
-        let (event_authority, _) = get_gas_service_event_authority_pda();
+        let (operator_pda, _) = get_operator_pda(&self.keypair.pubkey())
+            .map_err(|e| IncluderError::GenericError(e.to_string()))?;
+        let (treasury, _) =
+            get_treasury_pda().map_err(|e| IncluderError::GenericError(e.to_string()))?;
+        let (event_authority, _) = get_gas_service_event_authority_pda()
+            .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
         let refund_amount = task
             .task
