@@ -326,7 +326,6 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
             }
 
             GMPPayload::DeployInterchainToken(ref deploy) => {
-                let (deployer_ata, _) = get_deployer_ata(&self.keypair.pubkey(), &token_mint);
                 let minter = if deploy.minter.is_empty() {
                     None
                 } else {
@@ -352,7 +351,6 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
                 ));
             }
             GMPPayload::LinkToken(ref link) => {
-                let (deployer_ata, _) = get_deployer_ata(&self.keypair.pubkey(), &token_mint);
                 let minter = Pubkey::try_from(link.link_params.as_ref()).ok();
 
                 let minter_roles_pda =
