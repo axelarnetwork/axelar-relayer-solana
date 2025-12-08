@@ -423,7 +423,7 @@ async fn test_approve_and_execute_memo_message() {
 
     assert!(
         found_approve_message_tx,
-        "Should have found ApproveMessage transaction in queue (proves message was approved on-chain)"
+        "Should have found ApproveMessage transaction in queue"
     );
 
     let mut mock_cost_cache = MockCostCacheTrait::new();
@@ -756,7 +756,6 @@ async fn test_refund_task_handled_and_found_by_poller() {
 
     println!("Treasury funded with {} lamports", treasury_funding_amount);
 
-    // Create a RefundTask
     let refund_recipient = Keypair::new().pubkey();
     let refund_amount = 10_000_000_000u64; // 10 SOL in lamports
     let message_id = "test-refund-message-001".to_string();
@@ -964,7 +963,6 @@ async fn test_refund_task_duplicate_returns_already_processed() {
         },
     };
 
-    // First call - should process the refund
     println!("Processing refund task first time...");
     let first_result = includer.handle_refund_task(refund_task.clone()).await;
     assert!(
@@ -1035,14 +1033,12 @@ async fn test_rotate_signers() {
         Arc::new(mock_refunds_model),
     );
 
-    // Current verifier set merkle root
     let signing_verifier_set_merkle_root = env.verifier_set_hash;
 
-    // Generate new verifier set
     let (_new_secret_key_1, new_compressed_pubkey_1) = generate_random_signer();
     let (_new_secret_key_2, new_compressed_pubkey_2) = generate_random_signer();
 
-    let new_nonce = 1u64; // Increment nonce for the new set
+    let new_nonce = 1u64;
     let quorum_threshold = 100;
 
     let new_verifier_leaves = [
@@ -1066,7 +1062,6 @@ async fn test_rotate_signers() {
         },
     ];
 
-    // Compute new verifier set merkle root
     let new_verifier_leaf_hashes: Vec<[u8; 32]> = new_verifier_leaves
         .iter()
         .map(VerifierSetLeaf::hash)
@@ -1081,7 +1076,6 @@ async fn test_rotate_signers() {
 
     let payload_merkle_root = new_verifier_set_merkle_root;
 
-    // Sign the payload with existing verifiers
     let verifier_info_1 = create_verifier_info(
         &env.verifier_secret_keys[0],
         payload_merkle_root,
@@ -1199,7 +1193,7 @@ async fn test_rotate_signers() {
 
     assert!(
         found_rotate_signers_tx,
-        "Should have found SignersRotated transaction in queue (proves rotation was executed on-chain)"
+        "Should have found SignersRotated transaction in queue"
     );
 
     let new_verifier_set_tracker_pda =

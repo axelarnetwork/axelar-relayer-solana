@@ -49,20 +49,17 @@ async fn test_gas_paid_event_parsing() {
 
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-    // Get PDAs for the gas service
     let treasury = solana_axelar_gas_service::Treasury::find_pda().0;
     let (gas_service_event_authority, _) = solana_sdk::pubkey::Pubkey::find_program_address(
         &[b"__event_authority"],
         &solana_axelar_gas_service::ID,
     );
 
-    // Get gateway event authority for call_contract
     let (gateway_event_authority, _) = solana_sdk::pubkey::Pubkey::find_program_address(
         &[b"__event_authority"],
         &GATEWAY_PROGRAM_ID,
     );
 
-    // First, do a CallContract instruction
     let destination_chain = "ethereum".to_string();
     let destination_address = "0xGasTestContract".to_string();
     let payload = b"Gas payment test payload".to_vec();
@@ -91,11 +88,9 @@ async fn test_gas_paid_event_parsing() {
         data: call_contract_ix_data.data(),
     };
 
-    // Now create the PayGas instruction
     let gas_amount = LAMPORTS_PER_SOL / 10; // 0.1 SOL
     let refund_address = env.payer.pubkey();
 
-    // Calculate payload_hash as the hash of the payload
     let payload_hash = solana_sdk::keccak::hashv(&[&payload]).to_bytes();
 
     let pay_gas_ix_data = solana_axelar_gas_service::instruction::PayGas {
@@ -121,7 +116,6 @@ async fn test_gas_paid_event_parsing() {
         data: pay_gas_ix_data.data(),
     };
 
-    // Send both instructions in the same transaction
     let recent_blockhash = env
         .rpc_client
         .get_latest_blockhash()
@@ -143,7 +137,6 @@ async fn test_gas_paid_event_parsing() {
 
     println!("CallContract + PayGas transaction sent: {}", signature);
 
-    // Wait for the poller to pick up the transaction
     let mut found_gas_paid_tx = false;
     let start_time = std::time::Instant::now();
     let timeout = std::time::Duration::from_secs(30);
@@ -154,7 +147,6 @@ async fn test_gas_paid_event_parsing() {
         let queued_items = test_queue.get_items().await;
         for item in &queued_items {
             if let QueueItem::Transaction(tx_data) = item {
-                // The transaction contains both CallContract and PayGas/GasPaid
                 if tx_data.contains("CallContract") {
                     found_gas_paid_tx = true;
                     println!("Found CallContract + GasPaid transaction in queue!");
@@ -169,7 +161,6 @@ async fn test_gas_paid_event_parsing() {
     let queued_items = test_queue.get_items().await;
     println!("Queue contains {} items", queued_items.len());
 
-    // Create parser and ingestor
     let mut mock_cost_cache = MockCostCacheTrait::new();
     mock_cost_cache
         .expect_get_cost_by_message_id()
@@ -189,7 +180,6 @@ async fn test_gas_paid_event_parsing() {
 
     let ingestor = SolanaIngestor::new(parser, mock_update_events);
 
-    // Parse the transactions and look for GasCredit event (from GasPaid)
     let mut found_gas_credit_event = false;
     let mut found_call_event = false;
 
@@ -250,7 +240,6 @@ async fn test_gas_paid_event_parsing() {
     env.cleanup().await;
 }
 
-/// Test that AddGas emits a GasCredit event that can be parsed
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_gas_added_event_parsing() {
     let env = TestEnvironment::new().await;
@@ -269,16 +258,12 @@ async fn test_gas_added_event_parsing() {
 
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-    // Get PDAs
     let treasury = solana_axelar_gas_service::Treasury::find_pda().0;
     let (gas_service_event_authority, _) = solana_sdk::pubkey::Pubkey::find_program_address(
         &[b"__event_authority"],
         &solana_axelar_gas_service::ID,
     );
 
-    // AddGas allows adding gas to an existing message_id
-    // The message_id must follow the format "{signature}-{outer}.{inner}" for the parser
-    // We use a properly formatted fake message_id
     let message_id =
         "FakeSignatureForAddGasTest1234567890123456789012345678901234567890-2.1".to_string();
     let gas_amount = LAMPORTS_PER_SOL / 20; // 0.05 SOL
@@ -326,7 +311,6 @@ async fn test_gas_added_event_parsing() {
 
     println!("AddGas transaction sent: {}", signature);
 
-    // Wait for the poller to pick up the transaction
     let mut found_gas_added_tx = false;
     let start_time = std::time::Instant::now();
     let timeout = std::time::Duration::from_secs(30);
@@ -351,7 +335,6 @@ async fn test_gas_added_event_parsing() {
     let queued_items = test_queue.get_items().await;
     println!("Queue contains {} items", queued_items.len());
 
-    // Create parser and ingestor
     let mut mock_cost_cache = MockCostCacheTrait::new();
     mock_cost_cache
         .expect_get_cost_by_message_id()
@@ -371,7 +354,6 @@ async fn test_gas_added_event_parsing() {
 
     let ingestor = SolanaIngestor::new(parser, mock_update_events);
 
-    // Parse the transactions and look for GasCredit event (from GasAdded)
     let mut found_gas_credit_event = false;
 
     for item in &queued_items {
@@ -417,7 +399,6 @@ async fn test_gas_added_event_parsing() {
     env.cleanup().await;
 }
 
-/// Test that RefundFees emits a GasRefunded event that can be parsed
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_gas_refunded_event_parsing() {
     let env = TestEnvironment::new().await;
@@ -437,7 +418,6 @@ async fn test_gas_refunded_event_parsing() {
         refunds_model,
     );
 
-    // Fund the treasury
     let (treasury, _) = solana::utils::get_treasury_pda().expect("Failed to derive treasury PDA");
     let treasury_funding_amount = 5 * LAMPORTS_PER_SOL;
 
@@ -465,10 +445,8 @@ async fn test_gas_refunded_event_parsing() {
 
     println!("Treasury funded with {} lamports", treasury_funding_amount);
 
-    // Create a RefundTask
     let refund_recipient = Keypair::new().pubkey();
     let refund_amount = 1_000_000_000u64; // 1 SOL
-                                          // The message_id must follow the format "{signature}-{outer}.{inner}" for the parser
     let message_id =
         "FakeSignatureForRefundTest1234567890123456789012345678901234567890-3.1".to_string();
     let refund_id = "test-refund-parsing-task-001".to_string();
@@ -497,7 +475,6 @@ async fn test_gas_refunded_event_parsing() {
         },
     };
 
-    // Set up the poller before executing the refund
     let test_queue = Arc::new(TestQueue::new());
     let events_queue: Arc<dyn QueueTrait> = Arc::clone(&test_queue) as Arc<dyn QueueTrait>;
 
@@ -512,7 +489,6 @@ async fn test_gas_refunded_event_parsing() {
 
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-    // Execute the refund
     println!("Executing refund task...");
     includer
         .handle_refund_task(refund_task)
@@ -520,7 +496,6 @@ async fn test_gas_refunded_event_parsing() {
         .expect("Refund task should succeed");
     println!("Refund task completed!");
 
-    // Wait for the poller to pick up the transaction
     let mut found_refund_tx = false;
     let start_time = std::time::Instant::now();
     let timeout = std::time::Duration::from_secs(30);
@@ -531,7 +506,7 @@ async fn test_gas_refunded_event_parsing() {
         let queued_items = test_queue.get_items().await;
         for item in &queued_items {
             if let QueueItem::Transaction(tx_data) = item {
-                if tx_data.contains("RefundFees") || tx_data.contains(&message_id) {
+                if tx_data.contains(&message_id) {
                     found_refund_tx = true;
                     println!("Found Refund transaction in queue!");
                     break;
@@ -545,7 +520,6 @@ async fn test_gas_refunded_event_parsing() {
     let queued_items = test_queue.get_items().await;
     println!("Queue contains {} items", queued_items.len());
 
-    // Create parser and ingestor
     let mut mock_cost_cache = MockCostCacheTrait::new();
     mock_cost_cache
         .expect_get_cost_by_message_id()
@@ -565,7 +539,6 @@ async fn test_gas_refunded_event_parsing() {
 
     let ingestor = SolanaIngestor::new(parser, mock_update_events);
 
-    // Parse the transactions and look for GasRefunded event
     let mut found_gas_refunded_event = false;
 
     for item in &queued_items {

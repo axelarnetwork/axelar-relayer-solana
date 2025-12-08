@@ -31,7 +31,6 @@ use solana_transaction_parser::gmp_types::{
 
 use super::common::*;
 
-/// Get the governance config PDA
 fn get_governance_config_pda() -> (Pubkey, u8) {
     Pubkey::find_program_address(
         &[solana_axelar_governance::seed_prefixes::GOVERNANCE_CONFIG],
@@ -39,7 +38,6 @@ fn get_governance_config_pda() -> (Pubkey, u8) {
     )
 }
 
-/// Create memo instruction call data for governance proposal
 fn get_memo_instruction_data(
     memo: String,
     value_receiver: SolanaAccountMetadata,
@@ -70,19 +68,15 @@ async fn test_governance_schedule_timelock_proposal() {
     let env = TestEnvironment::new().await;
     let test_queue = Arc::new(TestQueue::new());
 
-    // Initialize the governance program
     let (governance_config_pda, _governance_config_bump) = get_governance_config_pda();
     let program_data =
         solana_sdk::bpf_loader_upgradeable::get_program_data_address(&solana_axelar_governance::ID);
 
-    // The authorized chain and address for governance commands
-    // Must match what the governance program is configured with
     let authorized_chain = "ethereum";
     let authorized_address = "0xSourceAddress";
     let chain_hash = solana_program::keccak::hashv(&[authorized_chain.as_bytes()]).to_bytes();
     let address_hash = solana_program::keccak::hashv(&[authorized_address.as_bytes()]).to_bytes();
 
-    // Initialize governance config
     let init_params = solana_axelar_governance::GovernanceConfigInit {
         chain_hash,
         address_hash,
@@ -121,8 +115,8 @@ async fn test_governance_schedule_timelock_proposal() {
     println!("Governance config initialized successfully");
 
     let memo = String::from("This is a governance proposal memo");
-    let native_value_u64: u64 = 0; // No lamports to transfer
-    let eta: u64 = 1800000000; // Far future timestamp
+    let native_value_u64: u64 = 0;
+    let eta: u64 = 1800000000;
 
     let value_receiver_pubkey = Pubkey::new_unique();
     let value_receiver = SolanaAccountMetadata {
@@ -294,9 +288,9 @@ async fn test_governance_schedule_timelock_proposal() {
             });
 
             if events.is_empty() || has_success {
-                println!("✓ Governance test passed!");
+                println!("Governance test passed!");
             } else {
-                println!("Note: Proposal may have reverted - check logs for details");
+                panic!("Governance test failed, events: {:?}", events);
             }
         }
         Err(e) => {

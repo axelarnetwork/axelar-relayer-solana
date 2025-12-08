@@ -297,7 +297,6 @@ async fn test_approve_and_execute_its_message() {
         }
     }
 
-    // Give time for deploy to be confirmed
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
     println!("Interchain Transfer...");
@@ -306,7 +305,6 @@ async fn test_approve_and_execute_its_message() {
     let destination_pubkey = env.payer.pubkey();
     let transfer_amount = 1_000_000u64;
 
-    // Create InterchainTransfer payload
     let source_address_bytes = "ethereum_address_123".as_bytes().to_vec();
     let destination_address_bytes = destination_pubkey.to_bytes().to_vec();
 
@@ -330,7 +328,6 @@ async fn test_approve_and_execute_its_message() {
     let transfer_payload_bytes = transfer_gmp_payload.encode();
     let transfer_payload_hash = solana_sdk::keccak::hashv(&[&transfer_payload_bytes]).to_bytes();
 
-    // Create message for transfer
     let transfer_message = Message {
         cc_id: CrossChainId {
             chain: "axelar".to_string(), // The hub chain
@@ -427,7 +424,6 @@ async fn test_approve_and_execute_its_message() {
 
     test_queue.clear().await;
 
-    // Now execute the transfer
     println!("Executing transfer...");
     match includer.handle_execute_task(transfer_execute_task).await {
         Ok(events) => {
@@ -482,7 +478,6 @@ async fn test_approve_and_execute_its_message() {
     let mut found_executed_event = false;
     for item in &queued_items_execute {
         if let QueueItem::Transaction(tx_data) = item {
-            // Try to parse all transactions
             match ingestor_execute
                 .handle_transaction(tx_data.to_string())
                 .await
@@ -514,7 +509,6 @@ async fn test_approve_and_execute_its_message() {
                     }
                 }
                 Err(e) => {
-                    // Only print errors for transactions that look relevant
                     if tx_data.contains("itsmM2AJ27dSAXVhCfj34MtnFqyUmnLF7kbKbmyqRQA") {
                         println!("Parse error for ITS transaction: {:?}", e);
                     }
@@ -535,7 +529,6 @@ async fn test_approve_and_execute_its_message() {
     let link_mint_keypair = solana_sdk::signature::Keypair::new();
     let link_mint_pubkey = link_mint_keypair.pubkey();
 
-    // Create the mint account
     let rent = env
         .rpc_client
         .get_minimum_balance_for_rent_exemption(82)
@@ -552,9 +545,9 @@ async fn test_approve_and_execute_its_message() {
     let init_mint_ix = anchor_spl::token::spl_token::instruction::initialize_mint(
         &anchor_spl::token::ID,
         &link_mint_pubkey,
-        &env.payer.pubkey(), // mint authority
-        None,                // freeze authority
-        9,                   // decimals
+        &env.payer.pubkey(),
+        None,
+        9,
     )
     .unwrap();
 
@@ -730,9 +723,9 @@ async fn test_approve_and_execute_its_message() {
     let init_mint_2022_ix = anchor_spl::token_2022::spl_token_2022::instruction::initialize_mint(
         &anchor_spl::token_2022::ID,
         &link_mint_2022_pubkey,
-        &env.payer.pubkey(), // mint authority
-        None,                // freeze authority
-        9,                   // decimals
+        &env.payer.pubkey(),
+        None,
+        9,
     )
     .unwrap();
 
@@ -1046,7 +1039,7 @@ async fn test_its_messages_with_optional_fields() {
             payload: BASE64_STANDARD.encode(&deploy_payload_bytes),
             available_gas_balance: Amount {
                 token_id: None,
-                amount: "15000000000".to_string(), // Different gas amount
+                amount: "15000000000".to_string(),
             },
         },
     };
@@ -1092,7 +1085,7 @@ async fn test_its_messages_with_optional_fields() {
         &link_mint_pubkey,
         &env.payer.pubkey(),
         None,
-        8, // Different decimals
+        8,
     )
     .unwrap();
 
@@ -1301,11 +1294,9 @@ async fn test_its_messages_with_optional_fields() {
             &anchor_spl::token_2022::ID,
         );
 
-    // Get the minter roles PDA (created during deploy with minter)
     let (minter_roles_pda, _) =
         solana_axelar_its::UserRoles::find_pda(&token_manager_pda, &minter_pubkey);
 
-    // Use ITS MintInterchainToken instruction to mint tokens
     let mint_amount = 10_000_000u64;
     let mint_ix_data = solana_axelar_its::instruction::MintInterchainToken {
         amount: mint_amount,
@@ -1372,9 +1363,9 @@ async fn test_its_messages_with_optional_fields() {
         selector: Uint::from(0u64),
         token_id: FixedBytes::from(token_id),
         source_address: Bytes::from(source_address_bytes),
-        destination_address: Bytes::from(destination_address_bytes), // Memo program!
+        destination_address: Bytes::from(destination_address_bytes), // Memo program
         amount: Uint::from(transfer_amount),
-        data: Bytes::from(executable_data), // Executable payload for memo
+        data: Bytes::from(executable_data),
     };
 
     let transfer_inner = GMPPayload::InterchainTransfer(transfer).encode();
@@ -1530,7 +1521,7 @@ async fn test_its_concurrent_task_processing() {
         verifier_set_hash: [u8; 32],
     ) -> (GatewayTxTask, ExecuteTask) {
         let transfer_message_id = format!("test-concurrent-transfer-{:03}", index);
-        let transfer_amount = 1_000u64 + (index as u64 * 100); // Vary amount slightly
+        let transfer_amount = 1_000u64 + (index as u64 * 100); // to simulate different transactions
 
         let source_address_bytes = format!("eth_sender_{}", index).as_bytes().to_vec();
         let destination_address_bytes = destination_pubkey.to_bytes().to_vec();
@@ -1818,7 +1809,7 @@ async fn test_its_concurrent_task_processing() {
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
     println!(
-        "Executing {} transfers in FULL parallel (no semaphore)...",
+        "Executing {} transfers in parallel...",
         NUM_CONCURRENT_TASKS
     );
 
@@ -1855,7 +1846,6 @@ async fn test_its_concurrent_task_processing() {
     let successes = success_count.load(Ordering::SeqCst);
     let failures = failure_count.load(Ordering::SeqCst);
 
-    println!("Concurrent Test Results");
     println!("Total tasks: {}", NUM_CONCURRENT_TASKS);
     println!("Successes: {}", successes);
     println!("Failures: {}", failures);
