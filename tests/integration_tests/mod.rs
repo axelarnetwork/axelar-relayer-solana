@@ -5,3 +5,4 @@ pub mod common;
 pub mod gmp;
 pub mod governance;
 pub mod its;
+pub mod misc;
