@@ -1,5 +1,5 @@
 # Builder Stage
-FROM rust:1.86-bookworm AS builder
+FROM rust:1.90-bookworm AS builder
 
 # Build argument to decide which binary to include in this image
 ARG BINARY_NAME
