@@ -164,7 +164,7 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
             recent_hash,
         )
         .await
-        .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+        .map_err(|e| TransactionBuilderError::CreateTransactionError(e.to_string()))?;
 
         // Compute the actual compute budget required for the transaction
         let compute_budget = self
@@ -185,7 +185,7 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
             recent_hash,
         )
         .await
-        .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+        .map_err(|e| TransactionBuilderError::CreateTransactionError(e.to_string()))?;
 
         let final_cost = calculate_total_cost_lamports(&final_transaction, compute_budget)
             .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;

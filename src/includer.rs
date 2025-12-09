@@ -326,7 +326,6 @@ impl<
             Ok((signature, actual_tx_cost)) => {
                 info!("Transaction sent successfully: {}", signature.to_string());
 
-                // TODO: Spawn a task to write to Redis
                 self.redis_conn
                     .write_gas_cost_for_message_id(
                         task.task.message.message_id.clone(),
