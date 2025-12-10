@@ -212,7 +212,7 @@ impl<STR: SolanaStreamClientTrait, SM: SolanaTransactionModel> SolanaListener<ST
                 error!("Error shutting down solana stream client: {:?}", e);
             }
 
-            if should_break {
+            if should_break || cancellation_token.is_cancelled() {
                 break;
             }
             warn!("Restarting setup_connection_and_work");
