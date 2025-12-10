@@ -2,7 +2,7 @@ use crate::gas_calculator::GasCalculatorTrait;
 use crate::includer::ALTInfo;
 use crate::includer_client::IncluderClientTrait;
 use crate::utils::{
-    calculate_total_cost_lamports, create_transaction, get_deployer_ata, get_destination_ata,
+    calculate_total_cost_lamports, create_transaction, get_destination_ata,
     get_gateway_root_config_internal, get_governance_config_pda,
     get_governance_event_authority_pda, get_incoming_message_pda, get_its_event_authority_pda,
     get_its_root_pda, get_minter_roles_pda, get_mpl_token_metadata_account,
