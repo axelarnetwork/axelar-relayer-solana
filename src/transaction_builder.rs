@@ -2,7 +2,7 @@ use crate::gas_calculator::GasCalculatorTrait;
 use crate::includer::ALTInfo;
 use crate::includer_client::IncluderClientTrait;
 use crate::utils::{
-    calculate_total_cost_lamports, create_transaction, get_deployer_ata, get_destination_ata,
+    calculate_total_cost_lamports, create_transaction, get_destination_ata,
     get_gateway_root_config_internal, get_governance_config_pda,
     get_governance_event_authority_pda, get_incoming_message_pda, get_its_event_authority_pda,
     get_its_root_pda, get_minter_roles_pda, get_mpl_token_metadata_account,
@@ -326,7 +326,6 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
             }
 
             GMPPayload::DeployInterchainToken(ref deploy) => {
-                let (deployer_ata, _) = get_deployer_ata(&self.keypair.pubkey(), &token_mint);
                 let minter = if deploy.minter.is_empty() {
                     None
                 } else {
@@ -344,8 +343,6 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
                 let (mpl_token_metadata_account, _) = get_mpl_token_metadata_account(&token_mint);
 
                 accounts.extend(execute_deploy_interchain_token_extra_accounts(
-                    deployer_ata,
-                    self.keypair.pubkey(),
                     solana_program::sysvar::instructions::ID,
                     mpl_token_metadata::ID,
                     mpl_token_metadata_account,
@@ -354,17 +351,12 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
                 ));
             }
             GMPPayload::LinkToken(ref link) => {
-                let (deployer_ata, _) = get_deployer_ata(&self.keypair.pubkey(), &token_mint);
                 let minter = Pubkey::try_from(link.link_params.as_ref()).ok();
 
                 let minter_roles_pda =
                     minter.map(|minter| get_minter_roles_pda(&token_manager_pda, &minter).0);
 
-                accounts.extend(execute_link_token_extra_accounts(
-                    deployer_ata,
-                    minter,
-                    minter_roles_pda,
-                ))
+                accounts.extend(execute_link_token_extra_accounts(minter, minter_roles_pda))
             }
             _ => {}
         }
