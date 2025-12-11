@@ -17,10 +17,11 @@ use anchor_lang::InstructionData;
 use anchor_lang::ToAccountMetas;
 use anchor_spl::{associated_token::spl_associated_token_account, token_2022::spl_token_2022};
 use async_trait::async_trait;
-use interchain_token_transfer_gmp::GMPPayload;
+use borsh::BorshDeserialize;
 use mpl_token_metadata;
 use relayer_core::utils::ThreadSafe;
 use solana_axelar_gateway::executable::ExecutablePayload;
+use solana_axelar_its::encoding::HubMessage;
 use solana_axelar_its::instructions::{
     execute_deploy_interchain_token_extra_accounts, execute_interchain_transfer_extra_accounts,
     execute_link_token_extra_accounts,
@@ -236,12 +237,25 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
         incoming_message_pda: Pubkey,
         existing_alt_pubkey: Option<Pubkey>,
     ) -> Result<(Instruction, Option<ALTInfo>), TransactionBuilderError> {
-        let gmp_decoded_payload = GMPPayload::decode(payload)
+        let gmp_decoded_payload = HubMessage::deserialize(&mut payload.to_vec().as_slice())
             .map_err(|e| TransactionBuilderError::PayloadDecodeError(e.to_string()))?;
 
-        let token_id = gmp_decoded_payload
-            .token_id()
-            .map_err(|e| TransactionBuilderError::PayloadDecodeError(e.to_string()))?;
+        let token_id = match gmp_decoded_payload {
+            HubMessage::ReceiveFromHub { ref message, .. } => match message {
+                solana_axelar_its::encoding::Message::InterchainTransfer(transfer) => {
+                    transfer.token_id
+                }
+                solana_axelar_its::encoding::Message::DeployInterchainToken(deploy) => {
+                    deploy.token_id
+                }
+                solana_axelar_its::encoding::Message::LinkToken(link) => link.token_id,
+            },
+            _ => {
+                return Err(TransactionBuilderError::PayloadDecodeError(
+                    "Unexpected GMP payload type".to_string(),
+                ));
+            }
+        };
 
         let (signing_pda, _) =
             get_validate_message_signing_pda(&message.command_id(), &solana_axelar_its::ID);
@@ -278,87 +292,90 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
 
         debug!("GMP decoded payload: {:?}", gmp_decoded_payload);
 
-        // unwrap ReceiveFromHub payload
-        let gmp_decoded_payload = match gmp_decoded_payload.clone() {
-            GMPPayload::ReceiveFromHub(inner_payload) => {
-                GMPPayload::decode(inner_payload.payload.as_ref())
-                    .map_err(|e| TransactionBuilderError::PayloadDecodeError(e.to_string()))?
-            }
-            _ => {
-                error!("Unexpected GMP payload type: {:?}", gmp_decoded_payload);
-                return Err(TransactionBuilderError::GenericError(
-                    "Unexpected GMP payload type".to_string(),
-                ));
-            }
-        };
-
-        match gmp_decoded_payload {
-            GMPPayload::InterchainTransfer(ref transfer) => {
-                let destination_address =
-                    Pubkey::try_from(transfer.destination_address.as_ref())
-                        .map_err(|e| TransactionBuilderError::PayloadDecodeError(e.to_string()))?;
-                let (destination_ata, _) = get_destination_ata(&destination_address, &token_mint);
-                accounts.extend(execute_interchain_transfer_extra_accounts(
-                    destination_address,
-                    destination_ata,
-                    Some(!transfer.data.is_empty()),
-                ));
-                if !transfer.data.is_empty() {
-                    match ExecutablePayload::decode(transfer.data.as_ref()) {
-                        Ok(executable_payload) => {
-                            let gmp_accounts = executable_payload.account_meta();
-                            for account in gmp_accounts.clone() {
-                                // signers are not supported for arbitrary executables
-                                if account.is_signer {
-                                    return Err(TransactionBuilderError::PayloadDecodeError(
-                                        "Signer account cannot be provided".to_string(),
-                                    ));
-                                };
+        match gmp_decoded_payload.clone() {
+            HubMessage::ReceiveFromHub { ref message, .. } => match message {
+                solana_axelar_its::encoding::Message::InterchainTransfer(transfer) => {
+                    let destination_address =
+                        Pubkey::try_from(transfer.destination_address.as_slice()).map_err(|e| {
+                            TransactionBuilderError::PayloadDecodeError(e.to_string())
+                        })?;
+                    let (destination_ata, _) =
+                        get_destination_ata(&destination_address, &token_mint);
+                    accounts.extend(execute_interchain_transfer_extra_accounts(
+                        destination_address,
+                        destination_ata,
+                        Some(transfer.data.is_some()),
+                    ));
+                    if let Some(data) = &transfer.data {
+                        match ExecutablePayload::decode(data) {
+                            Ok(executable_payload) => {
+                                let gmp_accounts = executable_payload.account_meta();
+                                for account in gmp_accounts.clone() {
+                                    // signers are not supported for arbitrary executables
+                                    if account.is_signer {
+                                        return Err(TransactionBuilderError::PayloadDecodeError(
+                                            "Signer account cannot be provided".to_string(),
+                                        ));
+                                    };
+                                }
+                                accounts.extend(gmp_accounts);
                             }
-                            accounts.extend(gmp_accounts);
-                        }
-                        Err(e) => {
-                            error!("Failed to decode ExecutablePayload: {:?}", e);
-                            return Err(TransactionBuilderError::PayloadDecodeError(e.to_string()));
+                            Err(e) => {
+                                error!("Failed to decode ExecutablePayload: {:?}", e);
+                                return Err(TransactionBuilderError::PayloadDecodeError(
+                                    e.to_string(),
+                                ));
+                            }
                         }
                     }
                 }
-            }
+                solana_axelar_its::encoding::Message::DeployInterchainToken(deploy) => {
+                    let minter = if let Some(minter) = &deploy.minter {
+                        Some(Pubkey::try_from(minter.as_slice()).map_err(|e| {
+                            TransactionBuilderError::PayloadDecodeError(format!(
+                                "Invalid minter pubkey: {}",
+                                e
+                            ))
+                        })?)
+                    } else {
+                        None
+                    };
+                    let minter_roles_pda =
+                        minter.map(|minter| get_minter_roles_pda(&token_manager_pda, &minter).0);
 
-            GMPPayload::DeployInterchainToken(ref deploy) => {
-                let minter = if deploy.minter.is_empty() {
-                    None
-                } else {
-                    Some(Pubkey::try_from(deploy.minter.as_ref()).map_err(|e| {
-                        TransactionBuilderError::PayloadDecodeError(format!(
-                            "Invalid minter pubkey: {}",
-                            e
-                        ))
-                    })?)
-                };
+                    let (mpl_token_metadata_account, _) =
+                        get_mpl_token_metadata_account(&token_mint);
 
-                let minter_roles_pda =
-                    minter.map(|minter| get_minter_roles_pda(&token_manager_pda, &minter).0);
+                    accounts.extend(execute_deploy_interchain_token_extra_accounts(
+                        solana_program::sysvar::instructions::ID,
+                        mpl_token_metadata::ID,
+                        mpl_token_metadata_account,
+                        minter,
+                        minter_roles_pda,
+                    ));
+                }
+                solana_axelar_its::encoding::Message::LinkToken(link) => {
+                    let minter = if let Some(minter) = &link.params {
+                        Some(Pubkey::try_from(minter.as_slice()).map_err(|e| {
+                            TransactionBuilderError::PayloadDecodeError(format!(
+                                "Invalid minter pubkey: {}",
+                                e
+                            ))
+                        })?)
+                    } else {
+                        None
+                    };
+                    let minter_roles_pda =
+                        minter.map(|minter| get_minter_roles_pda(&token_manager_pda, &minter).0);
 
-                let (mpl_token_metadata_account, _) = get_mpl_token_metadata_account(&token_mint);
-
-                accounts.extend(execute_deploy_interchain_token_extra_accounts(
-                    solana_program::sysvar::instructions::ID,
-                    mpl_token_metadata::ID,
-                    mpl_token_metadata_account,
-                    minter,
-                    minter_roles_pda,
+                    accounts.extend(execute_link_token_extra_accounts(minter, minter_roles_pda))
+                }
+            },
+            HubMessage::SendToHub { .. } | HubMessage::RegisterTokenMetadata(_) => {
+                return Err(TransactionBuilderError::PayloadDecodeError(
+                    "Unexpected GMP payload type".to_string(),
                 ));
             }
-            GMPPayload::LinkToken(ref link) => {
-                let minter = Pubkey::try_from(link.link_params.as_ref()).ok();
-
-                let minter_roles_pda =
-                    minter.map(|minter| get_minter_roles_pda(&token_manager_pda, &minter).0);
-
-                accounts.extend(execute_link_token_extra_accounts(minter, minter_roles_pda))
-            }
-            _ => {}
         }
 
         let data = solana_axelar_its::instruction::Execute {
@@ -555,12 +572,12 @@ mod tests {
     use crate::transaction_builder::{TransactionBuilder, TransactionBuilderTrait};
     use crate::transaction_type::SolanaTransactionType;
     use anchor_lang::prelude::AccountMeta;
-    use interchain_token_transfer_gmp::alloy_primitives::{Bytes, FixedBytes, Uint};
-    use interchain_token_transfer_gmp::GMPPayload;
+    use borsh::BorshSerialize;
     use solana_axelar_gateway::executable::ExecutablePayload;
     use solana_axelar_gateway::payload::EncodingScheme;
     use solana_axelar_governance;
     use solana_axelar_its;
+    use solana_axelar_its::encoding::{HubMessage, InterchainTransfer, Message as ItsMessage};
     use solana_axelar_std::{CrossChainId, Message};
     use solana_sdk::hash::Hash;
     use solana_sdk::instruction::Instruction;
@@ -790,34 +807,29 @@ mod tests {
 
         // Use a valid Pubkey for destination address (32 bytes)
         let destination_pubkey = Pubkey::new_unique();
-        let destination_address_bytes = destination_pubkey.as_ref().to_vec();
+        let destination_address_bytes = destination_pubkey.to_bytes().to_vec();
         let token_id = [1u8; 32];
-        let inner_payload =
-            GMPPayload::InterchainTransfer(interchain_token_transfer_gmp::InterchainTransfer {
-                token_id: FixedBytes::from(token_id),
-                destination_address: Bytes::from(destination_address_bytes),
-                amount: Uint::from(0), // Empty amount for simplicity
-                data: Bytes::from(vec![]),
-                selector: Uint::from(0),
-                source_address: Bytes::from(vec![3u8; 20]),
-            });
-        // Wrap in ReceiveFromHub as expected by build_its_instruction
-        let inner_payload_bytes: Vec<u8> = inner_payload.encode();
-        let gmp_payload =
-            GMPPayload::ReceiveFromHub(interchain_token_transfer_gmp::ReceiveFromHub {
-                payload: Bytes::from(inner_payload_bytes),
-                source_chain: "ethereum".to_string(),
-                selector: Uint::from(
-                    interchain_token_transfer_gmp::ReceiveFromHub::MESSAGE_TYPE_ID as u64,
-                ),
-            });
-        // Encode the GMPPayload to bytes for passing to build_execute_instruction
-        // build_execute_instruction expects raw bytes (not base64) that can be decoded as GMPPayload
-        let its_payload: Vec<u8> = gmp_payload.encode();
 
-        // Verify the payload can be decoded (this helps catch encoding issues early)
-        let _decoded =
-            GMPPayload::decode(&its_payload).expect("Encoded GMPPayload should be decodable");
+        // Create InterchainTransfer message
+        let interchain_transfer = InterchainTransfer {
+            token_id,
+            source_address: vec![3u8; 20],
+            destination_address: destination_address_bytes,
+            amount: 0u64,
+            data: None,
+        };
+
+        let its_message = ItsMessage::InterchainTransfer(interchain_transfer);
+
+        let hub_message = HubMessage::ReceiveFromHub {
+            source_chain: "ethereum".to_string(),
+            message: its_message,
+        };
+
+        // Serialize using borsh
+        let its_payload = hub_message
+            .try_to_vec()
+            .expect("Failed to serialize HubMessage");
 
         let (its_instruction, its_alt_info) = builder
             .build_execute_instruction(&message, &its_payload, its_destination, None)
@@ -928,7 +940,7 @@ mod tests {
 
         let its_destination = solana_axelar_its::ID;
         let destination_pubkey = Pubkey::new_unique();
-        let destination_address_bytes = destination_pubkey.as_ref().to_vec();
+        let destination_address_bytes = destination_pubkey.to_bytes().to_vec();
         let token_id = [2u8; 32];
 
         // Create an ExecutablePayload with some accounts
@@ -945,27 +957,27 @@ mod tests {
         let executable_payload_bytes = executable_payload.encode().unwrap();
 
         // Create InterchainTransfer with ExecutablePayload in data field
-        let inner_payload =
-            GMPPayload::InterchainTransfer(interchain_token_transfer_gmp::InterchainTransfer {
-                token_id: FixedBytes::from(token_id),
-                destination_address: Bytes::from(destination_address_bytes),
-                amount: Uint::from(1000u64),
-                data: Bytes::from(executable_payload_bytes.clone()),
-                selector: Uint::from(0),
-                source_address: Bytes::from(vec![4u8; 20]),
-            });
+        let interchain_transfer = InterchainTransfer {
+            token_id,
+            source_address: vec![4u8; 20],
+            destination_address: destination_address_bytes,
+            amount: 1000u64,
+            data: Some(executable_payload_bytes),
+        };
 
-        // Wrap in ReceiveFromHub as expected by build_its_instruction
-        let inner_payload_bytes: Vec<u8> = inner_payload.encode();
-        let gmp_payload =
-            GMPPayload::ReceiveFromHub(interchain_token_transfer_gmp::ReceiveFromHub {
-                payload: Bytes::from(inner_payload_bytes),
-                source_chain: "ethereum".to_string(),
-                selector: Uint::from(
-                    interchain_token_transfer_gmp::ReceiveFromHub::MESSAGE_TYPE_ID as u64,
-                ),
-            });
-        let its_payload: Vec<u8> = gmp_payload.encode();
+        // Wrap in ITS Message enum
+        let its_message = ItsMessage::InterchainTransfer(interchain_transfer);
+
+        // Wrap in HubMessage::ReceiveFromHub
+        let hub_message = HubMessage::ReceiveFromHub {
+            source_chain: "ethereum".to_string(),
+            message: its_message,
+        };
+
+        // Serialize using borsh
+        let its_payload = hub_message
+            .try_to_vec()
+            .expect("Failed to serialize HubMessage");
 
         let (its_instruction, its_alt_info) = builder
             .build_execute_instruction(&message, &its_payload, its_destination, None)
@@ -1021,32 +1033,32 @@ mod tests {
 
         let its_destination = solana_axelar_its::ID;
         let destination_pubkey = Pubkey::new_unique();
-        let destination_address_bytes = destination_pubkey.as_ref().to_vec();
+        let destination_address_bytes = destination_pubkey.to_bytes().to_vec();
         let token_id = [3u8; 32];
 
         // Create InterchainTransfer with malformed/random bytes in data field
         let malformed_data = vec![0xFF, 0xEE, 0xDD, 0xCC, 0xBB, 0xAA]; // Random bytes that won't decode as ExecutablePayload
-        let inner_payload =
-            GMPPayload::InterchainTransfer(interchain_token_transfer_gmp::InterchainTransfer {
-                token_id: FixedBytes::from(token_id),
-                destination_address: Bytes::from(destination_address_bytes),
-                amount: Uint::from(2000u64),
-                data: Bytes::from(malformed_data),
-                selector: Uint::from(0),
-                source_address: Bytes::from(vec![5u8; 20]),
-            });
+        let interchain_transfer = InterchainTransfer {
+            token_id,
+            source_address: vec![5u8; 20],
+            destination_address: destination_address_bytes,
+            amount: 2000u64,
+            data: Some(malformed_data),
+        };
 
-        // Wrap in ReceiveFromHub as expected by build_its_instruction
-        let inner_payload_bytes: Vec<u8> = inner_payload.encode();
-        let gmp_payload =
-            GMPPayload::ReceiveFromHub(interchain_token_transfer_gmp::ReceiveFromHub {
-                payload: Bytes::from(inner_payload_bytes),
-                source_chain: "ethereum".to_string(),
-                selector: Uint::from(
-                    interchain_token_transfer_gmp::ReceiveFromHub::MESSAGE_TYPE_ID as u64,
-                ),
-            });
-        let its_payload: Vec<u8> = gmp_payload.encode();
+        // Wrap in ITS Message enum
+        let its_message = ItsMessage::InterchainTransfer(interchain_transfer);
+
+        // Wrap in HubMessage::ReceiveFromHub
+        let hub_message = HubMessage::ReceiveFromHub {
+            source_chain: "ethereum".to_string(),
+            message: its_message,
+        };
+
+        // Serialize using borsh
+        let its_payload = hub_message
+            .try_to_vec()
+            .expect("Failed to serialize HubMessage");
 
         // This should fail with PayloadDecodeError because the data field contains malformed bytes
         let result = builder
@@ -1092,7 +1104,7 @@ mod tests {
 
         let its_destination = solana_axelar_its::ID;
         let destination_pubkey = Pubkey::new_unique();
-        let destination_address_bytes = destination_pubkey.as_ref().to_vec();
+        let destination_address_bytes = destination_pubkey.to_bytes().to_vec();
         let token_id = [3u8; 32];
 
         // Create an ExecutablePayload with accounts that have is_signer: true
@@ -1109,27 +1121,27 @@ mod tests {
         let executable_payload_bytes = executable_payload.encode().unwrap();
 
         // Create InterchainTransfer with ExecutablePayload in data field
-        let inner_payload =
-            GMPPayload::InterchainTransfer(interchain_token_transfer_gmp::InterchainTransfer {
-                token_id: FixedBytes::from(token_id),
-                destination_address: Bytes::from(destination_address_bytes),
-                amount: Uint::from(1000u64),
-                data: Bytes::from(executable_payload_bytes.clone()),
-                selector: Uint::from(0),
-                source_address: Bytes::from(vec![5u8; 20]),
-            });
+        let interchain_transfer = InterchainTransfer {
+            token_id,
+            source_address: vec![5u8; 20],
+            destination_address: destination_address_bytes,
+            amount: 1000u64,
+            data: Some(executable_payload_bytes),
+        };
 
-        // Wrap in ReceiveFromHub as expected by build_its_instruction
-        let inner_payload_bytes: Vec<u8> = inner_payload.encode();
-        let gmp_payload =
-            GMPPayload::ReceiveFromHub(interchain_token_transfer_gmp::ReceiveFromHub {
-                payload: Bytes::from(inner_payload_bytes),
-                source_chain: "ethereum".to_string(),
-                selector: Uint::from(
-                    interchain_token_transfer_gmp::ReceiveFromHub::MESSAGE_TYPE_ID as u64,
-                ),
-            });
-        let its_payload: Vec<u8> = gmp_payload.encode();
+        // Wrap in ITS Message enum
+        let its_message = ItsMessage::InterchainTransfer(interchain_transfer);
+
+        // Wrap in HubMessage::ReceiveFromHub
+        let hub_message = HubMessage::ReceiveFromHub {
+            source_chain: "ethereum".to_string(),
+            message: its_message,
+        };
+
+        // Serialize using borsh
+        let its_payload = hub_message
+            .try_to_vec()
+            .expect("Failed to serialize HubMessage");
 
         // Should fail with PayloadDecodeError when signer accounts are detected
         let result = builder

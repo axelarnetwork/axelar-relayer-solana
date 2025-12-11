@@ -3647,7 +3647,7 @@ dependencies = [
 [[package]]
 name = "governance-gmp"
 version = "0.1.1"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main#9f33615e51f0076f74597165a7049c1a0bb4a598"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?rev=5fef54a#5fef54a52aea2694d501b47ea57cc2c8b3f51932"
 dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
@@ -6238,6 +6238,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "program-utils"
+version = "0.1.2"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?rev=5fef54a#5fef54a52aea2694d501b47ea57cc2c8b3f51932"
+dependencies = [
+ "mpl-token-metadata",
+ "solana-program",
+ "solana-sdk-ids",
+ "spl-associated-token-account 6.0.0",
+]
+
+[[package]]
 name = "proptest"
 version = "1.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8057,7 +8068,6 @@ dependencies = [
  "futures-util",
  "hex",
  "httpmock",
- "interchain-token-transfer-gmp",
  "mockall",
  "mpl-token-metadata",
  "redis",
@@ -8066,12 +8076,12 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "solana-axelar-gas-service",
- "solana-axelar-gateway",
+ "solana-axelar-gas-service 0.1.4 (git+https://github.com/axelarnetwork/axelar-amplifier-solana?rev=5fef54a)",
+ "solana-axelar-gateway 0.1.4 (git+https://github.com/axelarnetwork/axelar-amplifier-solana?rev=5fef54a)",
  "solana-axelar-governance",
- "solana-axelar-its",
- "solana-axelar-operators",
- "solana-axelar-std",
+ "solana-axelar-its 0.1.4 (git+https://github.com/axelarnetwork/axelar-amplifier-solana?rev=5fef54a)",
+ "solana-axelar-operators 0.1.4 (git+https://github.com/axelarnetwork/axelar-amplifier-solana?rev=5fef54a)",
+ "solana-axelar-std 0.1.2 (git+https://github.com/axelarnetwork/axelar-amplifier-solana?rev=5fef54a)",
  "solana-client",
  "solana-program",
  "solana-pubsub-client",
@@ -8215,8 +8225,19 @@ source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=ma
 dependencies = [
  "anchor-lang",
  "bytemuck",
- "program-utils",
- "solana-axelar-operators",
+ "program-utils 0.1.2 (git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main)",
+ "solana-axelar-operators 0.1.4 (git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main)",
+]
+
+[[package]]
+name = "solana-axelar-gas-service"
+version = "0.1.4"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?rev=5fef54a#5fef54a52aea2694d501b47ea57cc2c8b3f51932"
+dependencies = [
+ "anchor-lang",
+ "bytemuck",
+ "program-utils 0.1.2 (git+https://github.com/axelarnetwork/axelar-amplifier-solana?rev=5fef54a)",
+ "solana-axelar-operators 0.1.4 (git+https://github.com/axelarnetwork/axelar-amplifier-solana?rev=5fef54a)",
 ]
 
 [[package]]
@@ -8232,20 +8253,37 @@ dependencies = [
  "libsecp256k1 0.6.0",
  "num-derive 0.4.2",
  "num-traits",
- "program-utils",
- "solana-axelar-std",
+ "program-utils 0.1.2 (git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main)",
+ "solana-axelar-std 0.1.2 (git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main)",
+]
+
+[[package]]
+name = "solana-axelar-gateway"
+version = "0.1.4"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?rev=5fef54a#5fef54a52aea2694d501b47ea57cc2c8b3f51932"
+dependencies = [
+ "alloy-primitives",
+ "alloy-sol-types",
+ "anchor-lang",
+ "bitvec",
+ "bytemuck",
+ "libsecp256k1 0.6.0",
+ "num-derive 0.4.2",
+ "num-traits",
+ "program-utils 0.1.2 (git+https://github.com/axelarnetwork/axelar-amplifier-solana?rev=5fef54a)",
+ "solana-axelar-std 0.1.2 (git+https://github.com/axelarnetwork/axelar-amplifier-solana?rev=5fef54a)",
 ]
 
 [[package]]
 name = "solana-axelar-governance"
 version = "0.1.4"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main#9f33615e51f0076f74597165a7049c1a0bb4a598"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?rev=5fef54a#5fef54a52aea2694d501b47ea57cc2c8b3f51932"
 dependencies = [
  "alloy-sol-types",
  "anchor-lang",
  "governance-gmp",
- "program-utils",
- "solana-axelar-gateway",
+ "program-utils 0.1.2 (git+https://github.com/axelarnetwork/axelar-amplifier-solana?rev=5fef54a)",
+ "solana-axelar-gateway 0.1.4 (git+https://github.com/axelarnetwork/axelar-amplifier-solana?rev=5fef54a)",
 ]
 
 [[package]]
@@ -8260,10 +8298,27 @@ dependencies = [
  "bytemuck",
  "interchain-token-transfer-gmp",
  "mpl-token-metadata",
- "program-utils",
- "solana-axelar-gas-service",
- "solana-axelar-gateway",
- "solana-axelar-operators",
+ "program-utils 0.1.2 (git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main)",
+ "solana-axelar-gas-service 0.1.4 (git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main)",
+ "solana-axelar-gateway 0.1.4 (git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main)",
+ "solana-axelar-operators 0.1.4 (git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main)",
+ "spl-token-metadata-interface 0.6.0",
+]
+
+[[package]]
+name = "solana-axelar-its"
+version = "0.1.4"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?rev=5fef54a#5fef54a52aea2694d501b47ea57cc2c8b3f51932"
+dependencies = [
+ "anchor-lang",
+ "anchor-spl",
+ "bitflags 2.10.0",
+ "bytemuck",
+ "mpl-token-metadata",
+ "program-utils 0.1.2 (git+https://github.com/axelarnetwork/axelar-amplifier-solana?rev=5fef54a)",
+ "solana-axelar-gas-service 0.1.4 (git+https://github.com/axelarnetwork/axelar-amplifier-solana?rev=5fef54a)",
+ "solana-axelar-gateway 0.1.4 (git+https://github.com/axelarnetwork/axelar-amplifier-solana?rev=5fef54a)",
+ "solana-axelar-operators 0.1.4 (git+https://github.com/axelarnetwork/axelar-amplifier-solana?rev=5fef54a)",
  "spl-token-metadata-interface 0.6.0",
 ]
 
@@ -8273,13 +8328,40 @@ version = "0.1.4"
 source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main#9f33615e51f0076f74597165a7049c1a0bb4a598"
 dependencies = [
  "anchor-lang",
- "program-utils",
+ "program-utils 0.1.2 (git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main)",
+]
+
+[[package]]
+name = "solana-axelar-operators"
+version = "0.1.4"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?rev=5fef54a#5fef54a52aea2694d501b47ea57cc2c8b3f51932"
+dependencies = [
+ "anchor-lang",
+ "program-utils 0.1.2 (git+https://github.com/axelarnetwork/axelar-amplifier-solana?rev=5fef54a)",
 ]
 
 [[package]]
 name = "solana-axelar-std"
 version = "0.1.2"
 source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main#9f33615e51f0076f74597165a7049c1a0bb4a598"
+dependencies = [
+ "alloy-primitives",
+ "anchor-lang",
+ "arrayref",
+ "bnum 0.10.0",
+ "borsh 0.10.4",
+ "bytemuck",
+ "hex",
+ "rs_merkle",
+ "solana-keccak-hasher 3.1.0",
+ "thiserror 1.0.69",
+ "udigest",
+]
+
+[[package]]
+name = "solana-axelar-std"
+version = "0.1.2"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?rev=5fef54a#5fef54a52aea2694d501b47ea57cc2c8b3f51932"
 dependencies = [
  "alloy-primitives",
  "anchor-lang",
@@ -10165,9 +10247,9 @@ dependencies = [
  "relayer-core",
  "serde",
  "serde_json",
- "solana-axelar-gas-service",
- "solana-axelar-gateway",
- "solana-axelar-its",
+ "solana-axelar-gas-service 0.1.4 (git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main)",
+ "solana-axelar-gateway 0.1.4 (git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main)",
+ "solana-axelar-its 0.1.4 (git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main)",
  "solana-sdk",
  "solana-transaction-status",
  "solana-transaction-status-client-types",
