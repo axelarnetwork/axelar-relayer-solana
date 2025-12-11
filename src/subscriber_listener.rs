@@ -155,7 +155,6 @@ impl<STR: SolanaStreamClientTrait, SM: SolanaTransactionModel> SolanaListener<ST
         cancellation_token: CancellationToken,
     ) {
         loop {
-            // TODO: Connection Pool
             let solana_stream_client = match SolanaStreamClient::new(
                 &solana_config.solana_stream_rpc,
                 solana_config.solana_commitment,
@@ -213,9 +212,11 @@ impl<STR: SolanaStreamClientTrait, SM: SolanaTransactionModel> SolanaListener<ST
                 error!("Error shutting down solana stream client: {:?}", e);
             }
 
-            if should_break {
+            if should_break || cancellation_token.is_cancelled() {
                 break;
             }
+            warn!("Restarting setup_connection_and_work");
+            tokio::time::sleep(Duration::from_secs(5)).await;
         }
     }
 

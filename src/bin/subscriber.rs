@@ -126,8 +126,12 @@ async fn main() -> anyhow::Result<()> {
 
     events_queue.close().await;
 
-    let _ = &mut handle_poller.await;
-    let _ = &mut handle_listener.await;
+    if !handle_poller.is_finished() {
+        let _ = handle_poller.await;
+    }
+    if !handle_listener.is_finished() {
+        let _ = handle_listener.await;
+    }
 
     Ok(())
 }
