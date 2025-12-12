@@ -18,8 +18,8 @@ use solana::ingestor::SolanaIngestor;
 use solana::mocks::{MockRefundsModel, MockUpdateEvents};
 use solana_axelar_gateway_test_fixtures::create_verifier_info;
 use solana_axelar_its::utils::interchain_token_id;
-use solana_axelar_std::PayloadType;
 use solana_axelar_std::execute_data::{ExecuteData, MerklizedPayload};
+use solana_axelar_std::PayloadType;
 use solana_axelar_std::{
     hasher::LeafHash, CrossChainId, MerkleTree, MerklizedMessage, Message, MessageLeaf,
 };
@@ -619,6 +619,7 @@ async fn test_approve_and_execute_its_message() {
         &env.verifier_leaves[0],
         0,
         &env.verifier_merkle_tree,
+        PayloadType::ApproveMessages,
     );
     let link_verifier_info_2 = create_verifier_info(
         &env.verifier_secret_keys[1],
@@ -626,6 +627,7 @@ async fn test_approve_and_execute_its_message() {
         &env.verifier_leaves[1],
         1,
         &env.verifier_merkle_tree,
+        PayloadType::ApproveMessages,
     );
 
     let link_execute_data = ExecuteData {
@@ -800,13 +802,16 @@ async fn test_approve_and_execute_its_message() {
         &env.verifier_leaves[0],
         0,
         &env.verifier_merkle_tree,
+        PayloadType::ApproveMessages,
     );
+
     let link_verifier_info_2022_2 = create_verifier_info(
         &env.verifier_secret_keys[1],
         link_merkle_root_2022,
         &env.verifier_leaves[1],
         1,
         &env.verifier_merkle_tree,
+        PayloadType::ApproveMessages,
     );
 
     let link_execute_data_2022 = ExecuteData {
@@ -979,6 +984,7 @@ async fn test_its_messages_with_optional_fields() {
         &env.verifier_leaves[0],
         0,
         &env.verifier_merkle_tree,
+        PayloadType::ApproveMessages,
     );
     let deploy_verifier_info_2 = create_verifier_info(
         &env.verifier_secret_keys[1],
@@ -986,6 +992,7 @@ async fn test_its_messages_with_optional_fields() {
         &env.verifier_leaves[1],
         1,
         &env.verifier_merkle_tree,
+        PayloadType::ApproveMessages,
     );
 
     let deploy_execute_data = ExecuteData {
@@ -1158,6 +1165,7 @@ async fn test_its_messages_with_optional_fields() {
         &env.verifier_leaves[0],
         0,
         &env.verifier_merkle_tree,
+        PayloadType::ApproveMessages,
     );
     let link_verifier_info_2 = create_verifier_info(
         &env.verifier_secret_keys[1],
@@ -1165,6 +1173,7 @@ async fn test_its_messages_with_optional_fields() {
         &env.verifier_leaves[1],
         1,
         &env.verifier_merkle_tree,
+        PayloadType::ApproveMessages,
     );
 
     let link_execute_data = ExecuteData {
@@ -1406,6 +1415,7 @@ async fn test_its_messages_with_optional_fields() {
         &env.verifier_leaves[0],
         0,
         &env.verifier_merkle_tree,
+        PayloadType::ApproveMessages,
     );
     let transfer_verifier_info_2 = create_verifier_info(
         &env.verifier_secret_keys[1],
@@ -1413,6 +1423,7 @@ async fn test_its_messages_with_optional_fields() {
         &env.verifier_leaves[1],
         1,
         &env.verifier_merkle_tree,
+        PayloadType::ApproveMessages,
     );
 
     let transfer_execute_data = ExecuteData {
@@ -1574,6 +1585,7 @@ async fn test_its_concurrent_task_processing() {
             &verifier_leaves[0],
             0,
             verifier_merkle_tree,
+            PayloadType::ApproveMessages,
         );
         let transfer_verifier_info_2 = create_verifier_info(
             &verifier_secret_keys[1],
@@ -1581,6 +1593,7 @@ async fn test_its_concurrent_task_processing() {
             &verifier_leaves[1],
             1,
             verifier_merkle_tree,
+            PayloadType::ApproveMessages,
         );
 
         let transfer_execute_data = ExecuteData {
@@ -1691,6 +1704,7 @@ async fn test_its_concurrent_task_processing() {
         &env.verifier_leaves[0],
         0,
         &env.verifier_merkle_tree,
+        PayloadType::ApproveMessages,
     );
     let deploy_verifier_info_2 = create_verifier_info(
         &env.verifier_secret_keys[1],
@@ -1698,6 +1712,7 @@ async fn test_its_concurrent_task_processing() {
         &env.verifier_leaves[1],
         1,
         &env.verifier_merkle_tree,
+        PayloadType::ApproveMessages,
     );
 
     let deploy_execute_data = ExecuteData {
