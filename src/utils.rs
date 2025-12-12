@@ -500,7 +500,7 @@ pub fn keypair_from_base58_string(s: &str) -> Result<Keypair, anyhow::Error> {
     bs58::decode(s)
         .onto(&mut buf)
         .map_err(|e| anyhow!("Failed to decode base58 keypair: {}", e))?;
-    Keypair::try_from(&buf[..]).map_err(|e| anyhow!("Failed to create keypair from bytes: {}", e))
+    Keypair::from_bytes(&buf).map_err(|e| anyhow!("Failed to create keypair from bytes: {}", e))
 }
 
 pub fn check_if_error_includes_an_expected_account(
@@ -553,6 +553,7 @@ pub fn check_if_error_includes_an_expected_account(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use solana_axelar_std::execute_data::PayloadType;
     use solana_axelar_std::message::MessageLeaf;
     use solana_axelar_std::verifier_set::{SigningVerifierSetInfo, VerifierSetLeaf};
     use solana_axelar_std::{
@@ -565,6 +566,7 @@ mod tests {
         signing_verifier_set_merkle_root: [u8; 32],
     ) -> ExecuteData {
         let verifier_info = SigningVerifierSetInfo {
+            payload_type: PayloadType::ApproveMessages,
             leaf: VerifierSetLeaf {
                 nonce: 0,
                 quorum: 0,
@@ -610,6 +612,7 @@ mod tests {
         signing_verifier_set_merkle_root: [u8; 32],
     ) -> ExecuteData {
         let verifier_info = SigningVerifierSetInfo {
+            payload_type: PayloadType::ApproveMessages,
             leaf: VerifierSetLeaf {
                 nonce: 0,
                 quorum: 0,
@@ -693,6 +696,7 @@ mod tests {
         signing_verifier_set_merkle_root: [u8; 32],
     ) -> ExecuteData {
         let verifier_info = SigningVerifierSetInfo {
+            payload_type: PayloadType::RotateSigners,
             leaf: VerifierSetLeaf {
                 nonce: 0,
                 quorum: 0,

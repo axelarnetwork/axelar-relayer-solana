@@ -292,7 +292,7 @@ fn read(mut data: &[u8]) -> Option<IncomingMessage> {
 mod tests {
     use super::*;
     use crate::utils::{get_initialize_verification_session_pda, is_addr_in_use};
-    use solana_axelar_std::execute_data::MerklizedPayload;
+    use solana_axelar_std::execute_data::{MerklizedPayload, PayloadType};
     use solana_axelar_std::message::MessageLeaf;
     use solana_axelar_std::verifier_set::{SigningVerifierSetInfo, VerifierSetLeaf};
     use solana_axelar_std::{
@@ -304,6 +304,7 @@ mod tests {
         signing_verifier_set_merkle_root: [u8; 32],
     ) -> ExecuteData {
         let verifier_info = SigningVerifierSetInfo {
+            payload_type: PayloadType::ApproveMessages,
             leaf: VerifierSetLeaf {
                 nonce: 0,
                 quorum: 0,

@@ -83,6 +83,11 @@ mockall = "0.13.1"
 testcontainers = "0.24.0"
 testcontainers-modules = { version = "0.12.1", features = ["postgres"] }
 tracing-test = "0.2.5"
+solana-test-validator = "~2.3"
+solana-rpc = "~2.3"
+solana-loader-v3-interface = "5.0.0"
+solana-system-interface = "1.0.0"
+solana-sdk-ids = "2.2.1"
 
 [lints.clippy]
 uninlined_format_args = "allow"
@@ -111,6 +116,7 @@ path = "src/bin/alt_manager.rs"
 [[bin]]
 name = "subscriber_recovery"
 path = "src/bin/recovery/subscriber.rs"
+
 
 [features]
 instrumentation = []

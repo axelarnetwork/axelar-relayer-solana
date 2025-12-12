@@ -28,7 +28,7 @@ use relayer_core::{
     payload_cache::PayloadCache, queue::Queue,
 };
 use solana_axelar_gas_service;
-use solana_axelar_std::execute_data::{ExecuteData, MerklizedPayload};
+use solana_axelar_std::execute_data::{ExecuteData, MerklizedPayload, PayloadType};
 use solana_axelar_std::MerklizedMessage;
 use solana_axelar_std::{CrossChainId, Message};
 use solana_sdk::address_lookup_table::state::AddressLookupTable;
@@ -431,6 +431,11 @@ impl<
         &self,
         execute_data: &ExecuteData,
     ) -> Result<Option<u64>, SolanaIncluderError> {
+        let payload_type = match &execute_data.payload_items {
+            MerklizedPayload::NewMessages { .. } => PayloadType::ApproveMessages,
+            MerklizedPayload::VerifierSetRotation { .. } => PayloadType::RotateSigners,
+        };
+
         let (verification_session_tracker_pda, _) = get_signature_verification_pda(
             &execute_data.payload_merkle_root,
             &execute_data.signing_verifier_set_merkle_root,
@@ -438,6 +443,7 @@ impl<
 
         let ix_data = solana_axelar_gateway::instruction::InitializePayloadVerificationSession {
             merkle_root: execute_data.payload_merkle_root,
+            payload_type,
         }
         .data();
 
@@ -1535,7 +1541,7 @@ mod tests {
         // Mock transaction_builder.build to return a transaction with a high compute unit price
         let high_micro_price = 2_000_000_000_000u64;
         let keypair_bytes = keypair.to_bytes();
-        let keypair_for_mock = Keypair::try_from(&keypair_bytes[..]).unwrap();
+        let keypair_for_mock = Keypair::from_bytes(&keypair_bytes[..]).unwrap();
         transaction_builder
             .expect_build()
             .times(1)
@@ -3134,6 +3140,7 @@ mod tests {
         let new_verifier_set_merkle_root = [3u8; 32];
 
         let verifier_info = SigningVerifierSetInfo {
+            payload_type: PayloadType::RotateSigners,
             leaf: VerifierSetLeaf {
                 nonce: 0,
                 quorum: 0,
@@ -3273,6 +3280,7 @@ mod tests {
         let signing_verifier_set_merkle_root = [2u8; 32];
 
         let verifier_info = SigningVerifierSetInfo {
+            payload_type: PayloadType::ApproveMessages,
             leaf: VerifierSetLeaf {
                 nonce: 0,
                 quorum: 0,
@@ -3450,6 +3458,7 @@ mod tests {
         let signing_verifier_set_merkle_root = [2u8; 32];
 
         let verifier_info_1 = SigningVerifierSetInfo {
+            payload_type: PayloadType::ApproveMessages,
             leaf: VerifierSetLeaf {
                 nonce: 0,
                 quorum: 0,
@@ -3464,6 +3473,7 @@ mod tests {
         };
 
         let verifier_info_2 = SigningVerifierSetInfo {
+            payload_type: PayloadType::ApproveMessages,
             leaf: VerifierSetLeaf {
                 nonce: 1,
                 quorum: 0,
@@ -3713,6 +3723,7 @@ mod tests {
         let signing_verifier_set_merkle_root = [6u8; 32];
 
         let verifier_info = SigningVerifierSetInfo {
+            payload_type: PayloadType::ApproveMessages,
             leaf: VerifierSetLeaf {
                 nonce: 0,
                 quorum: 0,
@@ -3898,6 +3909,7 @@ mod tests {
         let signing_verifier_set_merkle_root = [2u8; 32];
 
         let verifier_info = SigningVerifierSetInfo {
+            payload_type: PayloadType::ApproveMessages,
             leaf: VerifierSetLeaf {
                 nonce: 0,
                 quorum: 0,
@@ -4082,6 +4094,7 @@ mod tests {
         let signing_verifier_set_merkle_root = [2u8; 32];
 
         let verifier_info = SigningVerifierSetInfo {
+            payload_type: PayloadType::ApproveMessages,
             leaf: VerifierSetLeaf {
                 nonce: 0,
                 quorum: 0,
@@ -4266,6 +4279,7 @@ mod tests {
         let signing_verifier_set_merkle_root = [2u8; 32];
 
         let verifier_info = SigningVerifierSetInfo {
+            payload_type: PayloadType::ApproveMessages,
             leaf: VerifierSetLeaf {
                 nonce: 0,
                 quorum: 0,
