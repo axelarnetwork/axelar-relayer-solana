@@ -9,11 +9,11 @@ use crate::{error::FeesClientError, includer_client::IncluderClientTrait};
 #[async_trait]
 #[cfg_attr(test, mockall::automock)]
 pub trait FeesClientTrait: ThreadSafe {
-    async fn get_recent_prioritization_fees(&self, addresses: &[Pubkey], percentile: f64) -> u64;
+    async fn get_recent_prioritization_fees(&self, addresses: &[Pubkey], percentile: u64) -> u64;
     async fn get_prioritization_fee_percentile(
         &self,
         addresses: &[Pubkey],
-        percentile: f64,
+        percentile: u64,
     ) -> Result<u64, FeesClientError>;
 }
 
@@ -34,7 +34,7 @@ impl<IC: IncluderClientTrait> FeesClient<IC> {
 
 #[async_trait]
 impl<IC: IncluderClientTrait> FeesClientTrait for FeesClient<IC> {
-    async fn get_recent_prioritization_fees(&self, addresses: &[Pubkey], percentile: f64) -> u64 {
+    async fn get_recent_prioritization_fees(&self, addresses: &[Pubkey], percentile: u64) -> u64 {
         self.get_prioritization_fee_percentile(addresses, percentile)
             .await
             .unwrap_or(0)
@@ -43,7 +43,7 @@ impl<IC: IncluderClientTrait> FeesClientTrait for FeesClient<IC> {
     async fn get_prioritization_fee_percentile(
         &self,
         addresses: &[Pubkey],
-        percentile: f64,
+        percentile: u64,
     ) -> Result<u64, FeesClientError> {
         let recent_fees = self
             .includer_client
@@ -77,81 +77,291 @@ impl<IC: IncluderClientTrait> FeesClientTrait for FeesClient<IC> {
     }
 }
 
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-//     use crate::config::SolanaConfig;
-//     use relayer_core::config::config_from_yaml;
-//     use solana_sdk::pubkey::Pubkey;
-//     use std::path::PathBuf;
-//     use std::str::FromStr;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::IncluderClientError;
+    use crate::includer_client::MockIncluderClientTrait;
+    use solana_client::rpc_response::RpcPrioritizationFee;
+    use solana_sdk::pubkey::Pubkey;
 
-//     #[tokio::test]
-//     async fn test_get_recent_prioritization_fees_real() {
-//         dotenv::dotenv().ok();
-//         let network = std::env::var("NETWORK").expect("NETWORK must be set");
-//         let config = load_local_config(&network);
+    fn create_fee(slot: u64, prioritization_fee: u64) -> RpcPrioritizationFee {
+        RpcPrioritizationFee {
+            slot,
+            prioritization_fee,
+        }
+    }
 
-//         let url = &config.fees_client_url;
-//         println!("Using FeesClient URL: {}", url);
+    #[tokio::test]
+    async fn test_get_prioritization_fee_percentile_50th() {
+        let mut mock_client = MockIncluderClientTrait::new();
 
-//         let client = FeesClient::new(url).expect("failed to create FeesClient");
+        // Fees: [100, 200, 300, 400, 500] - 50th percentile should be 300
+        let fees = vec![
+            create_fee(1, 100),
+            create_fee(2, 200),
+            create_fee(3, 300),
+            create_fee(4, 400),
+            create_fee(5, 500),
+        ];
 
-//         let addr = Pubkey::from_str("483jTxdFmFGRnzgx9nBoQM2Zao5mZxKvFgHzTb4Ytn1L")
-//             .expect("invalid pubkey in test");
+        mock_client
+            .expect_get_recent_prioritization_fees()
+            .times(1)
+            .returning(move |_| {
+                let fees_clone = fees.clone();
+                Box::pin(async move { Ok(fees_clone) })
+            });
 
-//         let fee = client
-//             .get_recent_prioritization_fees(&[addr])
-//             .await
-//             .expect("RPC call should succeed");
+        let fees_client = FeesClient::new(mock_client, 10).unwrap();
+        let result = fees_client
+            .get_prioritization_fee_percentile(&[Pubkey::new_unique()], 50)
+            .await;
 
-//         println!("priorityFeeEstimate = {}", fee);
-//         assert!(fee > 0, "Fee estimate should be positive");
-//     }
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 300);
+    }
 
-//     #[tokio::test]
-//     async fn test_raw_priority_fee_response() {
-//         dotenv::dotenv().ok();
-//         let network = std::env::var("NETWORK").expect("NETWORK must be set");
-//         let config = load_local_config(&network);
+    #[tokio::test]
+    async fn test_get_prioritization_fee_percentile_0th() {
+        let mut mock_client = MockIncluderClientTrait::new();
 
-//         let url = &config.fees_client_url;
-//         println!("Using FeesClient URL: {}", url);
+        let fees = vec![create_fee(1, 100), create_fee(2, 200), create_fee(3, 300)];
 
-//         let addr = Pubkey::from_str("483jTxdFmFGRnzgx9nBoQM2Zao5mZxKvFgHzTb4Ytn1L")
-//             .expect("invalid pubkey in test");
+        mock_client
+            .expect_get_recent_prioritization_fees()
+            .times(1)
+            .returning(move |_| {
+                let fees_clone = fees.clone();
+                Box::pin(async move { Ok(fees_clone) })
+            });
 
-//         let body = get_recent_prioritization_fees_command(vec![addr]);
-//         let raw = post_request(url, &body)
-//             .await
-//             .expect("RPC request should succeed");
+        let fees_client = FeesClient::new(mock_client, 10).unwrap();
+        let result = fees_client
+            .get_prioritization_fee_percentile(&[Pubkey::new_unique()], 0)
+            .await;
 
-//         println!("Raw getPriorityFeeEstimate response:\n{}", raw);
+        assert!(result.is_ok());
+        // 0th percentile should be the minimum value
+        assert_eq!(result.unwrap(), 100);
+    }
 
-//         let v: serde_json::Value =
-//             serde_json::from_str(&raw).expect("Response should be valid JSON");
+    #[tokio::test]
+    async fn test_get_prioritization_fee_percentile_100th() {
+        let mut mock_client = MockIncluderClientTrait::new();
 
-//         assert_eq!(v.get("jsonrpc").and_then(|j| j.as_str()), Some("2.0"));
-//         assert!(v.get("id").is_some(), "id field should be present");
-//         assert!(v.get("result").is_some(), "result field should be present");
+        let fees = vec![create_fee(1, 100), create_fee(2, 200), create_fee(3, 300)];
 
-//         let fee = v
-//             .get("result")
-//             .and_then(|r| r.get("priorityFeeEstimate"))
-//             .expect("priorityFeeEstimate should be present");
-//         let fee = fee
-//             .as_f64()
-//             .map(|f| f.ceil() as u64)
-//             .expect("priorityFeeEstimate should be a floating point number");
+        mock_client
+            .expect_get_recent_prioritization_fees()
+            .times(1)
+            .returning(move |_| {
+                let fees_clone = fees.clone();
+                Box::pin(async move { Ok(fees_clone) })
+            });
 
-//         println!("Parsed priorityFeeEstimate = {}", fee);
-//         assert!(fee > 0);
-//     }
+        let fees_client = FeesClient::new(mock_client, 10).unwrap();
+        let result = fees_client
+            .get_prioritization_fee_percentile(&[Pubkey::new_unique()], 100)
+            .await;
 
-//     fn load_local_config(network: &str) -> SolanaConfig {
-//         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-//             .join("config")
-//             .join(format!("config.{}.yaml", network));
-//         config_from_yaml(path.to_str().expect("valid config path")).unwrap()
-//     }
-// }
+        assert!(result.is_ok());
+        // 100th percentile should be the maximum value
+        assert_eq!(result.unwrap(), 300);
+    }
+
+    #[tokio::test]
+    async fn test_get_prioritization_fee_percentile_empty_fees_returns_error() {
+        let mut mock_client = MockIncluderClientTrait::new();
+
+        mock_client
+            .expect_get_recent_prioritization_fees()
+            .times(1)
+            .returning(|_| Box::pin(async { Ok(vec![]) }));
+
+        let fees_client = FeesClient::new(mock_client, 10).unwrap();
+        let result = fees_client
+            .get_prioritization_fee_percentile(&[Pubkey::new_unique()], 50)
+            .await;
+
+        assert!(result.is_err());
+        match result {
+            Err(FeesClientError::GenericError(msg)) => {
+                assert_eq!(msg, "No recent prioritization fees found");
+            }
+            _ => panic!("Expected GenericError with specific message"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_prioritization_fee_percentile_includer_client_error() {
+        let mut mock_client = MockIncluderClientTrait::new();
+
+        mock_client
+            .expect_get_recent_prioritization_fees()
+            .times(1)
+            .returning(|_| {
+                Box::pin(async { Err(IncluderClientError::GenericError("RPC error".to_string())) })
+            });
+
+        let fees_client = FeesClient::new(mock_client, 10).unwrap();
+        let result = fees_client
+            .get_prioritization_fee_percentile(&[Pubkey::new_unique()], 50)
+            .await;
+
+        assert!(result.is_err());
+        match result {
+            Err(FeesClientError::GenericError(msg)) => {
+                assert!(msg.contains("RPC error"));
+            }
+            _ => panic!("Expected GenericError"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_prioritization_fee_percentile_respects_last_n_blocks() {
+        let mut mock_client = MockIncluderClientTrait::new();
+
+        // Return 10 fees, but last_n_blocks is 3
+        // Fees: [1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000]
+        // Only first 3 should be used: [1000, 2000, 3000]
+        let fees: Vec<RpcPrioritizationFee> = (1..=10).map(|i| create_fee(i, i * 1000)).collect();
+
+        mock_client
+            .expect_get_recent_prioritization_fees()
+            .times(1)
+            .returning(move |_| {
+                let fees_clone = fees.clone();
+                Box::pin(async move { Ok(fees_clone) })
+            });
+
+        let fees_client = FeesClient::new(mock_client, 3).unwrap();
+        let result = fees_client
+            .get_prioritization_fee_percentile(&[Pubkey::new_unique()], 50)
+            .await;
+
+        assert!(result.is_ok());
+        // 50th percentile of [1000, 2000, 3000] is 2000
+        assert_eq!(result.unwrap(), 2000);
+    }
+
+    #[tokio::test]
+    async fn test_get_recent_prioritization_fees_returns_zero_on_error() {
+        let mut mock_client = MockIncluderClientTrait::new();
+
+        mock_client
+            .expect_get_recent_prioritization_fees()
+            .times(1)
+            .returning(|_| {
+                Box::pin(async { Err(IncluderClientError::GenericError("RPC error".to_string())) })
+            });
+
+        let fees_client = FeesClient::new(mock_client, 10).unwrap();
+        let result = fees_client
+            .get_recent_prioritization_fees(&[Pubkey::new_unique()], 50)
+            .await;
+
+        // Should return 0 on error (unwrap_or(0))
+        assert_eq!(result, 0);
+    }
+
+    #[tokio::test]
+    async fn test_get_recent_prioritization_fees_returns_zero_on_empty_fees() {
+        let mut mock_client = MockIncluderClientTrait::new();
+
+        mock_client
+            .expect_get_recent_prioritization_fees()
+            .times(1)
+            .returning(|_| Box::pin(async { Ok(vec![]) }));
+
+        let fees_client = FeesClient::new(mock_client, 10).unwrap();
+        let result = fees_client
+            .get_recent_prioritization_fees(&[Pubkey::new_unique()], 50)
+            .await;
+
+        // Should return 0 when no fees found
+        assert_eq!(result, 0);
+    }
+
+    #[tokio::test]
+    async fn test_get_prioritization_fee_percentile_with_zero_fees() {
+        let mut mock_client = MockIncluderClientTrait::new();
+
+        // All zero fees
+        let fees = vec![create_fee(1, 0), create_fee(2, 0), create_fee(3, 0)];
+
+        mock_client
+            .expect_get_recent_prioritization_fees()
+            .times(1)
+            .returning(move |_| {
+                let fees_clone = fees.clone();
+                Box::pin(async move { Ok(fees_clone) })
+            });
+
+        let fees_client = FeesClient::new(mock_client, 10).unwrap();
+        let result = fees_client
+            .get_prioritization_fee_percentile(&[Pubkey::new_unique()], 50)
+            .await;
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_get_prioritization_fee_percentile_with_large_fees() {
+        let mut mock_client = MockIncluderClientTrait::new();
+
+        // Large fee values
+        let fees = vec![
+            create_fee(1, 1_000_000_000),
+            create_fee(2, 2_000_000_000),
+            create_fee(3, 3_000_000_000),
+        ];
+
+        mock_client
+            .expect_get_recent_prioritization_fees()
+            .times(1)
+            .returning(move |_| {
+                let fees_clone = fees.clone();
+                Box::pin(async move { Ok(fees_clone) })
+            });
+
+        let fees_client = FeesClient::new(mock_client, 10).unwrap();
+        let result = fees_client
+            .get_prioritization_fee_percentile(&[Pubkey::new_unique()], 50)
+            .await;
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 2_000_000_000);
+    }
+
+    #[tokio::test]
+    async fn test_get_prioritization_fee_percentile_75th() {
+        let mut mock_client = MockIncluderClientTrait::new();
+
+        // Fees: [100, 200, 300, 400]
+        let fees = vec![
+            create_fee(1, 100),
+            create_fee(2, 200),
+            create_fee(3, 300),
+            create_fee(4, 400),
+        ];
+
+        mock_client
+            .expect_get_recent_prioritization_fees()
+            .times(1)
+            .returning(move |_| {
+                let fees_clone = fees.clone();
+                Box::pin(async move { Ok(fees_clone) })
+            });
+
+        let fees_client = FeesClient::new(mock_client, 10).unwrap();
+        let result = fees_client
+            .get_prioritization_fee_percentile(&[Pubkey::new_unique()], 75)
+            .await;
+
+        assert!(result.is_ok());
+        // 75th percentile of [100, 200, 300, 400] using statrs linear interpolation
+        assert_eq!(result.unwrap(), 359);
+    }
+}

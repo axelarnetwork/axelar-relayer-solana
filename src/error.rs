@@ -73,12 +73,16 @@ pub enum SolanaIncluderError {
 
 #[derive(Error, Debug)]
 pub enum TransactionBuilderError {
+    #[error("CreateTransactionError: {0}")]
+    CreateTransactionError(String),
     #[error("PayloadDecodeError: {0}")]
     PayloadDecodeError(String),
     #[error("SimulationError: {0}")]
     SimulationError(String),
     #[error("ClientError: {0}")]
     ClientError(String),
+    #[error("CalculateTotalCostError: {0}")]
+    CalculateTotalCostError(String),
     #[error("GenericError: {0}")]
     GenericError(String),
 }
