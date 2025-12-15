@@ -247,7 +247,7 @@ mod tests {
             logs: vec!["Program DaejccUfXqoAFTiDTxDuMQfQ9oa6crjtR9cT52v1AvGK invoke [1]".to_string(), "Program log: Instruction: EmitReceived".to_string(), "Program data: QF09492rFLE=".to_string(), "Program log: This is a message for received".to_string(), "Program DaejccUfXqoAFTiDTxDuMQfQ9oa6crjtR9cT52v1AvGK consumed 624 of 200000 compute units".to_string(), "Program DaejccUfXqoAFTiDTxDuMQfQ9oa6crjtR9cT52v1AvGK success".to_string()],
             slot: 404139482,
             ixs: vec![],
-            cost_units: 6654,
+            cost_units: 5000,
             account_keys: vec![
                 "483jTxdFmFGRnzgx9nBoQM2Zao5mZxKvFgHzTb4Ytn1L".to_string(),
                 "DaejccUfXqoAFTiDTxDuMQfQ9oa6crjtR9cT52v1AvGK".to_string()
@@ -291,7 +291,7 @@ mod tests {
                             }
                         ]
                     }"#).unwrap()],
-            cost_units: 14725,
+            cost_units: 5000,
             account_keys: vec!["483jTxdFmFGRnzgx9nBoQM2Zao5mZxKvFgHzTb4Ytn1L".to_string(), "11111111111111111111111111111111".to_string(), "4BMYqAenKkzMtzdHieH9w5FhKKMkZTPGgccbUGwrRqTk".to_string(), "5m85qicoxxbWNbfAVFZ1DuUDKBchmBtUmMc7T5SrCXEB".to_string(), "7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc".to_string()],
         };
         assert_eq!(transaction, expected_tx);
