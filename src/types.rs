@@ -47,7 +47,7 @@ impl SolanaTransaction {
             .block_time
             .map(|bt| DateTime::from_timestamp(bt, 0).unwrap_or_else(Utc::now));
         let ixs = meta.inner_instructions.clone();
-        let cost_units = meta.cost_units.unwrap_or(0) + meta.fee; // base fee + gas paid for the tx
+        let cost_units = meta.fee;
 
         let mut account_keys = result
             .transaction
@@ -126,7 +126,7 @@ impl SolanaTransaction {
                     .clone()
                     .ok_or_else(|| anyhow!("No inner instructions found"))?
             },
-            cost_units: meta.compute_units_consumed.clone().unwrap_or(0) + meta.fee, // base fee + gas paid for the tx
+            cost_units: meta.fee,
             account_keys,
         })
     }
