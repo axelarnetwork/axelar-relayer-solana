@@ -459,6 +459,7 @@ impl<
         let (verification_session_tracker_pda, _) = get_signature_verification_pda(
             &execute_data.payload_merkle_root,
             &execute_data.signing_verifier_set_merkle_root,
+            payload_type,
         )
         .map_err(|e| SolanaIncluderError::GenericError(e.to_string()))?;
 
@@ -521,10 +522,16 @@ impl<
     ) -> Result<u64, SolanaIncluderError> {
         let mut total_cost = 0;
 
+        let payload_type = match &execute_data.payload_items {
+            MerklizedPayload::NewMessages { .. } => PayloadType::ApproveMessages,
+            MerklizedPayload::VerifierSetRotation { .. } => PayloadType::RotateSigners,
+        };
+
         // Collect PDAs
         let (verification_session_tracker_pda, _) = get_signature_verification_pda(
             &execute_data.payload_merkle_root,
             &execute_data.signing_verifier_set_merkle_root,
+            payload_type,
         )
         .map_err(|e| SolanaIncluderError::GenericError(e.to_string()))?;
 
@@ -605,6 +612,7 @@ impl<
         let (verification_session_tracker_pda, _) = get_signature_verification_pda(
             &execute_data.payload_merkle_root,
             &execute_data.signing_verifier_set_merkle_root,
+            PayloadType::RotateSigners,
         )
         .map_err(|e| SolanaIncluderError::GenericError(e.to_string()))?;
 
@@ -654,6 +662,7 @@ impl<
         let (verification_session_tracker_pda, _) = get_signature_verification_pda(
             &execute_data.payload_merkle_root,
             &execute_data.signing_verifier_set_merkle_root,
+            PayloadType::ApproveMessages,
         )
         .map_err(|e| SolanaIncluderError::GenericError(e.to_string()))?;
 

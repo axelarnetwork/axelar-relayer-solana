@@ -161,11 +161,14 @@ pub async fn upsert_and_publish<SM: SolanaTransactionModel>(
 pub fn get_signature_verification_pda(
     payload_merkle_root: &[u8; 32],
     signing_verifier_set_merkle_root: &[u8; 32],
+    payload_type: solana_axelar_std::PayloadType,
 ) -> Result<(Pubkey, u8), anyhow::Error> {
+    let payload_type_seed: u8 = payload_type.into();
     Pubkey::try_find_program_address(
         &[
             seed_prefixes::SIGNATURE_VERIFICATION_SEED,
             payload_merkle_root,
+            &[payload_type_seed],
             signing_verifier_set_merkle_root,
         ],
         &ID,
