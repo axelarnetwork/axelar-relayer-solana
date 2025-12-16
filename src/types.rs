@@ -47,9 +47,9 @@ impl SolanaTransaction {
             .block_time
             .map(|bt| DateTime::from_timestamp(bt, 0).unwrap_or_else(Utc::now));
         let ixs = meta.inner_instructions.clone();
-        let cost_units = meta.cost_units.unwrap_or(0) + meta.fee; // base fee + gas paid for the tx
+        let cost_units = meta.fee;
 
-        let account_keys = result
+        let mut account_keys = result
             .transaction
             .message
             .account_keys
@@ -57,6 +57,13 @@ impl SolanaTransaction {
             .iter()
             .map(|s| s.to_string())
             .collect::<Vec<String>>();
+
+        // For versioned transactions with Address Lookup Tables (ALT),
+        // the loaded addresses must be appended to get the complete account list.
+        if let Some(loaded) = &meta.loaded_addresses {
+            account_keys.extend(loaded.writable.iter().cloned());
+            account_keys.extend(loaded.readonly.iter().cloned());
+        }
 
         Ok(Self {
             signature,
@@ -119,7 +126,7 @@ impl SolanaTransaction {
                     .clone()
                     .ok_or_else(|| anyhow!("No inner instructions found"))?
             },
-            cost_units: meta.compute_units_consumed.clone().unwrap_or(0) + meta.fee, // base fee + gas paid for the tx
+            cost_units: meta.fee,
             account_keys,
         })
     }
@@ -240,7 +247,7 @@ mod tests {
             logs: vec!["Program DaejccUfXqoAFTiDTxDuMQfQ9oa6crjtR9cT52v1AvGK invoke [1]".to_string(), "Program log: Instruction: EmitReceived".to_string(), "Program data: QF09492rFLE=".to_string(), "Program log: This is a message for received".to_string(), "Program DaejccUfXqoAFTiDTxDuMQfQ9oa6crjtR9cT52v1AvGK consumed 624 of 200000 compute units".to_string(), "Program DaejccUfXqoAFTiDTxDuMQfQ9oa6crjtR9cT52v1AvGK success".to_string()],
             slot: 404139482,
             ixs: vec![],
-            cost_units: 6654,
+            cost_units: 5000,
             account_keys: vec![
                 "483jTxdFmFGRnzgx9nBoQM2Zao5mZxKvFgHzTb4Ytn1L".to_string(),
                 "DaejccUfXqoAFTiDTxDuMQfQ9oa6crjtR9cT52v1AvGK".to_string()
@@ -284,7 +291,7 @@ mod tests {
                             }
                         ]
                     }"#).unwrap()],
-            cost_units: 14725,
+            cost_units: 5000,
             account_keys: vec!["483jTxdFmFGRnzgx9nBoQM2Zao5mZxKvFgHzTb4Ytn1L".to_string(), "11111111111111111111111111111111".to_string(), "4BMYqAenKkzMtzdHieH9w5FhKKMkZTPGgccbUGwrRqTk".to_string(), "5m85qicoxxbWNbfAVFZ1DuUDKBchmBtUmMc7T5SrCXEB".to_string(), "7RdSDLUUy37Wqc6s9ebgo52AwhGiw4XbJWZJgidQ1fJc".to_string()],
         };
         assert_eq!(transaction, expected_tx);

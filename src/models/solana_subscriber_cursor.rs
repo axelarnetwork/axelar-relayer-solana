@@ -4,7 +4,7 @@ use relayer_core::utils::ThreadSafe;
 use sqlx::PgPool;
 
 #[async_trait]
-#[cfg_attr(any(test), mockall::automock)]
+#[cfg_attr(any(test, feature = "test-mocks"), mockall::automock)]
 pub trait SubscriberCursor: ThreadSafe {
     // Subscriber functions
     async fn store_latest_signature(

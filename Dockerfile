@@ -1,11 +1,11 @@
 # Builder Stage
-FROM rust:1.90-bookworm AS builder
+FROM rust:1.89-bookworm AS builder
 
 # Build argument to decide which binary to include in this image
 ARG BINARY_NAME
 RUN if [ -z "$BINARY_NAME" ]; then \
-      echo >&2 "ERROR: you must set BINARY_NAME env"; \
-      exit 1; \
+    echo >&2 "ERROR: you must set BINARY_NAME env"; \
+    exit 1; \
     fi
 
 # Set the working directory
@@ -58,8 +58,8 @@ COPY config/ ./config/
 # Build argument to decide which binary to include in this image
 ARG BINARY_NAME
 RUN if [ -z "$BINARY_NAME" ]; then \
-      echo >&2 "ERROR: you must set BINARY_NAME env"; \
-      exit 1; \
+    echo >&2 "ERROR: you must set BINARY_NAME env"; \
+    exit 1; \
     fi
 ENV BINARY_NAME=${BINARY_NAME}
 
