@@ -21,14 +21,14 @@ sqlx = { version = "0.8.1", features = [
     "chrono",
 ] }
 chrono = { version = "0.4.40", features = ["serde"] }
-solana-client = "~2.3"
-solana-rpc-client = "~2.3"
-solana-rpc-client-api = "~2.3"
+solana-client =  { git = "https://github.com/Deiadara/agave", rev = "ddeb0d1" }
+solana-rpc-client = { git = "https://github.com/Deiadara/agave", rev = "ddeb0d1" }
+solana-rpc-client-api = { git = "https://github.com/Deiadara/agave", rev = "ddeb0d1" }
 solana-sdk = "~2.3"
 solana-program = "~2.3"
-solana-transaction-status = "~2.3"
-solana-pubsub-client = "~2.3"
-solana-transaction-status-client-types = "~2.3"
+solana-transaction-status =  { git = "https://github.com/Deiadara/agave", rev = "ddeb0d1" }
+solana-pubsub-client = { git = "https://github.com/Deiadara/agave", rev = "ddeb0d1" }
+solana-transaction-status-client-types =  { git = "https://github.com/Deiadara/agave", rev = "ddeb0d1" }
 futures = "0.3.31"
 futures-util = "0.3.31"
 async-trait = "0.1.88"
@@ -44,7 +44,7 @@ anchor-spl = "0.31.1"
 mpl-token-metadata = "5.1.1"
 ed25519-zebra = "=4.0.3"
 
-solana-transaction-parser = { git = "https://github.com/commonprefix/solana-transaction-parser", branch = "main", features = [
+solana-transaction-parser = { git = "https://github.com/commonprefix/solana-transaction-parser", branch = "chore/update-client-type", features = [
     "mocks",
 ] }
 
