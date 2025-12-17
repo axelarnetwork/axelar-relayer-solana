@@ -3,18 +3,14 @@ use crate::includer::ALTInfo;
 use crate::includer_client::IncluderClientTrait;
 use crate::redis::RedisConnectionTrait;
 use crate::utils::{
-    calculate_total_cost_lamports, create_transaction, get_destination_ata,
-    get_gateway_root_config_internal, get_governance_config_pda,
+    calculate_total_cost_lamports, create_transaction, extract_proposal_hash_from_payload,
+    get_destination_ata, get_gateway_event_authority_pda, get_gateway_root_config_internal,
     get_governance_event_authority_pda, get_incoming_message_pda, get_its_event_authority_pda,
-    get_its_root_pda, get_minter_roles_pda, get_mpl_token_metadata_account,
-    get_operator_proposal_pda, get_proposal_pda, get_token_manager_ata_with_program,
-    get_token_manager_pda, get_token_mint_pda, get_validate_message_signing_pda,
+    get_minter_roles_pda, get_mpl_token_metadata_account, get_operator_proposal_pda,
+    get_proposal_pda, get_token_manager_ata_with_program, get_token_mint_pda,
+    get_validate_message_signing_pda,
 };
-use crate::{
-    error::TransactionBuilderError,
-    transaction_type::SolanaTransactionType,
-    utils::{extract_proposal_hash_from_payload, get_gateway_event_authority_pda},
-};
+use crate::{error::TransactionBuilderError, transaction_type::SolanaTransactionType};
 use anchor_lang::InstructionData;
 use anchor_lang::ToAccountMetas;
 use anchor_spl::{associated_token::spl_associated_token_account, token_2022::spl_token_2022};
@@ -278,9 +274,12 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
             gateway_root_pda,
         };
 
-        let (its_root_pda, _) = get_its_root_pda();
-        let (token_manager_pda, _) = get_token_manager_pda(&its_root_pda, &token_id)
-            .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+        let (its_root_pda, _) = solana_axelar_its::InterchainTokenService::find_pda();
+        let token_id_array: [u8; 32] = token_id.try_into().map_err(|e| {
+            TransactionBuilderError::GenericError(format!("token_id must be 32 bytes: {}", e))
+        })?;
+        let (token_manager_pda, _) =
+            solana_axelar_its::TokenManager::find_pda(token_id_array, its_root_pda);
 
         let (token_mint, token_program) = match &inner_payload {
             GMPPayload::LinkToken(ref link) => {
@@ -446,8 +445,7 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
             gateway_root_pda,
         };
 
-        let (governance_config, _) = get_governance_config_pda()
-            .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+        let (governance_config, _) = solana_axelar_governance::GovernanceConfig::find_pda();
         let (governance_event_authority, _) = get_governance_event_authority_pda()
             .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
 

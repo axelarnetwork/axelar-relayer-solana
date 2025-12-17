@@ -8,9 +8,8 @@ use crate::refund_manager::SolanaRefundManager;
 use crate::transaction_builder::{TransactionBuilder, TransactionBuilderTrait};
 use crate::utils::{
     get_gas_service_event_authority_pda, get_gateway_event_authority_pda,
-    get_gateway_root_config_internal, get_incoming_message_pda, get_operator_pda,
-    get_signature_verification_pda, get_treasury_pda, get_verifier_set_tracker_pda,
-    keypair_from_base58_string, not_enough_gas_event,
+    get_gateway_root_config_internal, get_incoming_message_pda, get_signature_verification_pda,
+    get_verifier_set_tracker_pda, keypair_from_base58_string, not_enough_gas_event,
 };
 use anchor_lang::prelude::AccountMeta;
 use anchor_lang::{InstructionData, ToAccountMetas};
@@ -957,10 +956,9 @@ impl<
 
         let receiver = Pubkey::from_str(&task.task.refund_recipient_address.clone())
             .map_err(|e| IncluderError::GenericError(e.to_string()))?;
-        let (operator_pda, _) = get_operator_pda(&self.keypair.pubkey())
-            .map_err(|e| IncluderError::GenericError(e.to_string()))?;
-        let (treasury, _) =
-            get_treasury_pda().map_err(|e| IncluderError::GenericError(e.to_string()))?;
+        let (operator_pda, _) =
+            solana_axelar_operators::OperatorAccount::find_pda(&self.keypair.pubkey());
+        let (treasury, _) = solana_axelar_gas_service::Treasury::find_pda();
         let (event_authority, _) = get_gas_service_event_authority_pda()
             .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
