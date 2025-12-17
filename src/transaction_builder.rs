@@ -4,11 +4,9 @@ use crate::includer_client::IncluderClientTrait;
 use crate::redis::RedisConnectionTrait;
 use crate::utils::{
     calculate_total_cost_lamports, create_transaction, extract_proposal_hash_from_payload,
-    get_destination_ata, get_gateway_event_authority_pda, get_gateway_root_config_internal,
-    get_governance_event_authority_pda, get_incoming_message_pda, get_its_event_authority_pda,
-    get_minter_roles_pda, get_mpl_token_metadata_account, get_operator_proposal_pda,
-    get_proposal_pda, get_token_manager_ata_with_program, get_token_mint_pda,
-    get_validate_message_signing_pda,
+    get_destination_ata, get_gateway_event_authority_pda, get_governance_event_authority_pda,
+    get_its_event_authority_pda, get_minter_roles_pda, get_operator_proposal_pda, get_proposal_pda,
+    get_token_manager_ata_with_program, get_token_mint_pda,
 };
 use crate::{error::TransactionBuilderError, transaction_type::SolanaTransactionType};
 use anchor_lang::InstructionData;
@@ -209,8 +207,8 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
         payload: &[u8],
         destination_address: Pubkey,
     ) -> Result<(Instruction, Vec<AccountMeta>), TransactionBuilderError> {
-        let (incoming_message_pda, _) = get_incoming_message_pda(&message.command_id())
-            .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+        let (incoming_message_pda, _) =
+            solana_axelar_gateway::IncomingMessage::find_pda(&message.command_id());
 
         match destination_address {
             x if x == solana_axelar_its::ID => {
@@ -258,13 +256,13 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
             }
         };
 
-        let (signing_pda, _) =
-            get_validate_message_signing_pda(&message.command_id(), &solana_axelar_its::ID)
-                .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+        let (signing_pda, _) = solana_axelar_gateway::ValidateMessageSigner::find_pda(
+            &message.command_id(),
+            &solana_axelar_its::ID,
+        );
         let (event_authority, _) = get_gateway_event_authority_pda()
             .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
-        let (gateway_root_pda, _) = get_gateway_root_config_internal()
-            .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+        let (gateway_root_pda, _) = solana_axelar_gateway::GatewayConfig::find_pda();
 
         let executable = solana_axelar_its::accounts::AxelarExecuteAccounts {
             incoming_message_pda,
@@ -275,11 +273,8 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
         };
 
         let (its_root_pda, _) = solana_axelar_its::InterchainTokenService::find_pda();
-        let token_id_array: [u8; 32] = token_id.try_into().map_err(|e| {
-            TransactionBuilderError::GenericError(format!("token_id must be 32 bytes: {}", e))
-        })?;
         let (token_manager_pda, _) =
-            solana_axelar_its::TokenManager::find_pda(token_id_array, its_root_pda);
+            solana_axelar_its::TokenManager::find_pda(token_id, its_root_pda);
 
         let (token_mint, token_program) = match &inner_payload {
             GMPPayload::LinkToken(ref link) => {
@@ -386,8 +381,7 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
                     minter.map(|minter| get_minter_roles_pda(&token_manager_pda, &minter).0);
 
                 let (mpl_token_metadata_account, _) =
-                    get_mpl_token_metadata_account(&token_mint)
-                        .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+                    mpl_token_metadata::accounts::Metadata::find_pda(&token_mint);
 
                 accounts.extend(execute_deploy_interchain_token_extra_accounts(
                     solana_program::sysvar::instructions::ID,
@@ -430,13 +424,13 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
         payload: &[u8],
         incoming_message_pda: Pubkey,
     ) -> Result<(Instruction, Vec<AccountMeta>), TransactionBuilderError> {
-        let (signing_pda, _) =
-            get_validate_message_signing_pda(&message.command_id(), &solana_axelar_governance::ID)
-                .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+        let (signing_pda, _) = solana_axelar_gateway::ValidateMessageSigner::find_pda(
+            &message.command_id(),
+            &solana_axelar_governance::ID,
+        );
         let (event_authority, _) = get_gateway_event_authority_pda()
             .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
-        let (gateway_root_pda, _) = get_gateway_root_config_internal()
-            .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+        let (gateway_root_pda, _) = solana_axelar_gateway::GatewayConfig::find_pda();
         let executable = solana_axelar_governance::accounts::AxelarExecuteAccounts {
             incoming_message_pda,
             signing_pda,
@@ -504,13 +498,13 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
             };
         }
 
-        let (signing_pda, _) =
-            get_validate_message_signing_pda(&message.command_id(), &destination_address)
-                .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+        let (signing_pda, _) = solana_axelar_gateway::ValidateMessageSigner::find_pda(
+            &message.command_id(),
+            &destination_address,
+        );
         let (event_authority, _) = get_gateway_event_authority_pda()
             .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
-        let (gateway_root_pda, _) = get_gateway_root_config_internal()
-            .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+        let (gateway_root_pda, _) = solana_axelar_gateway::GatewayConfig::find_pda();
 
         let mut accounts = solana_axelar_gateway::executable::helpers::AxelarExecuteAccounts {
             incoming_message_pda,
