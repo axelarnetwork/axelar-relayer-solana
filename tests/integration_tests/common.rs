@@ -7,7 +7,6 @@ use anchor_lang::{AnchorSerialize, Discriminator, InstructionData, ToAccountMeta
 use async_trait::async_trait;
 use relayer_core::gmp_api::MockGmpApiTrait;
 use relayer_core::queue::{QueueItem, QueueTrait};
-use solana::fees_client::FeesClient;
 use solana::gas_calculator::GasCalculator;
 use solana::includer_client::IncluderClient;
 use solana::mocks::MockRedisConnectionTrait;
@@ -130,6 +129,10 @@ pub fn create_mock_redis() -> MockRedisConnectionTrait {
         .expect_write_alt_entry()
         .returning(|_, _, _| Ok(()));
     mock_redis
+        .expect_get_cu_price()
+        .times(..)
+        .returning(|| Ok(Some(100_000u64)));
+    mock_redis
 }
 
 #[cfg(test)]
@@ -162,28 +165,35 @@ pub fn create_mock_gmp_api_for_execute() -> MockGmpApiTrait {
 pub struct IncluderComponents {
     pub includer_client: IncluderClient,
     pub keypair: Arc<Keypair>,
-    pub transaction_builder: TransactionBuilder<
-        GasCalculator<IncluderClient, FeesClient<IncluderClient>>,
-        IncluderClient,
-    >,
+    pub transaction_builder:
+        TransactionBuilder<GasCalculator<IncluderClient>, IncluderClient, MockRedisConnectionTrait>,
 }
 
 #[cfg(test)]
 pub fn create_includer_components(rpc_url: &str, payer: &Keypair) -> IncluderComponents {
+    create_includer_components_with_redis(rpc_url, payer, None)
+}
+
+#[cfg(test)]
+pub fn create_includer_components_with_redis(
+    rpc_url: &str,
+    payer: &Keypair,
+    mock_redis: Option<MockRedisConnectionTrait>,
+) -> IncluderComponents {
     let includer_client = IncluderClient::new(rpc_url, CommitmentConfig::confirmed(), 3)
         .expect("Failed to create includer client");
 
-    let fees_client =
-        FeesClient::new(includer_client.clone(), 10).expect("Failed to create fees client");
-
-    let gas_calculator = GasCalculator::new(includer_client.clone(), fees_client);
+    let gas_calculator = GasCalculator::new(includer_client.clone());
 
     let keypair = Arc::new(Keypair::from_bytes(&payer.to_bytes()).unwrap());
+
+    let mock_redis = mock_redis.unwrap_or_else(create_mock_redis);
 
     let transaction_builder = TransactionBuilder::new(
         Arc::clone(&keypair),
         gas_calculator,
         Arc::new(includer_client.clone()),
+        mock_redis,
     );
 
     IncluderComponents {

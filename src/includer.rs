@@ -1,6 +1,5 @@
 use crate::config::SolanaConfig;
 use crate::error::{IncluderClientError, SolanaIncluderError, TransactionBuilderError};
-use crate::fees_client::FeesClient;
 use crate::gas_calculator::GasCalculator;
 use crate::includer_client::{IncluderClient, IncluderClientTrait};
 use crate::models::refunds::RefundsModel;
@@ -57,7 +56,7 @@ pub struct SolanaIncluder<
     R: RedisConnectionTrait + Clone,
     RF: RefundsModel + Clone,
     IC: IncluderClientTrait + Clone,
-    TB: TransactionBuilderTrait<IC> + Clone,
+    TB: TransactionBuilderTrait<IC, R> + Clone,
 > {
     client: Arc<IC>,
     keypair: Arc<Keypair>,
@@ -73,7 +72,7 @@ impl<
         R: RedisConnectionTrait + Clone,
         RF: RefundsModel + Clone,
         IC: IncluderClientTrait + Clone,
-        TB: TransactionBuilderTrait<IC> + Clone,
+        TB: TransactionBuilderTrait<IC, R> + Clone,
     > SolanaIncluder<G, R, RF, IC, TB>
 {
     #[allow(clippy::too_many_arguments)]
@@ -115,10 +114,7 @@ impl<
                 R,
                 RF,
                 IncluderClient,
-                TransactionBuilder<
-                    GasCalculator<IncluderClient, FeesClient<IncluderClient>>,
-                    IncluderClient,
-                >,
+                TransactionBuilder<GasCalculator<IncluderClient>, IncluderClient, R>,
             >,
         >,
         IncluderError,
@@ -131,18 +127,16 @@ impl<
                 .map_err(|e| error_stack::report!(IncluderError::GenericError(e.to_string())))?,
         );
 
-        let fees_client = Arc::new(
-            FeesClient::new(client.as_ref().clone(), 10)
-                .map_err(|e| error_stack::report!(IncluderError::GenericError(e.to_string())))?,
-        );
-
         let keypair = Arc::new(config.signing_keypair());
 
-        let gas_calculator =
-            GasCalculator::new(client.as_ref().clone(), fees_client.as_ref().clone());
+        let gas_calculator = GasCalculator::new(client.as_ref().clone());
 
-        let transaction_builder =
-            TransactionBuilder::new(Arc::clone(&keypair), gas_calculator, Arc::clone(&client));
+        let transaction_builder = TransactionBuilder::new(
+            Arc::clone(&keypair),
+            gas_calculator,
+            Arc::clone(&client),
+            redis_conn.clone(),
+        );
 
         let solana_includer = SolanaIncluder::new(
             Arc::clone(&client),
@@ -743,7 +737,7 @@ impl<
         R: RedisConnectionTrait + Clone,
         RF: RefundsModel + Clone,
         IC: IncluderClientTrait + Clone,
-        TB: TransactionBuilderTrait<IC> + Clone,
+        TB: TransactionBuilderTrait<IC, R> + Clone,
     > IncluderTrait for SolanaIncluder<G, R, RF, IC, TB>
 {
     #[cfg_attr(
@@ -1099,7 +1093,7 @@ mod tests {
         }
     }
 
-    impl Clone for MockTransactionBuilderTrait<MockIncluderClientTrait> {
+    impl Clone for MockTransactionBuilderTrait<MockIncluderClientTrait, MockRedisConnectionTrait> {
         fn clone(&self) -> Self {
             Self::new()
         }
@@ -1113,7 +1107,7 @@ mod tests {
         MockRedisConnectionTrait,
         MockRefundsModel,
         MockIncluderClientTrait,
-        MockTransactionBuilderTrait<MockIncluderClientTrait>,
+        MockTransactionBuilderTrait<MockIncluderClientTrait, MockRedisConnectionTrait>,
     ) {
         use crate::transaction_builder::MockTransactionBuilderTrait;
 
@@ -1197,7 +1191,10 @@ mod tests {
         mock_client: MockIncluderClientTrait,
         keypair: Keypair,
         chain_name: String,
-        transaction_builder: MockTransactionBuilderTrait<MockIncluderClientTrait>,
+        transaction_builder: MockTransactionBuilderTrait<
+            MockIncluderClientTrait,
+            MockRedisConnectionTrait,
+        >,
         mock_gmp_api: MockGmpApiTrait,
         redis_conn: MockRedisConnectionTrait,
         mock_refunds_model: MockRefundsModel,
@@ -1206,7 +1203,7 @@ mod tests {
         MockRedisConnectionTrait,
         MockRefundsModel,
         MockIncluderClientTrait,
-        MockTransactionBuilderTrait<MockIncluderClientTrait>,
+        MockTransactionBuilderTrait<MockIncluderClientTrait, MockRedisConnectionTrait>,
     > {
         SolanaIncluder::new(
             Arc::new(mock_client),

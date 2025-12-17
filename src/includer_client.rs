@@ -32,7 +32,6 @@ pub trait IncluderClientTrait: ThreadSafe {
     async fn get_slot(&self) -> Result<u64, IncluderClientError>;
     async fn get_recent_prioritization_fees(
         &self,
-        addresses: &[Pubkey],
     ) -> Result<Vec<RpcPrioritizationFee>, IncluderClientError>;
     async fn send_transaction(
         &self,
@@ -119,10 +118,9 @@ impl IncluderClientTrait for IncluderClient {
 
     async fn get_recent_prioritization_fees(
         &self,
-        addresses: &[Pubkey],
     ) -> Result<Vec<RpcPrioritizationFee>, IncluderClientError> {
         self.inner()
-            .get_recent_prioritization_fees(addresses)
+            .get_recent_prioritization_fees(&[])
             .await
             .map_err(|e| IncluderClientError::GenericError(e.to_string()))
     }

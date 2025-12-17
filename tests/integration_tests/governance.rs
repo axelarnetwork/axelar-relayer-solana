@@ -209,8 +209,10 @@ async fn test_governance_schedule_timelock_proposal() {
         },
     };
 
-    let components = create_includer_components(&env.rpc_url, &env.payer);
-    let mock_redis = create_mock_redis();
+    let mock_redis_for_tb = create_mock_redis();
+    let components =
+        create_includer_components_with_redis(&env.rpc_url, &env.payer, Some(mock_redis_for_tb));
+    let mock_redis_for_includer = create_mock_redis(); // New instance for SolanaIncluder
     let mock_gmp_api = MockGmpApiTrait::new();
     let mock_refunds_model = MockRefundsModel::new();
 
@@ -218,9 +220,9 @@ async fn test_governance_schedule_timelock_proposal() {
         Arc::new(components.includer_client.clone()),
         components.keypair,
         "solana-devnet".to_string(),
-        components.transaction_builder.clone(),
+        components.transaction_builder,
         Arc::new(mock_gmp_api),
-        mock_redis,
+        mock_redis_for_includer,
         Arc::new(mock_refunds_model),
     );
 
@@ -258,8 +260,13 @@ async fn test_governance_schedule_timelock_proposal() {
         },
     };
 
-    let components_exec = create_includer_components(&env.rpc_url, &env.payer);
-    let mock_redis_exec = create_mock_redis();
+    let mock_redis_exec_for_tb = create_mock_redis();
+    let components_exec = create_includer_components_with_redis(
+        &env.rpc_url,
+        &env.payer,
+        Some(mock_redis_exec_for_tb),
+    );
+    let mock_redis_exec_for_includer = create_mock_redis(); // New instance for SolanaIncluder
     let mock_gmp_api_exec = create_mock_gmp_api_for_execute();
     let mock_refunds_model_exec = MockRefundsModel::new();
 
@@ -269,7 +276,7 @@ async fn test_governance_schedule_timelock_proposal() {
         "solana-devnet".to_string(),
         components_exec.transaction_builder,
         Arc::new(mock_gmp_api_exec),
-        mock_redis_exec,
+        mock_redis_exec_for_includer,
         Arc::new(mock_refunds_model_exec),
     );
 

@@ -74,6 +74,8 @@ pub trait RedisConnectionTrait: ThreadSafe {
         message_id: String,
         alt_pubkey: Pubkey,
     ) -> Result<(), RedisInterfaceError>;
+    async fn get_cu_price(&self) -> Result<Option<u64>, RedisInterfaceError>;
+    async fn set_cu_price(&self, cu_price: u64) -> Result<(), RedisInterfaceError>;
 }
 
 #[derive(Clone)]
@@ -524,6 +526,31 @@ impl RedisConnectionTrait for RedisConnection {
             "Set failed ALT and removed from Redis: {} -> {} (removed key: {})",
             failed_key, pubkey_str, alt_key
         );
+        Ok(())
+    }
+
+    async fn get_cu_price(&self) -> Result<Option<u64>, RedisInterfaceError> {
+        let mut redis_conn = self.conn.clone();
+        let key = "cu_price";
+        let result: Option<String> = redis::AsyncCommands::get(&mut redis_conn, key)
+            .await
+            .map_err(|e| {
+                RedisInterfaceError::GenericError(format!(
+                    "Failed to get CU price from Redis: {}",
+                    e
+                ))
+            })?;
+        Ok(result.map(|s| s.parse::<u64>().unwrap_or(0)))
+    }
+
+    async fn set_cu_price(&self, cu_price: u64) -> Result<(), RedisInterfaceError> {
+        let mut redis_conn = self.conn.clone();
+        let key = "cu_price";
+        redis::AsyncCommands::set::<_, _, ()>(&mut redis_conn, key, cu_price)
+            .await
+            .map_err(|e| {
+                RedisInterfaceError::GenericError(format!("Failed to set CU price in Redis: {}", e))
+            })?;
         Ok(())
     }
 }
@@ -1542,5 +1569,46 @@ mod tests {
             stored_value, None,
             "No cost should be written when gas_cost is 0"
         );
+    }
+
+    #[tokio::test]
+    async fn test_set_and_get_cu_price() {
+        let (_container, redis_conn) = create_redis_connection().await;
+
+        let cu_price = 1000000u64;
+
+        // Set the CU price
+        redis_conn.set_cu_price(cu_price).await.unwrap();
+
+        // Get the CU price and verify it matches
+        let result = redis_conn.get_cu_price().await.unwrap();
+        assert_eq!(result, Some(cu_price));
+    }
+
+    #[tokio::test]
+    async fn test_get_cu_price_not_found() {
+        let (_container, redis_conn) = create_redis_connection().await;
+
+        // Try to get CU price when it doesn't exist
+        let result = redis_conn.get_cu_price().await.unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[tokio::test]
+    async fn test_set_and_update_cu_price() {
+        let (_container, redis_conn) = create_redis_connection().await;
+
+        let initial_price = 500000u64;
+        let updated_price = 750000u64;
+
+        // Set initial CU price
+        redis_conn.set_cu_price(initial_price).await.unwrap();
+        let result = redis_conn.get_cu_price().await.unwrap();
+        assert_eq!(result, Some(initial_price));
+
+        // Update the CU price
+        redis_conn.set_cu_price(updated_price).await.unwrap();
+        let result = redis_conn.get_cu_price().await.unwrap();
+        assert_eq!(result, Some(updated_price));
     }
 }

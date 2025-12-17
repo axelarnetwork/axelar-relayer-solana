@@ -1,7 +1,6 @@
 use async_trait::async_trait;
 
 use relayer_core::{error::ClientError, utils::ThreadSafe};
-use solana_sdk::pubkey::Pubkey;
 use statrs::statistics::{Data, OrderStatistics};
 
 use crate::{error::FeesClientError, includer_client::IncluderClientTrait};
@@ -9,10 +8,9 @@ use crate::{error::FeesClientError, includer_client::IncluderClientTrait};
 #[async_trait]
 #[cfg_attr(test, mockall::automock)]
 pub trait FeesClientTrait: ThreadSafe {
-    async fn get_recent_prioritization_fees(&self, addresses: &[Pubkey], percentile: u64) -> u64;
+    async fn get_recent_prioritization_fees(&self, percentile: u64) -> u64;
     async fn get_prioritization_fee_percentile(
         &self,
-        addresses: &[Pubkey],
         percentile: u64,
     ) -> Result<u64, FeesClientError>;
 }
@@ -34,20 +32,19 @@ impl<IC: IncluderClientTrait> FeesClient<IC> {
 
 #[async_trait]
 impl<IC: IncluderClientTrait> FeesClientTrait for FeesClient<IC> {
-    async fn get_recent_prioritization_fees(&self, addresses: &[Pubkey], percentile: u64) -> u64 {
-        self.get_prioritization_fee_percentile(addresses, percentile)
+    async fn get_recent_prioritization_fees(&self, percentile: u64) -> u64 {
+        self.get_prioritization_fee_percentile(percentile)
             .await
             .unwrap_or(0)
     }
 
     async fn get_prioritization_fee_percentile(
         &self,
-        addresses: &[Pubkey],
         percentile: u64,
     ) -> Result<u64, FeesClientError> {
         let recent_fees = self
             .includer_client
-            .get_recent_prioritization_fees(addresses)
+            .get_recent_prioritization_fees()
             .await
             .map_err(|e| FeesClientError::GenericError(e.to_string()))?;
 
@@ -83,7 +80,6 @@ mod tests {
     use crate::error::IncluderClientError;
     use crate::includer_client::MockIncluderClientTrait;
     use solana_client::rpc_response::RpcPrioritizationFee;
-    use solana_sdk::pubkey::Pubkey;
 
     fn create_fee(slot: u64, prioritization_fee: u64) -> RpcPrioritizationFee {
         RpcPrioritizationFee {
@@ -108,15 +104,13 @@ mod tests {
         mock_client
             .expect_get_recent_prioritization_fees()
             .times(1)
-            .returning(move |_| {
+            .returning(move || {
                 let fees_clone = fees.clone();
                 Box::pin(async move { Ok(fees_clone) })
             });
 
         let fees_client = FeesClient::new(mock_client, 10).unwrap();
-        let result = fees_client
-            .get_prioritization_fee_percentile(&[Pubkey::new_unique()], 50)
-            .await;
+        let result = fees_client.get_prioritization_fee_percentile(50).await;
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), 300);
@@ -131,15 +125,13 @@ mod tests {
         mock_client
             .expect_get_recent_prioritization_fees()
             .times(1)
-            .returning(move |_| {
+            .returning(move || {
                 let fees_clone = fees.clone();
                 Box::pin(async move { Ok(fees_clone) })
             });
 
         let fees_client = FeesClient::new(mock_client, 10).unwrap();
-        let result = fees_client
-            .get_prioritization_fee_percentile(&[Pubkey::new_unique()], 0)
-            .await;
+        let result = fees_client.get_prioritization_fee_percentile(0).await;
 
         assert!(result.is_ok());
         // 0th percentile should be the minimum value
@@ -155,15 +147,13 @@ mod tests {
         mock_client
             .expect_get_recent_prioritization_fees()
             .times(1)
-            .returning(move |_| {
+            .returning(move || {
                 let fees_clone = fees.clone();
                 Box::pin(async move { Ok(fees_clone) })
             });
 
         let fees_client = FeesClient::new(mock_client, 10).unwrap();
-        let result = fees_client
-            .get_prioritization_fee_percentile(&[Pubkey::new_unique()], 100)
-            .await;
+        let result = fees_client.get_prioritization_fee_percentile(100).await;
 
         assert!(result.is_ok());
         // 100th percentile should be the maximum value
@@ -177,12 +167,10 @@ mod tests {
         mock_client
             .expect_get_recent_prioritization_fees()
             .times(1)
-            .returning(|_| Box::pin(async { Ok(vec![]) }));
+            .returning(|| Box::pin(async { Ok(vec![]) }));
 
         let fees_client = FeesClient::new(mock_client, 10).unwrap();
-        let result = fees_client
-            .get_prioritization_fee_percentile(&[Pubkey::new_unique()], 50)
-            .await;
+        let result = fees_client.get_prioritization_fee_percentile(50).await;
 
         assert!(result.is_err());
         match result {
@@ -200,14 +188,12 @@ mod tests {
         mock_client
             .expect_get_recent_prioritization_fees()
             .times(1)
-            .returning(|_| {
+            .returning(|| {
                 Box::pin(async { Err(IncluderClientError::GenericError("RPC error".to_string())) })
             });
 
         let fees_client = FeesClient::new(mock_client, 10).unwrap();
-        let result = fees_client
-            .get_prioritization_fee_percentile(&[Pubkey::new_unique()], 50)
-            .await;
+        let result = fees_client.get_prioritization_fee_percentile(50).await;
 
         assert!(result.is_err());
         match result {
@@ -230,15 +216,13 @@ mod tests {
         mock_client
             .expect_get_recent_prioritization_fees()
             .times(1)
-            .returning(move |_| {
+            .returning(move || {
                 let fees_clone = fees.clone();
                 Box::pin(async move { Ok(fees_clone) })
             });
 
         let fees_client = FeesClient::new(mock_client, 3).unwrap();
-        let result = fees_client
-            .get_prioritization_fee_percentile(&[Pubkey::new_unique()], 50)
-            .await;
+        let result = fees_client.get_prioritization_fee_percentile(50).await;
 
         assert!(result.is_ok());
         // 50th percentile of [1000, 2000, 3000] is 2000
@@ -252,14 +236,12 @@ mod tests {
         mock_client
             .expect_get_recent_prioritization_fees()
             .times(1)
-            .returning(|_| {
+            .returning(|| {
                 Box::pin(async { Err(IncluderClientError::GenericError("RPC error".to_string())) })
             });
 
         let fees_client = FeesClient::new(mock_client, 10).unwrap();
-        let result = fees_client
-            .get_recent_prioritization_fees(&[Pubkey::new_unique()], 50)
-            .await;
+        let result = fees_client.get_recent_prioritization_fees(50).await;
 
         // Should return 0 on error (unwrap_or(0))
         assert_eq!(result, 0);
@@ -272,12 +254,10 @@ mod tests {
         mock_client
             .expect_get_recent_prioritization_fees()
             .times(1)
-            .returning(|_| Box::pin(async { Ok(vec![]) }));
+            .returning(|| Box::pin(async { Ok(vec![]) }));
 
         let fees_client = FeesClient::new(mock_client, 10).unwrap();
-        let result = fees_client
-            .get_recent_prioritization_fees(&[Pubkey::new_unique()], 50)
-            .await;
+        let result = fees_client.get_recent_prioritization_fees(50).await;
 
         // Should return 0 when no fees found
         assert_eq!(result, 0);
@@ -293,15 +273,13 @@ mod tests {
         mock_client
             .expect_get_recent_prioritization_fees()
             .times(1)
-            .returning(move |_| {
+            .returning(move || {
                 let fees_clone = fees.clone();
                 Box::pin(async move { Ok(fees_clone) })
             });
 
         let fees_client = FeesClient::new(mock_client, 10).unwrap();
-        let result = fees_client
-            .get_prioritization_fee_percentile(&[Pubkey::new_unique()], 50)
-            .await;
+        let result = fees_client.get_prioritization_fee_percentile(50).await;
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), 0);
@@ -321,15 +299,13 @@ mod tests {
         mock_client
             .expect_get_recent_prioritization_fees()
             .times(1)
-            .returning(move |_| {
+            .returning(move || {
                 let fees_clone = fees.clone();
                 Box::pin(async move { Ok(fees_clone) })
             });
 
         let fees_client = FeesClient::new(mock_client, 10).unwrap();
-        let result = fees_client
-            .get_prioritization_fee_percentile(&[Pubkey::new_unique()], 50)
-            .await;
+        let result = fees_client.get_prioritization_fee_percentile(50).await;
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), 2_000_000_000);
@@ -350,15 +326,13 @@ mod tests {
         mock_client
             .expect_get_recent_prioritization_fees()
             .times(1)
-            .returning(move |_| {
+            .returning(move || {
                 let fees_clone = fees.clone();
                 Box::pin(async move { Ok(fees_clone) })
             });
 
         let fees_client = FeesClient::new(mock_client, 10).unwrap();
-        let result = fees_client
-            .get_prioritization_fee_percentile(&[Pubkey::new_unique()], 75)
-            .await;
+        let result = fees_client.get_prioritization_fee_percentile(75).await;
 
         assert!(result.is_ok());
         // 75th percentile of [100, 200, 300, 400] using statrs linear interpolation
