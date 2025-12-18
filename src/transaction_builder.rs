@@ -227,10 +227,10 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
     async fn build_its_instruction(
         &self,
         message: &Message,
-        payload: &[u8],
+        mut payload: &[u8],
         incoming_message_pda: Pubkey,
     ) -> Result<(Instruction, Vec<AccountMeta>), TransactionBuilderError> {
-        let gmp_decoded_payload = HubMessage::deserialize(&mut payload.to_vec().as_slice())
+        let gmp_decoded_payload = HubMessage::deserialize(&mut payload)
             .map_err(|e| TransactionBuilderError::PayloadDecodeError(e.to_string()))?;
 
         let token_id = match gmp_decoded_payload {
@@ -392,16 +392,11 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
                     ));
                 }
                 solana_axelar_its::encoding::Message::LinkToken(link) => {
-                    let minter = if let Some(minter) = &link.params {
-                        Some(Pubkey::try_from(minter.as_slice()).map_err(|e| {
-                            TransactionBuilderError::PayloadDecodeError(format!(
-                                "Invalid minter pubkey: {}",
-                                e
-                            ))
-                        })?)
-                    } else {
-                        None
-                    };
+                    let minter = link
+                        .params
+                        .as_ref()
+                        // Check if we should be erroring here or ignoring the value if invalid
+                        .and_then(|p| Pubkey::try_from(p.as_slice()).ok());
                     let minter_roles_pda =
                         minter.map(|minter| get_minter_roles_pda(&token_manager_pda, &minter).0);
 
