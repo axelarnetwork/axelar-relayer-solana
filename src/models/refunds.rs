@@ -5,7 +5,7 @@ use relayer_core::utils::ThreadSafe;
 use crate::models::solana_subscriber_cursor::PostgresDB;
 
 #[async_trait]
-#[cfg_attr(any(test), mockall::automock)]
+#[cfg_attr(any(test, feature = "test-mocks"), mockall::automock)]
 pub trait RefundsModel: ThreadSafe {
     async fn find(
         &self,

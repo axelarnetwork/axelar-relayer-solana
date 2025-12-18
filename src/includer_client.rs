@@ -28,6 +28,7 @@ pub trait IncluderClientTrait: ThreadSafe {
     async fn get_latest_blockhash(&self) -> Result<Hash, IncluderClientError>;
     async fn get_account_data(&self, pubkey: &Pubkey) -> Result<Vec<u8>, IncluderClientError>;
     async fn get_account(&self, pubkey: &Pubkey) -> Result<Account, IncluderClientError>;
+    async fn get_account_owner(&self, pubkey: &Pubkey) -> Result<Pubkey, IncluderClientError>;
     async fn get_slot(&self) -> Result<u64, IncluderClientError>;
     async fn get_recent_prioritization_fees(
         &self,
@@ -104,9 +105,14 @@ impl IncluderClientTrait for IncluderClient {
             .map_err(|e| IncluderClientError::GenericError(e.to_string()))
     }
 
+    async fn get_account_owner(&self, pubkey: &Pubkey) -> Result<Pubkey, IncluderClientError> {
+        let account = self.get_account(pubkey).await?;
+        Ok(account.owner)
+    }
+
     async fn get_slot(&self) -> Result<u64, IncluderClientError> {
         self.inner()
-            .get_slot()
+            .get_slot_with_commitment(self.commitment)
             .await
             .map_err(|e| IncluderClientError::GenericError(e.to_string()))
     }
@@ -158,6 +164,7 @@ impl IncluderClientTrait for IncluderClient {
                     // We might have to manually implement send_and_confirm()
                     if let Some(execute_data) = execute_data {
                         if check_if_error_includes_an_expected_account(&e.to_string(), execute_data)
+                            .map_err(|e| IncluderClientError::GenericError(e.to_string()))?
                         {
                             return Err(IncluderClientError::AccountInUseError(e.to_string()));
                         }
@@ -292,7 +299,7 @@ fn read(mut data: &[u8]) -> Option<IncomingMessage> {
 mod tests {
     use super::*;
     use crate::utils::{get_initialize_verification_session_pda, is_addr_in_use};
-    use solana_axelar_std::execute_data::MerklizedPayload;
+    use solana_axelar_std::execute_data::{MerklizedPayload, PayloadType};
     use solana_axelar_std::message::MessageLeaf;
     use solana_axelar_std::verifier_set::{SigningVerifierSetInfo, VerifierSetLeaf};
     use solana_axelar_std::{
@@ -304,6 +311,7 @@ mod tests {
         signing_verifier_set_merkle_root: [u8; 32],
     ) -> ExecuteData {
         let verifier_info = SigningVerifierSetInfo {
+            payload_type: PayloadType::ApproveMessages,
             leaf: VerifierSetLeaf {
                 nonce: 0,
                 quorum: 0,
@@ -353,7 +361,7 @@ mod tests {
 
     /// Simulates the error handling logic in send_transaction when execute_data is provided.
     fn simulate_error_handling(error_message: &str, execute_data: &ExecuteData) -> ExpectedError {
-        if check_if_error_includes_an_expected_account(error_message, execute_data) {
+        if check_if_error_includes_an_expected_account(error_message, execute_data).unwrap() {
             return ExpectedError::AccountInUse;
         }
 
@@ -384,7 +392,8 @@ mod tests {
         let (init_pda, _) = get_initialize_verification_session_pda(
             &payload_merkle_root,
             &signing_verifier_set_merkle_root,
-        );
+        )
+        .unwrap();
 
         let error_message = format!(
             "Allocate: account Address {{ address: {}, base: None }} already in use",
@@ -410,7 +419,7 @@ mod tests {
         }
         .expect("Expected a message");
 
-        let (incoming_msg_pda, _) = crate::utils::get_incoming_message_pda(&command_id);
+        let (incoming_msg_pda, _) = crate::utils::get_incoming_message_pda(&command_id).unwrap();
         let error_message = format!(
             "Allocate: account Address {{ address: {}, base: None }} already in use",
             incoming_msg_pda
@@ -473,7 +482,8 @@ mod tests {
         let (init_pda, _) = get_initialize_verification_session_pda(
             &payload_merkle_root,
             &signing_verifier_set_merkle_root,
-        );
+        )
+        .unwrap();
 
         // Error message contains both AccountInUse and SlotAlreadyVerified patterns
         let error_message = format!(
@@ -523,7 +533,8 @@ mod tests {
         let (expected_pda, _) = get_initialize_verification_session_pda(
             &payload_merkle_root,
             &signing_verifier_set_merkle_root,
-        );
+        )
+        .unwrap();
 
         let error_message = format!(
             "Allocate: account Address {{ address: {}, base: None }} already in use",
@@ -541,7 +552,8 @@ mod tests {
         let (expected_pda, _) = get_initialize_verification_session_pda(
             &payload_merkle_root,
             &signing_verifier_set_merkle_root,
-        );
+        )
+        .unwrap();
 
         let different_address = "11111111111111111111111111111111";
         let error_message = format!(

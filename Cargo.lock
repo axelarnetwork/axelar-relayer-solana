@@ -1764,7 +1764,7 @@ dependencies = [
  "bitflags 2.10.0",
  "cexpr",
  "clang-sys",
- "itertools 0.13.0",
+ "itertools 0.11.0",
  "proc-macro2",
  "quote",
  "regex",
@@ -3553,7 +3553,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4196,7 +4196,7 @@ dependencies = [
 [[package]]
 name = "governance-gmp"
 version = "0.1.3"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main#e736f3bb8c8c768a610c0824da3eacadcdc069ec"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main#cfc83c802560373bcef747ebb680cff6db2b9e4b"
 dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
@@ -4761,8 +4761,8 @@ dependencies = [
  "libc",
  "percent-encoding 2.3.2",
  "pin-project-lite",
- "socket2 0.6.1",
- "system-configuration 0.6.1",
+ "socket2 0.5.10",
+ "system-configuration",
  "tokio",
  "tower-service",
  "tracing",
@@ -5106,16 +5106,6 @@ dependencies = [
  "schemars 0.8.22",
  "strum 0.25.0",
  "thiserror 1.0.69",
-]
-
-[[package]]
-name = "interchain-token-transfer-gmp"
-version = "0.1.3"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main#e736f3bb8c8c768a610c0824da3eacadcdc069ec"
-dependencies = [
- "alloy-primitives",
- "alloy-sol-types",
- "hex",
 ]
 
 [[package]]
@@ -6272,7 +6262,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -7472,7 +7462,7 @@ dependencies = [
 [[package]]
 name = "program-utils"
 version = "0.1.4"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main#e736f3bb8c8c768a610c0824da3eacadcdc069ec"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main#cfc83c802560373bcef747ebb680cff6db2b9e4b"
 dependencies = [
  "mpl-token-metadata",
  "solana-program",
@@ -7659,7 +7649,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash 2.1.1",
  "rustls 0.23.35",
- "socket2 0.6.1",
+ "socket2 0.5.10",
  "thiserror 2.0.17",
  "tokio",
  "tracing",
@@ -7698,9 +7688,9 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.6.1",
+ "socket2 0.5.10",
  "tracing",
- "windows-sys 0.60.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -8149,7 +8139,7 @@ dependencies = [
  "serde_json",
  "serde_urlencoded",
  "sync_wrapper 0.1.2",
- "system-configuration 0.5.1",
+ "system-configuration",
  "tokio",
  "tokio-native-tls",
  "tower-service",
@@ -8614,7 +8604,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.11.0",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -8727,7 +8717,7 @@ dependencies = [
  "security-framework 3.5.1",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -9581,7 +9571,6 @@ dependencies = [
  "governance-gmp",
  "hex",
  "httpmock",
- "interchain-token-transfer-gmp",
  "lapin",
  "libsecp256k1 0.6.0",
  "mockall 0.13.1",
@@ -9811,7 +9800,7 @@ dependencies = [
 [[package]]
 name = "solana-axelar-gas-service"
 version = "0.1.6"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main#e736f3bb8c8c768a610c0824da3eacadcdc069ec"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main#cfc83c802560373bcef747ebb680cff6db2b9e4b"
 dependencies = [
  "anchor-lang",
  "bytemuck",
@@ -9822,7 +9811,7 @@ dependencies = [
 [[package]]
 name = "solana-axelar-gateway"
 version = "0.1.6"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main#e736f3bb8c8c768a610c0824da3eacadcdc069ec"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main#cfc83c802560373bcef747ebb680cff6db2b9e4b"
 dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
@@ -9839,7 +9828,7 @@ dependencies = [
 [[package]]
 name = "solana-axelar-gateway-test-fixtures"
 version = "0.1.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main#e736f3bb8c8c768a610c0824da3eacadcdc069ec"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main#cfc83c802560373bcef747ebb680cff6db2b9e4b"
 dependencies = [
  "anchor-lang",
  "bincode",
@@ -9854,7 +9843,7 @@ dependencies = [
 [[package]]
 name = "solana-axelar-governance"
 version = "0.1.6"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main#e736f3bb8c8c768a610c0824da3eacadcdc069ec"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main#cfc83c802560373bcef747ebb680cff6db2b9e4b"
 dependencies = [
  "alloy-sol-types",
  "anchor-lang",
@@ -9866,14 +9855,12 @@ dependencies = [
 [[package]]
 name = "solana-axelar-its"
 version = "0.1.6"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main#e736f3bb8c8c768a610c0824da3eacadcdc069ec"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main#cfc83c802560373bcef747ebb680cff6db2b9e4b"
 dependencies = [
- "alloy-primitives",
  "anchor-lang",
  "anchor-spl",
  "bitflags 2.10.0",
  "bytemuck",
- "interchain-token-transfer-gmp",
  "mpl-token-metadata",
  "program-utils",
  "solana-axelar-gas-service",
@@ -9885,7 +9872,7 @@ dependencies = [
 [[package]]
 name = "solana-axelar-memo"
 version = "0.1.6"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main#e736f3bb8c8c768a610c0824da3eacadcdc069ec"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main#cfc83c802560373bcef747ebb680cff6db2b9e4b"
 dependencies = [
  "anchor-lang",
  "anchor-spl",
@@ -9897,7 +9884,7 @@ dependencies = [
 [[package]]
 name = "solana-axelar-operators"
 version = "0.1.6"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main#e736f3bb8c8c768a610c0824da3eacadcdc069ec"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main#cfc83c802560373bcef747ebb680cff6db2b9e4b"
 dependencies = [
  "anchor-lang",
  "program-utils",
@@ -9906,7 +9893,7 @@ dependencies = [
 [[package]]
 name = "solana-axelar-std"
 version = "0.1.4"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main#e736f3bb8c8c768a610c0824da3eacadcdc069ec"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main#cfc83c802560373bcef747ebb680cff6db2b9e4b"
 dependencies = [
  "alloy-primitives",
  "anchor-lang",
@@ -14974,18 +14961,7 @@ checksum = "ba3a3adc5c275d719af8cb4272ea1c4a6d668a777f37e115f6d11ddbc1c8e0e7"
 dependencies = [
  "bitflags 1.3.2",
  "core-foundation 0.9.4",
- "system-configuration-sys 0.5.0",
-]
-
-[[package]]
-name = "system-configuration"
-version = "0.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3c879d448e9d986b661742763247d3693ed13609438cf3d006f51f5368a5ba6b"
-dependencies = [
- "bitflags 2.10.0",
- "core-foundation 0.9.4",
- "system-configuration-sys 0.6.0",
+ "system-configuration-sys",
 ]
 
 [[package]]
@@ -14993,16 +14969,6 @@ name = "system-configuration-sys"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a75fb188eb626b924683e3b95e3a48e63551fcfb51949de2f06a9d91dbee93c9"
-dependencies = [
- "core-foundation-sys",
- "libc",
-]
-
-[[package]]
-name = "system-configuration-sys"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8e1d1b10ced5ca923a1fcb8d03e96b8d3268065d724548c0211415ff6ac6bac4"
 dependencies = [
  "core-foundation-sys",
  "libc",
@@ -15091,7 +15057,7 @@ dependencies = [
  "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.2",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -16407,7 +16373,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]

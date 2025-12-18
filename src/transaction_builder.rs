@@ -6,12 +6,13 @@ use crate::utils::{
     get_gateway_root_config_internal, get_governance_config_pda,
     get_governance_event_authority_pda, get_incoming_message_pda, get_its_event_authority_pda,
     get_its_root_pda, get_minter_roles_pda, get_mpl_token_metadata_account,
-    get_operator_proposal_pda, get_proposal_pda, get_token_manager_ata, get_token_manager_pda,
-    get_token_mint_pda, get_validate_message_signing_pda,
+    get_operator_proposal_pda, get_proposal_pda, get_token_manager_ata_with_program,
+    get_token_manager_pda, get_token_mint_pda, get_validate_message_signing_pda,
 };
 use crate::{
-    error::TransactionBuilderError, transaction_type::SolanaTransactionType,
-    utils::get_gateway_event_authority_pda,
+    error::TransactionBuilderError,
+    transaction_type::SolanaTransactionType,
+    utils::{extract_proposal_hash_from_payload, get_gateway_event_authority_pda},
 };
 use anchor_lang::InstructionData;
 use anchor_lang::ToAccountMetas;
@@ -21,12 +22,12 @@ use borsh::BorshDeserialize;
 use mpl_token_metadata;
 use relayer_core::utils::ThreadSafe;
 use solana_axelar_gateway::executable::ExecutablePayload;
+use solana_axelar_gateway::Message;
 use solana_axelar_its::encoding::HubMessage;
 use solana_axelar_its::instructions::{
     execute_deploy_interchain_token_extra_accounts, execute_interchain_transfer_extra_accounts,
     execute_link_token_extra_accounts,
 };
-use solana_axelar_std::Message;
 use solana_sdk::address_lookup_table::instruction::{create_lookup_table, extend_lookup_table};
 use solana_sdk::address_lookup_table::state::AddressLookupTable;
 use solana_sdk::instruction::{AccountMeta, Instruction};
@@ -58,23 +59,21 @@ pub trait TransactionBuilderTrait<IC: IncluderClientTrait>: ThreadSafe {
         message: &Message,
         payload: &[u8],
         destination_address: Pubkey,
-        existing_alt_pubkey: Option<Pubkey>,
-    ) -> Result<(Instruction, Option<ALTInfo>), TransactionBuilderError>;
+    ) -> Result<(Instruction, Vec<AccountMeta>), TransactionBuilderError>;
 
     async fn build_its_instruction(
         &self,
         message: &Message,
         payload: &[u8],
         incoming_message_pda: Pubkey,
-        existing_alt_pubkey: Option<Pubkey>,
-    ) -> Result<(Instruction, Option<ALTInfo>), TransactionBuilderError>;
+    ) -> Result<(Instruction, Vec<AccountMeta>), TransactionBuilderError>;
 
     async fn build_governance_instruction(
         &self,
         message: &Message,
         payload: &[u8],
         incoming_message_pda: Pubkey,
-    ) -> Result<(Instruction, Option<ALTInfo>), TransactionBuilderError>;
+    ) -> Result<(Instruction, Vec<AccountMeta>), TransactionBuilderError>;
 
     async fn build_executable_instruction(
         &self,
@@ -82,7 +81,7 @@ pub trait TransactionBuilderTrait<IC: IncluderClientTrait>: ThreadSafe {
         payload: &[u8],
         incoming_message_pda: Pubkey,
         destination_address: Pubkey,
-    ) -> Result<(Instruction, Option<ALTInfo>), TransactionBuilderError>;
+    ) -> Result<(Instruction, Vec<AccountMeta>), TransactionBuilderError>;
 
     async fn build_lookup_table_instructions(
         &self,
@@ -138,7 +137,7 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
 
         let unit_price = self
             .gas_calculator
-            .compute_unit_price(ixs, 75.0)
+            .compute_unit_price(ixs, 75)
             .await
             .map_err(|e| TransactionBuilderError::ClientError(e.to_string()))?;
 
@@ -166,7 +165,7 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
             recent_hash,
         )
         .await
-        .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+        .map_err(|e| TransactionBuilderError::CreateTransactionError(e.to_string()))?;
 
         // Compute the actual compute budget required for the transaction
         let compute_budget = self
@@ -187,7 +186,7 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
             recent_hash,
         )
         .await
-        .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+        .map_err(|e| TransactionBuilderError::CreateTransactionError(e.to_string()))?;
 
         let final_cost = calculate_total_cost_lamports(&final_transaction, compute_budget)
             .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
@@ -200,19 +199,14 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
         message: &Message,
         payload: &[u8],
         destination_address: Pubkey,
-        existing_alt_pubkey: Option<Pubkey>,
-    ) -> Result<(Instruction, Option<ALTInfo>), TransactionBuilderError> {
-        let (incoming_message_pda, _) = get_incoming_message_pda(&message.command_id());
+    ) -> Result<(Instruction, Vec<AccountMeta>), TransactionBuilderError> {
+        let (incoming_message_pda, _) = get_incoming_message_pda(&message.command_id())
+            .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
 
         match destination_address {
             x if x == solana_axelar_its::ID => {
-                self.build_its_instruction(
-                    message,
-                    payload,
-                    incoming_message_pda,
-                    existing_alt_pubkey,
-                )
-                .await
+                self.build_its_instruction(message, payload, incoming_message_pda)
+                    .await
             }
             x if x == solana_axelar_governance::ID => {
                 self.build_governance_instruction(message, payload, incoming_message_pda)
@@ -235,8 +229,7 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
         message: &Message,
         payload: &[u8],
         incoming_message_pda: Pubkey,
-        existing_alt_pubkey: Option<Pubkey>,
-    ) -> Result<(Instruction, Option<ALTInfo>), TransactionBuilderError> {
+    ) -> Result<(Instruction, Vec<AccountMeta>), TransactionBuilderError> {
         let gmp_decoded_payload = HubMessage::deserialize(&mut payload.to_vec().as_slice())
             .map_err(|e| TransactionBuilderError::PayloadDecodeError(e.to_string()))?;
 
@@ -258,9 +251,12 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
         };
 
         let (signing_pda, _) =
-            get_validate_message_signing_pda(&message.command_id(), &solana_axelar_its::ID);
-        let (event_authority, _) = get_gateway_event_authority_pda();
-        let (gateway_root_pda, _) = get_gateway_root_config_internal();
+            get_validate_message_signing_pda(&message.command_id(), &solana_axelar_its::ID)
+                .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+        let (event_authority, _) = get_gateway_event_authority_pda()
+            .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+        let (gateway_root_pda, _) = get_gateway_root_config_internal()
+            .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
 
         let executable = solana_axelar_its::accounts::AxelarExecuteAccounts {
             incoming_message_pda,
@@ -271,20 +267,59 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
         };
 
         let (its_root_pda, _) = get_its_root_pda();
-        let (token_manager_pda, _) = get_token_manager_pda(&its_root_pda, &token_id);
-        let (token_mint, _) = get_token_mint_pda(&its_root_pda, &token_id);
-        let (token_manager_ata, _) = get_token_manager_ata(&token_manager_pda, &token_mint);
+        let (token_manager_pda, _) = get_token_manager_pda(&its_root_pda, &token_id)
+            .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+
+        let (token_mint, token_program) = match &gmp_decoded_payload {
+            HubMessage::ReceiveFromHub {
+                message: solana_axelar_its::encoding::Message::LinkToken(ref link),
+                ..
+            } => {
+                let mint_pubkey = Pubkey::try_from(link.destination_token_address.as_slice())
+                    .map_err(|e| {
+                        TransactionBuilderError::PayloadDecodeError(format!(
+                            "Invalid destination_token_address: {}",
+                            e,
+                        ))
+                    })?;
+
+                let token_program_id =
+                    match self.includer_client.get_account_owner(&mint_pubkey).await {
+                        Ok(owner) => {
+                            if owner == spl_token_2022::ID {
+                                spl_token_2022::ID
+                            } else {
+                                anchor_spl::token::ID
+                            }
+                        }
+                        Err(_) => anchor_spl::token::ID,
+                    };
+
+                (mint_pubkey, token_program_id)
+            }
+            _ => (
+                get_token_mint_pda(&its_root_pda, &token_id)
+                    .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?
+                    .0,
+                spl_token_2022::ID,
+            ),
+        };
+
+        let (token_manager_ata, _) =
+            get_token_manager_ata_with_program(&token_manager_pda, &token_mint, &token_program);
 
         let mut accounts = solana_axelar_its::accounts::Execute {
             executable,
             payer: self.keypair.pubkey(),
             system_program: solana_program::system_program::id(),
-            event_authority: get_its_event_authority_pda().0,
+            event_authority: get_its_event_authority_pda()
+                .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?
+                .0,
             its_root_pda,
             token_manager_pda,
             token_mint,
             token_manager_ata,
-            token_program: spl_token_2022::ID,
+            token_program,
             associated_token_program: spl_associated_token_account::ID,
             program: solana_axelar_its::ID,
         }
@@ -300,7 +335,8 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
                             TransactionBuilderError::PayloadDecodeError(e.to_string())
                         })?;
                     let (destination_ata, _) =
-                        get_destination_ata(&destination_address, &token_mint);
+                        get_destination_ata(&destination_address, &token_mint)
+                            .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
                     accounts.extend(execute_interchain_transfer_extra_accounts(
                         destination_address,
                         destination_ata,
@@ -344,7 +380,8 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
                         minter.map(|minter| get_minter_roles_pda(&token_manager_pda, &minter).0);
 
                     let (mpl_token_metadata_account, _) =
-                        get_mpl_token_metadata_account(&token_mint);
+                        get_mpl_token_metadata_account(&token_mint)
+                            .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
 
                     accounts.extend(execute_deploy_interchain_token_extra_accounts(
                         solana_program::sysvar::instructions::ID,
@@ -384,46 +421,13 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
         }
         .data();
 
-        let alt_info = if let Some(existing_alt_pubkey) = existing_alt_pubkey {
-            // Use existing ALT pubkey, no need to create new ALT transaction
-            // Addresses will be fetched from chain in build() method
-            debug!(
-                "Using existing ALT pubkey from Redis: {}",
-                existing_alt_pubkey
-            );
-            Some(ALTInfo::new(None, None, Some(existing_alt_pubkey), None))
-        } else {
-            // Create new ALT
-            let recent_slot = self
-                .includer_client
-                .get_slot()
-                .await
-                .map_err(|e| TransactionBuilderError::ClientError(e.to_string()))?;
-
-            let alt_accounts: Vec<Pubkey> = accounts.iter().map(|acc| acc.pubkey).collect();
-
-            let (alt_ix_create, alt_ix_extend, alt_pubkey, authority_keypair_str) = self
-                .build_lookup_table_instructions(recent_slot, &accounts)
-                .await
-                .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
-            Some(
-                ALTInfo::new(
-                    Some(alt_ix_create),
-                    Some(alt_ix_extend),
-                    Some(alt_pubkey),
-                    Some(authority_keypair_str),
-                )
-                .with_addresses(alt_accounts),
-            )
-        };
-
         Ok((
             Instruction {
                 program_id: solana_axelar_its::ID,
-                accounts,
+                accounts: accounts.clone(),
                 data,
             },
-            alt_info,
+            accounts,
         ))
     }
 
@@ -432,11 +436,14 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
         message: &Message,
         payload: &[u8],
         incoming_message_pda: Pubkey,
-    ) -> Result<(Instruction, Option<ALTInfo>), TransactionBuilderError> {
+    ) -> Result<(Instruction, Vec<AccountMeta>), TransactionBuilderError> {
         let (signing_pda, _) =
-            get_validate_message_signing_pda(&message.command_id(), &solana_axelar_gateway::ID);
-        let (event_authority, _) = get_gateway_event_authority_pda();
-        let (gateway_root_pda, _) = get_gateway_root_config_internal();
+            get_validate_message_signing_pda(&message.command_id(), &solana_axelar_governance::ID)
+                .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+        let (event_authority, _) = get_gateway_event_authority_pda()
+            .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+        let (gateway_root_pda, _) = get_gateway_root_config_internal()
+            .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
         let executable = solana_axelar_governance::accounts::AxelarExecuteAccounts {
             incoming_message_pda,
             signing_pda,
@@ -445,10 +452,17 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
             gateway_root_pda,
         };
 
-        let (governance_config, _) = get_governance_config_pda();
-        let (governance_event_authority, _) = get_governance_event_authority_pda();
-        let (proposal_pda, _) = get_proposal_pda(&message.command_id());
-        let (operator_proposal_pda, _) = get_operator_proposal_pda(&message.command_id());
+        let (governance_config, _) = get_governance_config_pda()
+            .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+        let (governance_event_authority, _) = get_governance_event_authority_pda()
+            .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+
+        let proposal_hash = extract_proposal_hash_from_payload(payload)
+            .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+        let (proposal_pda, _) = get_proposal_pda(&proposal_hash)
+            .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+        let (operator_proposal_pda, _) = get_operator_proposal_pda(&proposal_hash)
+            .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
 
         let accounts = solana_axelar_governance::accounts::ProcessGmp {
             executable,
@@ -474,7 +488,7 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
                 accounts,
                 data,
             },
-            None,
+            vec![], // we do not want to create an ALT for governance instructions
         ))
     }
 
@@ -484,7 +498,7 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
         payload: &[u8],
         incoming_message_pda: Pubkey,
         destination_address: Pubkey,
-    ) -> Result<(Instruction, Option<ALTInfo>), TransactionBuilderError> {
+    ) -> Result<(Instruction, Vec<AccountMeta>), TransactionBuilderError> {
         let decoded_payload = ExecutablePayload::decode(payload)
             .map_err(|e| TransactionBuilderError::PayloadDecodeError(e.to_string()))?; // return custom error to send cannot_execute_message
 
@@ -499,9 +513,12 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
         }
 
         let (signing_pda, _) =
-            get_validate_message_signing_pda(&message.command_id(), &destination_address);
-        let (event_authority, _) = get_gateway_event_authority_pda();
-        let (gateway_root_pda, _) = get_gateway_root_config_internal();
+            get_validate_message_signing_pda(&message.command_id(), &destination_address)
+                .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+        let (event_authority, _) = get_gateway_event_authority_pda()
+            .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+        let (gateway_root_pda, _) = get_gateway_root_config_internal()
+            .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
 
         let mut accounts = solana_axelar_gateway::executable::helpers::AxelarExecuteAccounts {
             incoming_message_pda,
@@ -527,7 +544,7 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
                 accounts,
                 data,
             },
-            None,
+            vec![], // we do not want to create an ALT for executable instructions
         ))
     }
 
@@ -571,14 +588,16 @@ mod tests {
     use crate::includer_client::MockIncluderClientTrait;
     use crate::transaction_builder::{TransactionBuilder, TransactionBuilderTrait};
     use crate::transaction_type::SolanaTransactionType;
+    use alloy_sol_types::SolValue;
     use anchor_lang::prelude::AccountMeta;
     use borsh::BorshSerialize;
     use solana_axelar_gateway::executable::ExecutablePayload;
     use solana_axelar_gateway::payload::EncodingScheme;
     use solana_axelar_governance;
+    use solana_axelar_governance::ExecuteProposalCallData;
     use solana_axelar_its;
     use solana_axelar_its::encoding::{HubMessage, InterchainTransfer, Message as ItsMessage};
-    use solana_axelar_std::{CrossChainId, Message};
+    use solana_axelar_std::{CrossChainId, Message, U256};
     use solana_sdk::hash::Hash;
     use solana_sdk::instruction::Instruction;
     use solana_sdk::message::VersionedMessage;
@@ -628,11 +647,7 @@ mod tests {
                 Box::pin(async move { Ok(hash) })
             });
 
-        let authority_keypair = Keypair::new();
-        let authority_keypair_str = authority_keypair.to_base58_string();
-
-        let alt_info = ALTInfo::new(None, None, Some(alt_pubkey), Some(authority_keypair_str))
-            .with_addresses(alt_addresses);
+        let alt_info = ALTInfo::new(Some(alt_pubkey)).with_addresses(alt_addresses);
 
         let builder =
             TransactionBuilder::new(Arc::clone(&keypair), mock_gas, Arc::new(mock_client));
@@ -781,7 +796,7 @@ mod tests {
     async fn test_build_execute_instruction_with_three_addresses() {
         let keypair = Arc::new(Keypair::new());
         let mock_gas = MockGasCalculatorTrait::new();
-        let mut mock_client = MockIncluderClientTrait::new();
+        let mock_client = MockIncluderClientTrait::new();
 
         let message = Message {
             cc_id: CrossChainId {
@@ -794,18 +809,11 @@ mod tests {
             payload_hash: [0u8; 32],
         };
 
-        mock_client
-            .expect_get_slot()
-            .times(1)
-            .returning(|| Box::pin(async { Ok(1000u64) }));
-
         let builder =
             TransactionBuilder::new(Arc::clone(&keypair), mock_gas, Arc::new(mock_client));
 
-        // ITS address should return Some(ALTInfo)
         let its_destination = solana_axelar_its::ID;
 
-        // Use a valid Pubkey for destination address (32 bytes)
         let destination_pubkey = Pubkey::new_unique();
         let destination_address_bytes = destination_pubkey.to_bytes().to_vec();
         let token_id = [1u8; 32];
@@ -831,49 +839,39 @@ mod tests {
             .try_to_vec()
             .expect("Failed to serialize HubMessage");
 
-        let (its_instruction, its_alt_info) = builder
-            .build_execute_instruction(&message, &its_payload, its_destination, None)
+        let (its_instruction, its_accounts) = builder
+            .build_execute_instruction(&message, &its_payload, its_destination)
             .await
             .expect("ITS build_execute_instruction should succeed");
 
         assert_eq!(its_instruction.program_id, solana_axelar_its::ID);
-        assert!(its_alt_info.is_some(), "ITS should return Some(ALTInfo)");
-        let its_alt = its_alt_info.unwrap();
+        // ITS should return non-empty accounts for ALT creation
         assert!(
-            its_alt.alt_pubkey.is_some(),
-            "ALTInfo should have alt_pubkey"
+            !its_accounts.is_empty(),
+            "ITS should return accounts for ALT creation"
         );
-        assert!(
-            its_alt.alt_ix_create.is_some(),
-            "ALTInfo should have alt_ix_create"
-        );
-        assert!(
-            its_alt.alt_ix_extend.is_some(),
-            "ALTInfo should have alt_ix_extend"
-        );
-        assert!(
-            its_alt.alt_addresses.is_some(),
-            "ALTInfo should have alt_addresses"
-        );
-        assert!(
-            its_alt.authority_keypair_str.is_some(),
-            "ALTInfo should have authority_keypair_str from build_lookup_table_instructions"
-        );
-        // Verify authority_keypair_str is a valid base58 string and can be parsed back to a keypair
-        // This ensures build_lookup_table_instructions correctly returns (Instruction, Instruction, Pubkey, String)
-        let authority_str = its_alt.authority_keypair_str.unwrap();
-        assert!(
-            !authority_str.is_empty(),
-            "authority_keypair_str should not be empty"
-        );
-        let _authority_keypair = Keypair::from_base58_string(&authority_str);
 
-        // Governance address should return None
+        // Governance address should return empty accounts (no ALT)
         let governance_destination = solana_axelar_governance::ID;
-        let governance_payload = b"governance-payload-data";
 
-        let (governance_instruction, governance_alt_info) = builder
-            .build_execute_instruction(&message, governance_payload, governance_destination, None)
+        // Create a valid governance payload
+        let call_data = ExecuteProposalCallData {
+            solana_accounts: vec![],
+            solana_native_value_receiver_account: None,
+            call_data: vec![1, 2, 3], // Simple instruction data
+        };
+        let target_bytes: [u8; 32] = Pubkey::new_unique().to_bytes();
+        let gmp_payload = governance_gmp::GovernanceCommandPayload {
+            command: governance_gmp::GovernanceCommand::ScheduleTimeLockProposal,
+            target: target_bytes.to_vec().into(),
+            call_data: borsh::to_vec(&call_data).unwrap().into(),
+            native_value: U256::from(0u64).into(),
+            eta: U256::from(0u64).into(),
+        };
+        let governance_payload = gmp_payload.abi_encode();
+
+        let (governance_instruction, governance_accounts) = builder
+            .build_execute_instruction(&message, &governance_payload, governance_destination)
             .await
             .expect("Governance build_execute_instruction should succeed");
 
@@ -882,11 +880,10 @@ mod tests {
             solana_axelar_governance::ID
         );
         assert!(
-            governance_alt_info.is_none(),
-            "Governance should return None for ALTInfo"
+            governance_accounts.is_empty(),
+            "Governance should return empty accounts (no ALT)"
         );
 
-        // Arbitrary program address should return None
         let arbitrary_destination = Pubkey::new_unique();
 
         let executable_payload = ExecutablePayload::new::<AccountMeta>(
@@ -896,20 +893,15 @@ mod tests {
         );
         let executable_payload_bytes = executable_payload.encode().unwrap();
 
-        let (arbitrary_instruction, arbitrary_alt_info) = builder
-            .build_execute_instruction(
-                &message,
-                &executable_payload_bytes,
-                arbitrary_destination,
-                None,
-            )
+        let (arbitrary_instruction, arbitrary_accounts) = builder
+            .build_execute_instruction(&message, &executable_payload_bytes, arbitrary_destination)
             .await
             .expect("Arbitrary program build_execute_instruction should succeed");
 
         assert_eq!(arbitrary_instruction.program_id, arbitrary_destination);
         assert!(
-            arbitrary_alt_info.is_none(),
-            "Arbitrary program should return None for ALTInfo"
+            arbitrary_accounts.is_empty(),
+            "Arbitrary program should return empty accounts (no ALT)"
         );
     }
 
@@ -917,7 +909,7 @@ mod tests {
     async fn test_build_its_instruction_interchain_transfer_with_executable_payload() {
         let keypair = Arc::new(Keypair::new());
         let mock_gas = MockGasCalculatorTrait::new();
-        let mut mock_client = MockIncluderClientTrait::new();
+        let mock_client = MockIncluderClientTrait::new();
 
         let message = Message {
             cc_id: CrossChainId {
@@ -930,11 +922,6 @@ mod tests {
             payload_hash: [0u8; 32],
         };
 
-        mock_client
-            .expect_get_slot()
-            .times(1)
-            .returning(|| Box::pin(async { Ok(1000u64) }));
-
         let builder =
             TransactionBuilder::new(Arc::clone(&keypair), mock_gas, Arc::new(mock_client));
 
@@ -943,7 +930,6 @@ mod tests {
         let destination_address_bytes = destination_pubkey.to_bytes().to_vec();
         let token_id = [2u8; 32];
 
-        // Create an ExecutablePayload with some accounts
         let gmp_account1 = Pubkey::new_unique();
         let gmp_account2 = Pubkey::new_unique();
         let executable_payload = ExecutablePayload::new::<AccountMeta>(
@@ -979,18 +965,15 @@ mod tests {
             .try_to_vec()
             .expect("Failed to serialize HubMessage");
 
-        let (its_instruction, its_alt_info) = builder
-            .build_execute_instruction(&message, &its_payload, its_destination, None)
+        let (its_instruction, its_accounts) = builder
+            .build_execute_instruction(&message, &its_payload, its_destination)
             .await
             .expect("ITS build_execute_instruction with ExecutablePayload should succeed");
 
         assert_eq!(its_instruction.program_id, solana_axelar_its::ID);
 
-        // Verify that the accounts from ExecutablePayload were added
-        // The accounts should include: ITS accounts + transfer accounts + ExecutablePayload accounts
         let instruction_accounts = &its_instruction.accounts;
 
-        // Check that gmp_account1 and gmp_account2 are in the accounts list
         let account_pubkeys: Vec<Pubkey> =
             instruction_accounts.iter().map(|acc| acc.pubkey).collect();
         assert!(
@@ -1002,12 +985,10 @@ mod tests {
             "gmp_account2 should be in the instruction accounts"
         );
 
-        // Verify ALTInfo is present
-        assert!(its_alt_info.is_some(), "ITS should return Some(ALTInfo)");
-        let its_alt = its_alt_info.unwrap();
+        // Verify accounts are returned for ALT creation
         assert!(
-            its_alt.alt_pubkey.is_some(),
-            "ALTInfo should have alt_pubkey"
+            !its_accounts.is_empty(),
+            "ITS should return accounts for ALT"
         );
     }
 
@@ -1062,7 +1043,7 @@ mod tests {
 
         // This should fail with PayloadDecodeError because the data field contains malformed bytes
         let result = builder
-            .build_execute_instruction(&message, &its_payload, its_destination, None)
+            .build_execute_instruction(&message, &its_payload, its_destination)
             .await;
 
         assert!(
@@ -1145,7 +1126,7 @@ mod tests {
 
         // Should fail with PayloadDecodeError when signer accounts are detected
         let result = builder
-            .build_execute_instruction(&message, &its_payload, its_destination, None)
+            .build_execute_instruction(&message, &its_payload, its_destination)
             .await;
 
         assert!(
