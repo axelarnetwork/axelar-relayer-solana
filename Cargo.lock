@@ -232,7 +232,20 @@ dependencies = [
  "solana-hash 2.3.0",
  "solana-pubkey",
  "solana-sha256-hasher",
- "solana-svm-feature-set",
+ "solana-svm-feature-set 2.3.13",
+]
+
+[[package]]
+name = "agave-feature-set"
+version = "2.3.14"
+source = "git+https://github.com/Deiadara/agave?rev=ddeb0d1#ddeb0d19d2acaf456bd152ddbe1e1acc5aa0923d"
+dependencies = [
+ "ahash 0.8.12",
+ "solana-epoch-schedule",
+ "solana-hash 2.3.0",
+ "solana-pubkey",
+ "solana-sha256-hasher",
+ "solana-svm-feature-set 2.3.14",
 ]
 
 [[package]]
@@ -245,7 +258,7 @@ dependencies = [
  "solana-clock",
  "solana-signature",
  "solana-transaction",
- "solana-transaction-status",
+ "solana-transaction-status 2.3.13",
  "thiserror 2.0.17",
 ]
 
@@ -268,7 +281,7 @@ version = "2.3.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d60d73657792af7f2464e9181d13c3979e94bb09841d9ffa014eef4ef0492b77"
 dependencies = [
- "agave-feature-set",
+ "agave-feature-set 2.3.13",
  "bincode",
  "digest 0.10.7",
  "ed25519-dalek 1.0.1",
@@ -290,7 +303,17 @@ version = "2.3.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8289c8a8a2ef5aa10ce49a070f360f4e035ee3410b8d8f3580fb39d8cf042581"
 dependencies = [
- "agave-feature-set",
+ "agave-feature-set 2.3.13",
+ "solana-pubkey",
+ "solana-sdk-ids",
+]
+
+[[package]]
+name = "agave-reserved-account-keys"
+version = "2.3.14"
+source = "git+https://github.com/Deiadara/agave?rev=ddeb0d1#ddeb0d19d2acaf456bd152ddbe1e1acc5aa0923d"
+dependencies = [
+ "agave-feature-set 2.3.14",
  "solana-pubkey",
  "solana-sdk-ids",
 ]
@@ -1489,7 +1512,7 @@ dependencies = [
 [[package]]
 name = "axelar-core-std"
 version = "1.0.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#9f8718a8c2b54d66a5185c9b696381630c91f58f"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#d8b8449292d30e44059d77d4171758e7a7b803d1"
 dependencies = [
  "axelar-wasm-std",
  "client",
@@ -1505,7 +1528,7 @@ dependencies = [
 [[package]]
 name = "axelar-wasm-std"
 version = "1.0.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#9f8718a8c2b54d66a5185c9b696381630c91f58f"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#d8b8449292d30e44059d77d4171758e7a7b803d1"
 dependencies = [
  "alloy-primitives",
  "axelar-wasm-std-derive",
@@ -1541,7 +1564,7 @@ dependencies = [
 [[package]]
 name = "axelar-wasm-std-derive"
 version = "1.0.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#9f8718a8c2b54d66a5185c9b696381630c91f58f"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#d8b8449292d30e44059d77d4171758e7a7b803d1"
 dependencies = [
  "cosmwasm-std",
  "error-stack 0.4.1",
@@ -1558,7 +1581,7 @@ dependencies = [
 [[package]]
 name = "axelarnet-gateway"
 version = "1.0.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#9f8718a8c2b54d66a5185c9b696381630c91f58f"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#d8b8449292d30e44059d77d4171758e7a7b803d1"
 dependencies = [
  "axelar-core-std",
  "axelar-wasm-std",
@@ -2079,9 +2102,9 @@ dependencies = [
 
 [[package]]
 name = "bumpalo"
-version = "3.19.0"
+version = "3.19.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "46c5e41b57b8bba42a04676d81cb89e9ee8e859a1a66f80a5a72e1cb76b34d43"
+checksum = "5dd9dc738b7a8311c7ade152424974d8115f2cdad61e8dab8dac9f2362298510"
 
 [[package]]
 name = "bv"
@@ -2205,9 +2228,9 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.2.49"
+version = "1.2.50"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "90583009037521a116abf44494efecd645ba48b6622457080f080b85544e2215"
+checksum = "9f50d563227a1c37cc0a263f64eca3334388c01c5e4c4861a9def205c614383c"
 dependencies = [
  "find-msvc-tools",
  "jobserver",
@@ -2320,7 +2343,7 @@ dependencies = [
 [[package]]
 name = "client"
 version = "1.0.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#9f8718a8c2b54d66a5185c9b696381630c91f58f"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#d8b8449292d30e44059d77d4171758e7a7b803d1"
 dependencies = [
  "cosmwasm-std",
  "error-stack 0.4.1",
@@ -2347,7 +2370,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4ded7ecc2f63a10f80221f4cfe2bfb29aa7604db70c31745953f32e346683976"
 dependencies = [
  "chrono",
- "reqwest 0.12.25",
+ "reqwest 0.12.26",
  "serde",
  "serde_json",
  "tokio",
@@ -4196,7 +4219,7 @@ dependencies = [
 [[package]]
 name = "governance-gmp"
 version = "0.1.3"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main#cfc83c802560373bcef747ebb680cff6db2b9e4b"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main#7c3f1bd02c6cf8af5a3e482e33a84569335d0390"
 dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
@@ -5062,7 +5085,7 @@ dependencies = [
 [[package]]
 name = "interchain-token-service"
 version = "1.3.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#9f8718a8c2b54d66a5185c9b696381630c91f58f"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#d8b8449292d30e44059d77d4171758e7a7b803d1"
 dependencies = [
  "axelar-core-std",
  "axelar-wasm-std",
@@ -5092,7 +5115,7 @@ dependencies = [
 [[package]]
 name = "interchain-token-service-std"
 version = "1.0.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#9f8718a8c2b54d66a5185c9b696381630c91f58f"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#d8b8449292d30e44059d77d4171758e7a7b803d1"
 dependencies = [
  "axelar-wasm-std",
  "client",
@@ -5111,7 +5134,7 @@ dependencies = [
 [[package]]
 name = "into-inner-derive"
 version = "1.0.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#9f8718a8c2b54d66a5185c9b696381630c91f58f"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#d8b8449292d30e44059d77d4171758e7a7b803d1"
 dependencies = [
  "error-stack 0.4.1",
  "quote",
@@ -5212,7 +5235,7 @@ checksum = "4a5f13b858c8d314ee3e8f639011f7ccefe71f97f96e50151fb991f267928e2c"
 [[package]]
 name = "its-msg-translator-api"
 version = "1.0.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#9f8718a8c2b54d66a5185c9b696381630c91f58f"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#d8b8449292d30e44059d77d4171758e7a7b803d1"
 dependencies = [
  "client",
  "cosmwasm-schema",
@@ -5568,13 +5591,13 @@ checksum = "f9fbbcab51052fe104eb5e5d351cf728d30a5be1fe14d9be8a3b097481fb97de"
 
 [[package]]
 name = "libredox"
-version = "0.1.10"
+version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "416f7e718bdb06000964960ffa43b4335ad4012ae8b99060261aa4a8088d5ccb"
+checksum = "df15f6eac291ed1cf25865b1ee60399f57e7c227e7f51bdbd4c5270396a9ed50"
 dependencies = [
  "bitflags 2.10.0",
  "libc",
- "redox_syscall 0.5.18",
+ "redox_syscall 0.6.0",
 ]
 
 [[package]]
@@ -6014,7 +6037,7 @@ version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c01cfd03829e0c7c5a0decb92cdc2963501268fb48851eea03f9017bd0eae83"
 dependencies = [
- "agave-feature-set",
+ "agave-feature-set 2.3.13",
  "agave-precompiles",
  "bincode",
  "mollusk-svm-error",
@@ -6045,7 +6068,7 @@ dependencies = [
  "solana-sysvar",
  "solana-sysvar-id",
  "solana-timings",
- "solana-transaction-context",
+ "solana-transaction-context 2.3.13",
 ]
 
 [[package]]
@@ -6068,7 +6091,7 @@ dependencies = [
  "solana-account",
  "solana-instruction",
  "solana-pubkey",
- "solana-transaction-context",
+ "solana-transaction-context 2.3.13",
 ]
 
 [[package]]
@@ -6100,7 +6123,7 @@ dependencies = [
 [[package]]
 name = "msgs-derive"
 version = "1.0.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#9f8718a8c2b54d66a5185c9b696381630c91f58f"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#d8b8449292d30e44059d77d4171758e7a7b803d1"
 dependencies = [
  "axelar-wasm-std",
  "cosmwasm-schema",
@@ -6124,7 +6147,7 @@ checksum = "e5ce46fe64a9d73be07dcbe690a38ce1b293be448fd8ce1e6c1b8062c9f72c6a"
 [[package]]
 name = "multisig"
 version = "2.4.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#9f8718a8c2b54d66a5185c9b696381630c91f58f"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#d8b8449292d30e44059d77d4171758e7a7b803d1"
 dependencies = [
  "axelar-wasm-std",
  "client",
@@ -6760,7 +6783,7 @@ dependencies = [
  "bytes",
  "http 1.4.0",
  "opentelemetry 0.29.1",
- "reqwest 0.12.25",
+ "reqwest 0.12.26",
  "tracing",
 ]
 
@@ -6777,7 +6800,7 @@ dependencies = [
  "opentelemetry-proto",
  "opentelemetry_sdk",
  "prost 0.13.5",
- "reqwest 0.12.25",
+ "reqwest 0.12.26",
  "thiserror 2.0.17",
  "tokio",
  "tonic 0.12.3",
@@ -6816,9 +6839,9 @@ dependencies = [
 
 [[package]]
 name = "os_info"
-version = "3.13.0"
+version = "3.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c39b5918402d564846d5aba164c09a66cc88d232179dfd3e3c619a25a268392"
+checksum = "e4022a17595a00d6a369236fdae483f0de7f0a339960a53118b818238e132224"
 dependencies = [
  "android_system_properties",
  "log",
@@ -7462,7 +7485,7 @@ dependencies = [
 [[package]]
 name = "program-utils"
 version = "0.1.4"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main#cfc83c802560373bcef747ebb680cff6db2b9e4b"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main#7c3f1bd02c6cf8af5a3e482e33a84569335d0390"
 dependencies = [
  "mpl-token-metadata",
  "solana-program",
@@ -7953,6 +7976,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "redox_syscall"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ec96166dafa0886eb81fe1c0a388bece180fbef2135f97c1e2cf8302e74b43b5"
+dependencies = [
+ "bitflags 2.10.0",
+]
+
+[[package]]
 name = "redox_users"
 version = "0.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8059,7 +8091,7 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "redis",
- "reqwest 0.12.25",
+ "reqwest 0.12.26",
  "reqwest-middleware",
  "reqwest-retry",
  "reqwest-tracing",
@@ -8096,7 +8128,7 @@ dependencies = [
 [[package]]
 name = "report"
 version = "1.0.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#9f8718a8c2b54d66a5185c9b696381630c91f58f"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#d8b8449292d30e44059d77d4171758e7a7b803d1"
 dependencies = [
  "error-stack 0.4.1",
  "eyre",
@@ -8152,9 +8184,9 @@ dependencies = [
 
 [[package]]
 name = "reqwest"
-version = "0.12.25"
+version = "0.12.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6eff9328d40131d43bd911d42d79eb6a47312002a4daefc9e37f17e74a7701a"
+checksum = "3b4c14b2d9afca6a60277086b0cc6a6ae0b568f6f7916c943a8cdc79f8be240f"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -8205,7 +8237,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "http 1.4.0",
- "reqwest 0.12.25",
+ "reqwest 0.12.26",
  "serde",
  "thiserror 1.0.69",
  "tower-service",
@@ -8224,7 +8256,7 @@ dependencies = [
  "http 1.4.0",
  "hyper 1.8.1",
  "parking_lot 0.11.2",
- "reqwest 0.12.25",
+ "reqwest 0.12.26",
  "reqwest-middleware",
  "retry-policies",
  "thiserror 1.0.69",
@@ -8245,7 +8277,7 @@ dependencies = [
  "http 1.4.0",
  "matchit 0.8.6",
  "opentelemetry 0.29.1",
- "reqwest 0.12.25",
+ "reqwest 0.12.26",
  "reqwest-middleware",
  "tracing",
  "tracing-opentelemetry 0.30.0",
@@ -8263,7 +8295,7 @@ dependencies = [
 [[package]]
 name = "rewards"
 version = "1.2.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#9f8718a8c2b54d66a5185c9b696381630c91f58f"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#d8b8449292d30e44059d77d4171758e7a7b803d1"
 dependencies = [
  "axelar-wasm-std",
  "client",
@@ -8396,7 +8428,7 @@ dependencies = [
 [[package]]
 name = "router-api"
 version = "1.0.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#9f8718a8c2b54d66a5185c9b696381630c91f58f"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#d8b8449292d30e44059d77d4171758e7a7b803d1"
 dependencies = [
  "axelar-wasm-std",
  "client",
@@ -8691,9 +8723,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-pki-types"
-version = "1.13.1"
+version = "1.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "708c0f9d5f54ba0272468c1d306a52c495b31fa155e91bc25371e6df7996908c"
+checksum = "21e6f2ab2928ca4291b86736a8bd920a277a399bba1589409d72154ff87c1282"
 dependencies = [
  "web-time",
  "zeroize",
@@ -8970,7 +9002,7 @@ checksum = "989425268ab5c011e06400187eed6c298272f8ef913e49fcadc3fda788b45030"
 dependencies = [
  "httpdate",
  "native-tls",
- "reqwest 0.12.25",
+ "reqwest 0.12.26",
  "sentry-actix",
  "sentry-backtrace",
  "sentry-contexts",
@@ -9396,7 +9428,7 @@ dependencies = [
 [[package]]
 name = "signature-verifier-api"
 version = "1.0.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#9f8718a8c2b54d66a5185c9b696381630c91f58f"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#d8b8449292d30e44059d77d4171758e7a7b803d1"
 dependencies = [
  "axelar-wasm-std",
  "client",
@@ -9579,7 +9611,7 @@ dependencies = [
  "redis",
  "regex",
  "relayer-core",
- "reqwest 0.12.25",
+ "reqwest 0.12.26",
  "serde",
  "serde_json",
  "solana-axelar-gas-service",
@@ -9602,8 +9634,8 @@ dependencies = [
  "solana-system-interface",
  "solana-test-validator",
  "solana-transaction-parser",
- "solana-transaction-status",
- "solana-transaction-status-client-types",
+ "solana-transaction-status 2.3.13",
+ "solana-transaction-status-client-types 2.3.13",
  "sqlx",
  "statrs",
  "testcontainers",
@@ -9649,7 +9681,49 @@ dependencies = [
  "serde_derive",
  "serde_json",
  "solana-account",
- "solana-account-decoder-client-types",
+ "solana-account-decoder-client-types 2.3.13",
+ "solana-address-lookup-table-interface",
+ "solana-clock",
+ "solana-config-program-client",
+ "solana-epoch-schedule",
+ "solana-fee-calculator",
+ "solana-instruction",
+ "solana-loader-v3-interface 5.0.0",
+ "solana-nonce",
+ "solana-program-option",
+ "solana-program-pack",
+ "solana-pubkey",
+ "solana-rent",
+ "solana-sdk-ids",
+ "solana-slot-hashes",
+ "solana-slot-history",
+ "solana-stake-interface",
+ "solana-sysvar",
+ "solana-vote-interface",
+ "spl-generic-token",
+ "spl-token 8.0.0",
+ "spl-token-2022 8.0.1",
+ "spl-token-group-interface 0.6.0",
+ "spl-token-metadata-interface 0.7.0",
+ "thiserror 2.0.17",
+ "zstd",
+]
+
+[[package]]
+name = "solana-account-decoder"
+version = "2.3.14"
+source = "git+https://github.com/Deiadara/agave?rev=ddeb0d1#ddeb0d19d2acaf456bd152ddbe1e1acc5aa0923d"
+dependencies = [
+ "Inflector",
+ "base64 0.22.1",
+ "bincode",
+ "bs58",
+ "bv",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "solana-account",
+ "solana-account-decoder-client-types 2.3.14",
  "solana-address-lookup-table-interface",
  "solana-clock",
  "solana-config-program-client",
@@ -9682,6 +9756,21 @@ name = "solana-account-decoder-client-types"
 version = "2.3.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5519e8343325b707f17fbed54fcefb325131b692506d0af9e08a539d15e4f8cf"
+dependencies = [
+ "base64 0.22.1",
+ "bs58",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "solana-account",
+ "solana-pubkey",
+ "zstd",
+]
+
+[[package]]
+name = "solana-account-decoder-client-types"
+version = "2.3.14"
+source = "git+https://github.com/Deiadara/agave?rev=ddeb0d1#ddeb0d19d2acaf456bd152ddbe1e1acc5aa0923d"
 dependencies = [
  "base64 0.22.1",
  "bs58",
@@ -9762,7 +9851,7 @@ dependencies = [
  "solana-sysvar",
  "solana-time-utils",
  "solana-transaction",
- "solana-transaction-context",
+ "solana-transaction-context 2.3.13",
  "solana-transaction-error",
  "spl-generic-token",
  "static_assertions",
@@ -9799,8 +9888,8 @@ dependencies = [
 
 [[package]]
 name = "solana-axelar-gas-service"
-version = "0.1.6"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main#cfc83c802560373bcef747ebb680cff6db2b9e4b"
+version = "0.1.7"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main#7c3f1bd02c6cf8af5a3e482e33a84569335d0390"
 dependencies = [
  "anchor-lang",
  "bytemuck",
@@ -9810,8 +9899,8 @@ dependencies = [
 
 [[package]]
 name = "solana-axelar-gateway"
-version = "0.1.6"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main#cfc83c802560373bcef747ebb680cff6db2b9e4b"
+version = "0.1.7"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main#7c3f1bd02c6cf8af5a3e482e33a84569335d0390"
 dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
@@ -9828,7 +9917,7 @@ dependencies = [
 [[package]]
 name = "solana-axelar-gateway-test-fixtures"
 version = "0.1.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main#cfc83c802560373bcef747ebb680cff6db2b9e4b"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main#7c3f1bd02c6cf8af5a3e482e33a84569335d0390"
 dependencies = [
  "anchor-lang",
  "bincode",
@@ -9842,8 +9931,8 @@ dependencies = [
 
 [[package]]
 name = "solana-axelar-governance"
-version = "0.1.6"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main#cfc83c802560373bcef747ebb680cff6db2b9e4b"
+version = "0.1.7"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main#7c3f1bd02c6cf8af5a3e482e33a84569335d0390"
 dependencies = [
  "alloy-sol-types",
  "anchor-lang",
@@ -9854,8 +9943,8 @@ dependencies = [
 
 [[package]]
 name = "solana-axelar-its"
-version = "0.1.6"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main#cfc83c802560373bcef747ebb680cff6db2b9e4b"
+version = "0.1.7"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main#7c3f1bd02c6cf8af5a3e482e33a84569335d0390"
 dependencies = [
  "anchor-lang",
  "anchor-spl",
@@ -9871,8 +9960,8 @@ dependencies = [
 
 [[package]]
 name = "solana-axelar-memo"
-version = "0.1.6"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main#cfc83c802560373bcef747ebb680cff6db2b9e4b"
+version = "0.1.7"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main#7c3f1bd02c6cf8af5a3e482e33a84569335d0390"
 dependencies = [
  "anchor-lang",
  "anchor-spl",
@@ -9883,8 +9972,8 @@ dependencies = [
 
 [[package]]
 name = "solana-axelar-operators"
-version = "0.1.6"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main#cfc83c802560373bcef747ebb680cff6db2b9e4b"
+version = "0.1.7"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main#7c3f1bd02c6cf8af5a3e482e33a84569335d0390"
 dependencies = [
  "anchor-lang",
  "program-utils",
@@ -9893,7 +9982,7 @@ dependencies = [
 [[package]]
 name = "solana-axelar-std"
 version = "0.1.4"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main#cfc83c802560373bcef747ebb680cff6db2b9e4b"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier-solana?branch=main#7c3f1bd02c6cf8af5a3e482e33a84569335d0390"
 dependencies = [
  "alloy-primitives",
  "anchor-lang",
@@ -9928,7 +10017,7 @@ dependencies = [
  "solana-signature",
  "solana-sysvar",
  "solana-transaction",
- "solana-transaction-context",
+ "solana-transaction-context 2.3.13",
  "solana-transaction-error",
  "tarpc",
  "thiserror 2.0.17",
@@ -9952,7 +10041,7 @@ dependencies = [
  "solana-pubkey",
  "solana-signature",
  "solana-transaction",
- "solana-transaction-context",
+ "solana-transaction-context 2.3.13",
  "solana-transaction-error",
  "tarpc",
 ]
@@ -9963,7 +10052,7 @@ version = "2.3.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "36080e4a97afe47f8b56356a0cabc3b1dadfb09efb4ea8c44d79d19a4e7d6534"
 dependencies = [
- "agave-feature-set",
+ "agave-feature-set 2.3.13",
  "bincode",
  "crossbeam-channel",
  "futures 0.3.31",
@@ -10098,12 +10187,12 @@ dependencies = [
  "solana-secp256k1-recover",
  "solana-sha256-hasher",
  "solana-stable-layout",
- "solana-svm-feature-set",
+ "solana-svm-feature-set 2.3.13",
  "solana-system-interface",
  "solana-sysvar",
  "solana-sysvar-id",
  "solana-timings",
- "solana-transaction-context",
+ "solana-transaction-context 2.3.13",
  "solana-type-overrides",
  "thiserror 2.0.17",
 ]
@@ -10133,7 +10222,7 @@ version = "2.3.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6d61a31b63b52b0d268cbcd56c76f50314867d7f8e07a0f2c62ee7c9886e07b2"
 dependencies = [
- "agave-feature-set",
+ "agave-feature-set 2.3.13",
  "solana-bpf-loader-program",
  "solana-compute-budget-program",
  "solana-hash 2.3.0",
@@ -10154,7 +10243,7 @@ version = "2.3.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2ca69a299a6c969b18ea381a02b40c9e4dda04b2af0d15a007c1184c82163bbb"
 dependencies = [
- "agave-feature-set",
+ "agave-feature-set 2.3.13",
  "ahash 0.8.12",
  "log",
  "solana-bpf-loader-program",
@@ -10218,7 +10307,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "deda8ea7ec2a204a8b77e3cf98bed73f2cdef6f92d7450fe5cba1563d11616a7"
 dependencies = [
  "Inflector",
- "agave-reserved-account-keys",
+ "agave-reserved-account-keys 2.3.13",
  "base64 0.22.1",
  "chrono",
  "clap",
@@ -10230,7 +10319,7 @@ dependencies = [
  "serde",
  "serde_json",
  "solana-account",
- "solana-account-decoder",
+ "solana-account-decoder 2.3.13",
  "solana-bincode",
  "solana-clap-utils",
  "solana-cli-config",
@@ -10249,7 +10338,7 @@ dependencies = [
  "solana-sysvar",
  "solana-transaction",
  "solana-transaction-error",
- "solana-transaction-status",
+ "solana-transaction-status 2.3.13",
  "solana-vote-program",
  "spl-memo",
 ]
@@ -10371,7 +10460,7 @@ version = "2.3.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "503d94430f6d3c5ac1e1fa6a342c1c714d5b03c800999e7b6cf235298f0b5341"
 dependencies = [
- "agave-feature-set",
+ "agave-feature-set 2.3.13",
  "log",
  "solana-borsh",
  "solana-builtins-default-costs",
@@ -10451,7 +10540,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e72dc767919b28edb89eacdab05224b5150795f00edbcd03fe1a164d4fa3d96b"
 dependencies = [
  "agave-banking-stage-ingress-types",
- "agave-feature-set",
+ "agave-feature-set 2.3.13",
  "agave-transaction-view",
  "ahash 0.8.12",
  "anyhow",
@@ -10557,7 +10646,7 @@ dependencies = [
  "solana-tpu-client-next",
  "solana-transaction",
  "solana-transaction-error",
- "solana-transaction-status",
+ "solana-transaction-status 2.3.13",
  "solana-turbine",
  "solana-unified-scheduler-pool",
  "solana-validator-exit",
@@ -10584,7 +10673,7 @@ version = "2.3.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b24b35813c678ed40ca91f989a3c9e1780e6aef0139e15731785bca1189443c3"
 dependencies = [
- "agave-feature-set",
+ "agave-feature-set 2.3.13",
  "ahash 0.8.12",
  "log",
  "solana-bincode",
@@ -10848,7 +10937,7 @@ version = "2.3.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "16beda37597046b1edd1cea6fa7caaed033c091f99ec783fe59c82828bc2adb8"
 dependencies = [
- "agave-feature-set",
+ "agave-feature-set 2.3.13",
  "solana-fee-structure",
  "solana-svm-transaction",
 ]
@@ -10932,7 +11021,7 @@ dependencies = [
  "solana-runtime",
  "solana-signature",
  "solana-transaction",
- "solana-transaction-status",
+ "solana-transaction-status 2.3.13",
  "thiserror 2.0.17",
  "tokio",
 ]
@@ -10943,7 +11032,7 @@ version = "2.3.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "436a3fa83360a4aa4eac0d38c8d74c298f46bf4327fd9905a9121ffdfd73d080"
 dependencies = [
- "agave-feature-set",
+ "agave-feature-set 2.3.13",
  "arrayvec",
  "assert_matches",
  "bincode",
@@ -11158,8 +11247,8 @@ version = "2.3.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8bebfb8a4784eed0c1ca0883d54548c28b110c878a97593b76437678a830e5d"
 dependencies = [
- "agave-feature-set",
- "agave-reserved-account-keys",
+ "agave-feature-set 2.3.13",
+ "agave-reserved-account-keys 2.3.13",
  "anyhow",
  "assert_matches",
  "bincode",
@@ -11192,7 +11281,7 @@ dependencies = [
  "serde_bytes",
  "sha2 0.10.9",
  "solana-account",
- "solana-account-decoder",
+ "solana-account-decoder 2.3.13",
  "solana-accounts-db",
  "solana-address-lookup-table-interface",
  "solana-bpf-loader-program",
@@ -11233,9 +11322,9 @@ dependencies = [
  "solana-time-utils",
  "solana-timings",
  "solana-transaction",
- "solana-transaction-context",
+ "solana-transaction-context 2.3.13",
  "solana-transaction-error",
- "solana-transaction-status",
+ "solana-transaction-status 2.3.13",
  "solana-vote",
  "solana-vote-program",
  "static_assertions",
@@ -11328,7 +11417,7 @@ dependencies = [
  "solana-pubkey",
  "solana-sbpf",
  "solana-sdk-ids",
- "solana-transaction-context",
+ "solana-transaction-context 2.3.13",
  "solana-type-overrides",
 ]
 
@@ -11403,7 +11492,7 @@ dependencies = [
  "crossbeam-channel",
  "gethostname",
  "log",
- "reqwest 0.12.25",
+ "reqwest 0.12.26",
  "solana-cluster-type",
  "solana-sha256-hasher",
  "solana-time-utils",
@@ -11789,12 +11878,12 @@ dependencies = [
  "solana-slot-hashes",
  "solana-stable-layout",
  "solana-svm-callback",
- "solana-svm-feature-set",
+ "solana-svm-feature-set 2.3.13",
  "solana-system-interface",
  "solana-sysvar",
  "solana-sysvar-id",
  "solana-timings",
- "solana-transaction-context",
+ "solana-transaction-context 2.3.13",
  "solana-type-overrides",
  "thiserror 2.0.17",
 ]
@@ -11805,7 +11894,7 @@ version = "2.3.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3cff7a296c11ff2f02ff391eb4b5c641d09c8eed8a7a674d235b2ccb575b9ca"
 dependencies = [
- "agave-feature-set",
+ "agave-feature-set 2.3.13",
  "assert_matches",
  "async-trait",
  "base64 0.22.1",
@@ -11854,7 +11943,7 @@ dependencies = [
  "solana-sysvar-id",
  "solana-timings",
  "solana-transaction",
- "solana-transaction-context",
+ "solana-transaction-context 2.3.13",
  "solana-transaction-error",
  "solana-vote-program",
  "spl-generic-token",
@@ -11903,7 +11992,7 @@ dependencies = [
  "serde",
  "serde_derive",
  "serde_json",
- "solana-account-decoder-client-types",
+ "solana-account-decoder-client-types 2.3.13",
  "solana-clock",
  "solana-pubkey",
  "solana-rpc-client-types",
@@ -12056,7 +12145,7 @@ version = "2.3.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "58b9dbdcce4d3efe10e9c528d19fd896f2107e4b4cf62ad5b8794dcbe181a9f4"
 dependencies = [
- "agave-feature-set",
+ "agave-feature-set 2.3.13",
  "base64 0.22.1",
  "bincode",
  "bs58",
@@ -12077,7 +12166,7 @@ dependencies = [
  "serde_json",
  "soketto",
  "solana-account",
- "solana-account-decoder",
+ "solana-account-decoder 2.3.13",
  "solana-accounts-db",
  "solana-client",
  "solana-clock",
@@ -12120,9 +12209,9 @@ dependencies = [
  "solana-time-utils",
  "solana-tpu-client",
  "solana-transaction",
- "solana-transaction-context",
+ "solana-transaction-context 2.3.13",
  "solana-transaction-error",
- "solana-transaction-status",
+ "solana-transaction-status 2.3.13",
  "solana-validator-exit",
  "solana-version",
  "solana-vote",
@@ -12149,14 +12238,14 @@ dependencies = [
  "futures 0.3.31",
  "indicatif",
  "log",
- "reqwest 0.12.25",
+ "reqwest 0.12.26",
  "reqwest-middleware",
  "semver 1.0.27",
  "serde",
  "serde_derive",
  "serde_json",
  "solana-account",
- "solana-account-decoder-client-types",
+ "solana-account-decoder-client-types 2.3.13",
  "solana-clock",
  "solana-commitment-config",
  "solana-epoch-info",
@@ -12170,7 +12259,7 @@ dependencies = [
  "solana-signature",
  "solana-transaction",
  "solana-transaction-error",
- "solana-transaction-status-client-types",
+ "solana-transaction-status-client-types 2.3.13",
  "solana-version",
  "solana-vote-interface",
  "tokio",
@@ -12184,17 +12273,17 @@ checksum = "2dbc138685c79d88a766a8fd825057a74ea7a21e1dd7f8de275ada899540fff7"
 dependencies = [
  "anyhow",
  "jsonrpc-core",
- "reqwest 0.12.25",
+ "reqwest 0.12.26",
  "reqwest-middleware",
  "serde",
  "serde_derive",
  "serde_json",
- "solana-account-decoder-client-types",
+ "solana-account-decoder-client-types 2.3.13",
  "solana-clock",
  "solana-rpc-client-types",
  "solana-signer",
  "solana-transaction-error",
- "solana-transaction-status-client-types",
+ "solana-transaction-status-client-types 2.3.13",
  "thiserror 2.0.17",
 ]
 
@@ -12228,14 +12317,14 @@ dependencies = [
  "serde_derive",
  "serde_json",
  "solana-account",
- "solana-account-decoder-client-types",
+ "solana-account-decoder-client-types 2.3.13",
  "solana-clock",
  "solana-commitment-config",
  "solana-fee-calculator",
  "solana-inflation",
  "solana-pubkey",
  "solana-transaction-error",
- "solana-transaction-status-client-types",
+ "solana-transaction-status-client-types 2.3.13",
  "solana-version",
  "spl-generic-token",
  "thiserror 2.0.17",
@@ -12247,9 +12336,9 @@ version = "2.3.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1a3f83d5af95937504ec3447415b13ca5f1326cad3c3f790f2c66ee2153f0919"
 dependencies = [
- "agave-feature-set",
+ "agave-feature-set 2.3.13",
  "agave-precompiles",
- "agave-reserved-account-keys",
+ "agave-reserved-account-keys 2.3.13",
  "ahash 0.8.12",
  "aquamarine",
  "arrayref",
@@ -12359,9 +12448,9 @@ dependencies = [
  "solana-time-utils",
  "solana-timings",
  "solana-transaction",
- "solana-transaction-context",
+ "solana-transaction-context 2.3.13",
  "solana-transaction-error",
- "solana-transaction-status-client-types",
+ "solana-transaction-status-client-types 2.3.13",
  "solana-unified-scheduler-logic",
  "solana-version",
  "solana-vote",
@@ -12486,7 +12575,7 @@ dependencies = [
  "solana-system-transaction",
  "solana-time-utils",
  "solana-transaction",
- "solana-transaction-context",
+ "solana-transaction-context 2.3.13",
  "solana-transaction-error",
  "solana-validator-exit",
  "thiserror 2.0.17",
@@ -12765,7 +12854,7 @@ version = "2.3.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "500e9b9d11573f12de91e94f9c4459882cd5ffc692776af49b610d6fcc0b167f"
 dependencies = [
- "agave-feature-set",
+ "agave-feature-set 2.3.13",
  "bincode",
  "log",
  "solana-account",
@@ -12783,7 +12872,7 @@ dependencies = [
  "solana-sdk-ids",
  "solana-stake-interface",
  "solana-sysvar",
- "solana-transaction-context",
+ "solana-transaction-context 2.3.13",
  "solana-type-overrides",
  "solana-vote-interface",
 ]
@@ -12794,7 +12883,7 @@ version = "2.3.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6b4c130606548cd80f7f3b06ab9d46693477ffbd169f5c5908720c15bd48d8ba"
 dependencies = [
- "agave-reserved-account-keys",
+ "agave-reserved-account-keys 2.3.13",
  "backoff",
  "bincode",
  "bytes",
@@ -12823,7 +12912,7 @@ dependencies = [
  "solana-time-utils",
  "solana-transaction",
  "solana-transaction-error",
- "solana-transaction-status",
+ "solana-transaction-status 2.3.13",
  "thiserror 2.0.17",
  "tokio",
  "tonic 0.9.2",
@@ -12841,7 +12930,7 @@ dependencies = [
  "prost 0.11.9",
  "protobuf-src",
  "serde",
- "solana-account-decoder",
+ "solana-account-decoder 2.3.13",
  "solana-hash 2.3.0",
  "solana-instruction",
  "solana-message",
@@ -12849,9 +12938,9 @@ dependencies = [
  "solana-serde",
  "solana-signature",
  "solana-transaction",
- "solana-transaction-context",
+ "solana-transaction-context 2.3.13",
  "solana-transaction-error",
- "solana-transaction-status",
+ "solana-transaction-status 2.3.13",
  "tonic-build",
 ]
 
@@ -12936,13 +13025,13 @@ dependencies = [
  "solana-rent-debits",
  "solana-sdk-ids",
  "solana-svm-callback",
- "solana-svm-feature-set",
+ "solana-svm-feature-set 2.3.13",
  "solana-svm-rent-collector",
  "solana-svm-transaction",
  "solana-system-interface",
  "solana-sysvar-id",
  "solana-timings",
- "solana-transaction-context",
+ "solana-transaction-context 2.3.13",
  "solana-transaction-error",
  "solana-type-overrides",
  "spl-generic-token",
@@ -12967,6 +13056,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3f24b836eb4d74ec255217bdbe0f24f64a07adeac31aca61f334f91cd4a3b1d5"
 
 [[package]]
+name = "solana-svm-feature-set"
+version = "2.3.14"
+source = "git+https://github.com/Deiadara/agave?rev=ddeb0d1#ddeb0d19d2acaf456bd152ddbe1e1acc5aa0923d"
+
+[[package]]
 name = "solana-svm-rent-collector"
 version = "2.3.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12978,7 +13072,7 @@ dependencies = [
  "solana-rent",
  "solana-rent-collector",
  "solana-sdk-ids",
- "solana-transaction-context",
+ "solana-transaction-context 2.3.13",
  "solana-transaction-error",
 ]
 
@@ -13035,7 +13129,7 @@ dependencies = [
  "solana-sdk-ids",
  "solana-system-interface",
  "solana-sysvar",
- "solana-transaction-context",
+ "solana-transaction-context 2.3.13",
  "solana-type-overrides",
 ]
 
@@ -13107,7 +13201,7 @@ version = "2.3.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7ec3e2f306b6ea2a06968d8777604bb2496e5081541cba851972d8601a39738c"
 dependencies = [
- "agave-feature-set",
+ "agave-feature-set 2.3.13",
  "base64 0.22.1",
  "bincode",
  "crossbeam-channel",
@@ -13315,6 +13409,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "solana-transaction-context"
+version = "2.3.14"
+source = "git+https://github.com/Deiadara/agave?rev=ddeb0d1#ddeb0d19d2acaf456bd152ddbe1e1acc5aa0923d"
+dependencies = [
+ "bincode",
+ "serde",
+ "serde_derive",
+ "solana-account",
+ "solana-instruction",
+ "solana-instructions-sysvar",
+ "solana-pubkey",
+ "solana-rent",
+ "solana-sdk-ids",
+]
+
+[[package]]
 name = "solana-transaction-error"
 version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -13345,7 +13455,7 @@ dependencies = [
 [[package]]
 name = "solana-transaction-parser"
 version = "0.1.0"
-source = "git+https://github.com/commonprefix/solana-transaction-parser?branch=main#8ecf645a95f62f821f383fb17bdf0bb03dabbf17"
+source = "git+https://github.com/commonprefix/solana-transaction-parser?branch=main#7c1d075b9e33e0a7b465401f2aaaa7971d94e428"
 dependencies = [
  "anchor-lang",
  "anyhow",
@@ -13365,8 +13475,8 @@ dependencies = [
  "solana-axelar-gateway",
  "solana-axelar-its",
  "solana-sdk",
- "solana-transaction-status",
- "solana-transaction-status-client-types",
+ "solana-transaction-status 2.3.14",
+ "solana-transaction-status-client-types 2.3.14",
  "thiserror 2.0.17",
  "tokio",
  "tracing",
@@ -13380,7 +13490,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "135f92f4192cc68900c665becf97fc0a6500ae5a67ff347bf2cbc20ecfefa821"
 dependencies = [
  "Inflector",
- "agave-reserved-account-keys",
+ "agave-reserved-account-keys 2.3.13",
  "base64 0.22.1",
  "bincode",
  "borsh 1.6.0",
@@ -13389,7 +13499,7 @@ dependencies = [
  "serde",
  "serde_derive",
  "serde_json",
- "solana-account-decoder",
+ "solana-account-decoder 2.3.13",
  "solana-address-lookup-table-interface",
  "solana-clock",
  "solana-hash 2.3.0",
@@ -13406,7 +13516,50 @@ dependencies = [
  "solana-system-interface",
  "solana-transaction",
  "solana-transaction-error",
- "solana-transaction-status-client-types",
+ "solana-transaction-status-client-types 2.3.13",
+ "solana-vote-interface",
+ "spl-associated-token-account 7.0.0",
+ "spl-memo",
+ "spl-token 8.0.0",
+ "spl-token-2022 8.0.1",
+ "spl-token-group-interface 0.6.0",
+ "spl-token-metadata-interface 0.7.0",
+ "thiserror 2.0.17",
+]
+
+[[package]]
+name = "solana-transaction-status"
+version = "2.3.14"
+source = "git+https://github.com/Deiadara/agave?rev=ddeb0d1#ddeb0d19d2acaf456bd152ddbe1e1acc5aa0923d"
+dependencies = [
+ "Inflector",
+ "agave-reserved-account-keys 2.3.14",
+ "base64 0.22.1",
+ "bincode",
+ "borsh 1.6.0",
+ "bs58",
+ "log",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "solana-account-decoder 2.3.14",
+ "solana-address-lookup-table-interface",
+ "solana-clock",
+ "solana-hash 2.3.0",
+ "solana-instruction",
+ "solana-loader-v2-interface",
+ "solana-loader-v3-interface 5.0.0",
+ "solana-message",
+ "solana-program-option",
+ "solana-pubkey",
+ "solana-reward-info",
+ "solana-sdk-ids",
+ "solana-signature",
+ "solana-stake-interface",
+ "solana-system-interface",
+ "solana-transaction",
+ "solana-transaction-error",
+ "solana-transaction-status-client-types 2.3.14",
  "solana-vote-interface",
  "spl-associated-token-account 7.0.0",
  "spl-memo",
@@ -13429,13 +13582,35 @@ dependencies = [
  "serde",
  "serde_derive",
  "serde_json",
- "solana-account-decoder-client-types",
+ "solana-account-decoder-client-types 2.3.13",
  "solana-commitment-config",
  "solana-message",
  "solana-reward-info",
  "solana-signature",
  "solana-transaction",
- "solana-transaction-context",
+ "solana-transaction-context 2.3.13",
+ "solana-transaction-error",
+ "thiserror 2.0.17",
+]
+
+[[package]]
+name = "solana-transaction-status-client-types"
+version = "2.3.14"
+source = "git+https://github.com/Deiadara/agave?rev=ddeb0d1#ddeb0d19d2acaf456bd152ddbe1e1acc5aa0923d"
+dependencies = [
+ "base64 0.22.1",
+ "bincode",
+ "bs58",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "solana-account-decoder-client-types 2.3.14",
+ "solana-commitment-config",
+ "solana-message",
+ "solana-reward-info",
+ "solana-signature",
+ "solana-transaction",
+ "solana-transaction-context 2.3.14",
  "solana-transaction-error",
  "thiserror 2.0.17",
 ]
@@ -13446,7 +13621,7 @@ version = "2.3.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "456b379a3ec1d8504c0b7d723dccce1a3599a2a81cef99aab960072bb7b2c6b5"
 dependencies = [
- "agave-feature-set",
+ "agave-feature-set 2.3.13",
  "agave-xdp",
  "bincode",
  "bytes",
@@ -13579,7 +13754,7 @@ version = "2.3.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3324d46c7f7b7f5d34bf7dc71a2883bdc072c7b28ca81d0b2167ecec4cf8da9f"
 dependencies = [
- "agave-feature-set",
+ "agave-feature-set 2.3.13",
  "rand 0.8.5",
  "semver 1.0.27",
  "serde",
@@ -13646,7 +13821,7 @@ version = "2.3.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "908d0e72c8b83e48762eb3e8c9114497cf4b1d66e506e360c46aba9308e71299"
 dependencies = [
- "agave-feature-set",
+ "agave-feature-set 2.3.13",
  "bincode",
  "log",
  "num-derive 0.4.2",
@@ -13668,7 +13843,7 @@ dependencies = [
  "solana-signer",
  "solana-slot-hashes",
  "solana-transaction",
- "solana-transaction-context",
+ "solana-transaction-context 2.3.13",
  "solana-vote-interface",
  "thiserror 2.0.17",
 ]
@@ -13707,7 +13882,7 @@ version = "2.3.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "70cea14481d8efede6b115a2581f27bc7c6fdfba0752c20398456c3ac1245fc4"
 dependencies = [
- "agave-feature-set",
+ "agave-feature-set 2.3.13",
  "bytemuck",
  "num-derive 0.4.2",
  "num-traits",
@@ -13760,7 +13935,7 @@ version = "2.3.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "579752ad6ea2a671995f13c763bf28288c3c895cb857a518cc4ebab93c9a8dde"
 dependencies = [
- "agave-feature-set",
+ "agave-feature-set 2.3.13",
  "bytemuck",
  "num-derive 0.4.2",
  "num-traits",
@@ -14652,7 +14827,7 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 [[package]]
 name = "starknet-checked-felt"
 version = "1.0.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#9f8718a8c2b54d66a5185c9b696381630c91f58f"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#d8b8449292d30e44059d77d4171758e7a7b803d1"
 dependencies = [
  "alloy-primitives",
  "error-stack 0.4.1",
@@ -14844,7 +15019,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 [[package]]
 name = "sui-types"
 version = "1.0.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#9f8718a8c2b54d66a5185c9b696381630c91f58f"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#d8b8449292d30e44059d77d4171758e7a7b803d1"
 dependencies = [
  "error-stack 0.4.1",
  "hex",
@@ -15452,18 +15627,18 @@ dependencies = [
 
 [[package]]
 name = "toml_datetime"
-version = "0.7.3"
+version = "0.7.5+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f2cdb639ebbc97961c51720f858597f7f24c4fc295327923af55b74c3c724533"
+checksum = "92e1cfed4a3038bc5a127e35a2d360f145e1f4b971b551a2ba5fd7aedf7e1347"
 dependencies = [
  "serde_core",
 ]
 
 [[package]]
 name = "toml_edit"
-version = "0.23.9"
+version = "0.23.10+spec-1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5d7cbc3b4b49633d57a0509303158ca50de80ae32c265093b24c414705807832"
+checksum = "84c8b9f757e028cee9fa244aea147aab2a9ec09d5325a9b01e0a49730c2b5269"
 dependencies = [
  "indexmap 2.12.1",
  "toml_datetime",
@@ -15473,9 +15648,9 @@ dependencies = [
 
 [[package]]
 name = "toml_parser"
-version = "1.0.4"
+version = "1.0.6+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c0cbe268d35bdb4bb5a56a2de88d0ad0eb70af5384a99d648cd4b3d04039800e"
+checksum = "a3198b4b0a8e11f09dd03e133c0280504d0801269e9afa46362ffde1cbeebf44"
 dependencies = [
  "winnow",
 ]
@@ -15622,9 +15797,9 @@ checksum = "8df9b6e13f2d32c91b9bd719c00d1958837bc7dec474d94952798cc8e69eeec3"
 
 [[package]]
 name = "tracing"
-version = "0.1.43"
+version = "0.1.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d15d90a0b5c19378952d479dc858407149d7bb45a14de0142f6c534b16fc647"
+checksum = "63e71662fa4b2a2c3a26f570f037eb95bb1f85397f3cd8076caed2f026a6d100"
 dependencies = [
  "log",
  "pin-project-lite",
@@ -15645,9 +15820,9 @@ dependencies = [
 
 [[package]]
 name = "tracing-core"
-version = "0.1.35"
+version = "0.1.36"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7a04e24fab5c89c6a36eb8558c9656f30d81de51dfa4d3b45f26b21d61fa0a6c"
+checksum = "db97caf9d906fbde555dd62fa95ddba9eecfd14cb388e4f491a66d74cd5fb79a"
 dependencies = [
  "once_cell",
  "valuable",
@@ -16848,7 +17023,7 @@ dependencies = [
 [[package]]
 name = "xrpl-types"
 version = "1.0.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#9f8718a8c2b54d66a5185c9b696381630c91f58f"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#d8b8449292d30e44059d77d4171758e7a7b803d1"
 dependencies = [
  "axelar-wasm-std",
  "bs58",
@@ -16903,7 +17078,7 @@ version = "0.16.6"
 source = "git+https://github.com/commonprefix/xrpl-sdk-rust?branch=main#f370fb1e958de0e7550084dbbc07847dd194fdb7"
 dependencies = [
  "libsecp256k1 0.7.2",
- "reqwest 0.12.25",
+ "reqwest 0.12.26",
  "serde",
  "serde_json",
  "sha2 0.10.9",

@@ -227,10 +227,12 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
     async fn build_its_instruction(
         &self,
         message: &Message,
-        mut payload: &[u8],
+        payload: &[u8],
         incoming_message_pda: Pubkey,
     ) -> Result<(Instruction, Vec<AccountMeta>), TransactionBuilderError> {
-        let gmp_decoded_payload = HubMessage::deserialize(&mut payload)
+        // Use a copy for deserialization to preserve the original payload bytes
+        let mut payload_reader = payload;
+        let gmp_decoded_payload = HubMessage::deserialize(&mut payload_reader)
             .map_err(|e| TransactionBuilderError::PayloadDecodeError(e.to_string()))?;
 
         let token_id = match gmp_decoded_payload {
