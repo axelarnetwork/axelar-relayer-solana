@@ -728,8 +728,8 @@ async fn test_refund_task_handled_and_found_by_poller() {
         refunds_model,
     );
 
-    use solana::utils::get_treasury_pda;
-    let (treasury, _) = get_treasury_pda().expect("Failed to derive treasury PDA");
+    let (treasury, _) =
+        solana_axelar_gas_service::Treasury::try_find_pda().expect("Failed to derive treasury PDA");
     let treasury_funding_amount = 20 * LAMPORTS_PER_SOL; // 20 SOL to ensure enough for refund + fees
 
     #[allow(deprecated)]
@@ -906,8 +906,8 @@ async fn test_refund_task_duplicate_returns_already_processed() {
         Arc::clone(&refunds_model),
     );
 
-    use solana::utils::get_treasury_pda;
-    let (treasury, _) = get_treasury_pda().expect("Failed to derive treasury PDA");
+    let (treasury, _) =
+        solana_axelar_gas_service::Treasury::try_find_pda().expect("Failed to derive treasury PDA");
     let treasury_funding_amount = 20 * LAMPORTS_PER_SOL;
 
     #[allow(deprecated)]

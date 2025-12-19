@@ -2,18 +2,12 @@ use crate::gas_calculator::GasCalculatorTrait;
 use crate::includer::ALTInfo;
 use crate::includer_client::IncluderClientTrait;
 use crate::utils::{
-    calculate_total_cost_lamports, create_transaction, get_destination_ata,
-    get_gateway_root_config_internal, get_governance_config_pda,
-    get_governance_event_authority_pda, get_incoming_message_pda, get_its_event_authority_pda,
-    get_its_root_pda, get_minter_roles_pda, get_mpl_token_metadata_account,
-    get_operator_proposal_pda, get_proposal_pda, get_token_manager_ata_with_program,
-    get_token_manager_pda, get_token_mint_pda, get_validate_message_signing_pda,
+    calculate_total_cost_lamports, create_transaction, extract_proposal_hash_from_payload,
+    get_destination_ata, get_gateway_event_authority_pda, get_governance_event_authority_pda,
+    get_its_event_authority_pda, get_minter_roles_pda, get_operator_proposal_pda, get_proposal_pda,
+    get_token_manager_ata_with_program, get_token_mint_pda,
 };
-use crate::{
-    error::TransactionBuilderError,
-    transaction_type::SolanaTransactionType,
-    utils::{extract_proposal_hash_from_payload, get_gateway_event_authority_pda},
-};
+use crate::{error::TransactionBuilderError, transaction_type::SolanaTransactionType};
 use anchor_lang::InstructionData;
 use anchor_lang::ToAccountMetas;
 use anchor_spl::{associated_token::spl_associated_token_account, token_2022::spl_token_2022};
@@ -200,8 +194,13 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
         payload: &[u8],
         destination_address: Pubkey,
     ) -> Result<(Instruction, Vec<AccountMeta>), TransactionBuilderError> {
-        let (incoming_message_pda, _) = get_incoming_message_pda(&message.command_id())
-            .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+        let (incoming_message_pda, _) =
+            solana_axelar_gateway::IncomingMessage::try_find_pda(&message.command_id())
+                .ok_or_else(|| {
+                    TransactionBuilderError::GenericError(
+                        "Failed to derive incoming message PDA".to_string(),
+                    )
+                })?;
 
         match destination_address {
             x if x == solana_axelar_its::ID => {
@@ -252,13 +251,23 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
             }
         };
 
-        let (signing_pda, _) =
-            get_validate_message_signing_pda(&message.command_id(), &solana_axelar_its::ID)
-                .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+        let (signing_pda, _) = solana_axelar_gateway::ValidateMessageSigner::try_find_pda(
+            &message.command_id(),
+            &solana_axelar_its::ID,
+        )
+        .ok_or_else(|| {
+            TransactionBuilderError::GenericError(
+                "Failed to derive validate message signing PDA".to_string(),
+            )
+        })?;
         let (event_authority, _) = get_gateway_event_authority_pda()
             .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
-        let (gateway_root_pda, _) = get_gateway_root_config_internal()
-            .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+        let (gateway_root_pda, _) = solana_axelar_gateway::GatewayConfig::try_find_pda()
+            .ok_or_else(|| {
+                TransactionBuilderError::GenericError(
+                    "Failed to derive gateway root config PDA".to_string(),
+                )
+            })?;
 
         let executable = solana_axelar_its::accounts::AxelarExecuteAccounts {
             incoming_message_pda,
@@ -268,9 +277,17 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
             gateway_root_pda,
         };
 
-        let (its_root_pda, _) = get_its_root_pda();
-        let (token_manager_pda, _) = get_token_manager_pda(&its_root_pda, &token_id)
-            .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+        let (its_root_pda, _) = solana_axelar_its::InterchainTokenService::try_find_pda()
+            .ok_or_else(|| {
+                TransactionBuilderError::GenericError("Failed to derive ITS root PDA".to_string())
+            })?;
+        let (token_manager_pda, _) = solana_axelar_its::TokenManager::try_find_pda(
+            token_id,
+            its_root_pda,
+        )
+        .ok_or_else(|| {
+            TransactionBuilderError::GenericError("Failed to derive token manager PDA".to_string())
+        })?;
 
         let (token_mint, token_program) = match &gmp_decoded_payload {
             HubMessage::ReceiveFromHub {
@@ -382,8 +399,7 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
                         minter.map(|minter| get_minter_roles_pda(&token_manager_pda, &minter).0);
 
                     let (mpl_token_metadata_account, _) =
-                        get_mpl_token_metadata_account(&token_mint)
-                            .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+                        mpl_token_metadata::accounts::Metadata::find_pda(&token_mint);
 
                     accounts.extend(execute_deploy_interchain_token_extra_accounts(
                         solana_program::sysvar::instructions::ID,
@@ -434,13 +450,23 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
         payload: &[u8],
         incoming_message_pda: Pubkey,
     ) -> Result<(Instruction, Vec<AccountMeta>), TransactionBuilderError> {
-        let (signing_pda, _) =
-            get_validate_message_signing_pda(&message.command_id(), &solana_axelar_governance::ID)
-                .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+        let (signing_pda, _) = solana_axelar_gateway::ValidateMessageSigner::try_find_pda(
+            &message.command_id(),
+            &solana_axelar_governance::ID,
+        )
+        .ok_or_else(|| {
+            TransactionBuilderError::GenericError(
+                "Failed to derive validate message signing PDA".to_string(),
+            )
+        })?;
         let (event_authority, _) = get_gateway_event_authority_pda()
             .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
-        let (gateway_root_pda, _) = get_gateway_root_config_internal()
-            .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+        let (gateway_root_pda, _) = solana_axelar_gateway::GatewayConfig::try_find_pda()
+            .ok_or_else(|| {
+                TransactionBuilderError::GenericError(
+                    "Failed to derive gateway root config PDA".to_string(),
+                )
+            })?;
         let executable = solana_axelar_governance::accounts::AxelarExecuteAccounts {
             incoming_message_pda,
             signing_pda,
@@ -449,8 +475,12 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
             gateway_root_pda,
         };
 
-        let (governance_config, _) = get_governance_config_pda()
-            .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+        let (governance_config, _) = solana_axelar_governance::GovernanceConfig::try_find_pda()
+            .ok_or_else(|| {
+                TransactionBuilderError::GenericError(
+                    "Failed to derive governance config PDA".to_string(),
+                )
+            })?;
         let (governance_event_authority, _) = get_governance_event_authority_pda()
             .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
 
@@ -509,13 +539,23 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
             };
         }
 
-        let (signing_pda, _) =
-            get_validate_message_signing_pda(&message.command_id(), &destination_address)
-                .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+        let (signing_pda, _) = solana_axelar_gateway::ValidateMessageSigner::try_find_pda(
+            &message.command_id(),
+            &destination_address,
+        )
+        .ok_or_else(|| {
+            TransactionBuilderError::GenericError(
+                "Failed to derive validate message signing PDA".to_string(),
+            )
+        })?;
         let (event_authority, _) = get_gateway_event_authority_pda()
             .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
-        let (gateway_root_pda, _) = get_gateway_root_config_internal()
-            .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+        let (gateway_root_pda, _) = solana_axelar_gateway::GatewayConfig::try_find_pda()
+            .ok_or_else(|| {
+                TransactionBuilderError::GenericError(
+                    "Failed to derive gateway root config PDA".to_string(),
+                )
+            })?;
 
         let mut accounts = solana_axelar_gateway::executable::helpers::AxelarExecuteAccounts {
             incoming_message_pda,
