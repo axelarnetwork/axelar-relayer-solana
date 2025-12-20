@@ -395,8 +395,13 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
                     } else {
                         None
                     };
-                    let minter_roles_pda =
-                        minter.map(|minter| get_minter_roles_pda(&token_manager_pda, &minter).0);
+                    let minter_roles_pda = minter
+                        .map(|minter| {
+                            get_minter_roles_pda(&token_manager_pda, &minter)
+                                .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))
+                                .map(|(pda, _)| pda)
+                        })
+                        .transpose()?;
 
                     let (mpl_token_metadata_account, _) =
                         mpl_token_metadata::accounts::Metadata::find_pda(&token_mint);
@@ -415,8 +420,13 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
                         .as_ref()
                         // Check if we should be erroring here or ignoring the value if invalid
                         .and_then(|p| Pubkey::try_from(p.as_slice()).ok());
-                    let minter_roles_pda =
-                        minter.map(|minter| get_minter_roles_pda(&token_manager_pda, &minter).0);
+                    let minter_roles_pda = minter
+                        .map(|minter| {
+                            get_minter_roles_pda(&token_manager_pda, &minter)
+                                .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))
+                                .map(|(pda, _)| pda)
+                        })
+                        .transpose()?;
 
                     accounts.extend(execute_link_token_extra_accounts(minter, minter_roles_pda))
                 }

@@ -202,8 +202,12 @@ pub fn get_token_manager_ata_with_program(
     (ata, 0)
 }
 
-pub fn get_minter_roles_pda(token_manager_pda: &Pubkey, minter: &Pubkey) -> (Pubkey, u8) {
-    solana_axelar_its::UserRoles::find_pda(token_manager_pda, minter)
+pub fn get_minter_roles_pda(
+    token_manager_pda: &Pubkey,
+    minter: &Pubkey,
+) -> Result<(Pubkey, u8), anyhow::Error> {
+    solana_axelar_its::UserRoles::try_find_pda(token_manager_pda, minter)
+        .ok_or_else(|| anyhow!("Failed to derive minter roles PDA"))
 }
 
 pub fn get_gas_service_event_authority_pda() -> Result<(Pubkey, u8), anyhow::Error> {
