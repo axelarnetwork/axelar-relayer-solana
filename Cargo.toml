@@ -34,14 +34,14 @@ ed25519-zebra = "=4.0.3"
 anchor-lang = "0.31.1"
 anchor-spl = "0.31.1"
 borsh = { version = "0.10.4" }
-solana-client = "~2.3"
-solana-rpc-client = "~2.3"
-solana-rpc-client-api = "~2.3"
+solana-client =  { git = "https://github.com/Deiadara/agave", rev = "ddeb0d1" }
+solana-rpc-client = { git = "https://github.com/Deiadara/agave", rev = "ddeb0d1" }
+solana-rpc-client-api = { git = "https://github.com/Deiadara/agave", rev = "ddeb0d1" }
 solana-sdk = "~2.3"
 solana-program = "~2.3"
-solana-transaction-status = "~2.3"
-solana-pubsub-client = "~2.3"
-solana-transaction-status-client-types = "~2.3"
+solana-transaction-status =  { git = "https://github.com/Deiadara/agave", rev = "ddeb0d1" }
+solana-pubsub-client = { git = "https://github.com/Deiadara/agave", rev = "ddeb0d1" }
+solana-transaction-status-client-types =  { git = "https://github.com/Deiadara/agave", rev = "ddeb0d1" }
 mpl-token-metadata = "5.1.1"
 
 # Relayer Crates
