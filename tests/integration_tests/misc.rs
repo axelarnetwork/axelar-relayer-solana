@@ -418,7 +418,8 @@ async fn test_gas_refunded_event_parsing() {
         refunds_model,
     );
 
-    let (treasury, _) = solana::utils::get_treasury_pda().expect("Failed to derive treasury PDA");
+    let (treasury, _) =
+        solana_axelar_gas_service::Treasury::try_find_pda().expect("Failed to derive treasury PDA");
     let treasury_funding_amount = 5 * LAMPORTS_PER_SOL;
 
     #[allow(deprecated)]

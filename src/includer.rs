@@ -9,8 +9,6 @@ use crate::refund_manager::SolanaRefundManager;
 use crate::transaction_builder::{TransactionBuilder, TransactionBuilderTrait};
 use crate::utils::{
     get_gas_service_event_authority_pda, get_gateway_event_authority_pda,
-    get_gateway_root_config_internal, get_incoming_message_pda, get_operator_pda,
-    get_signature_verification_pda, get_treasury_pda, get_verifier_set_tracker_pda,
     keypair_from_base58_string, not_enough_gas_event,
 };
 use anchor_lang::prelude::AccountMeta;
@@ -456,12 +454,17 @@ impl<
             MerklizedPayload::VerifierSetRotation { .. } => PayloadType::RotateSigners,
         };
 
-        let (verification_session_tracker_pda, _) = get_signature_verification_pda(
-            &execute_data.payload_merkle_root,
-            &execute_data.signing_verifier_set_merkle_root,
-            payload_type,
-        )
-        .map_err(|e| SolanaIncluderError::GenericError(e.to_string()))?;
+        let (verification_session_tracker_pda, _) =
+            solana_axelar_gateway::SignatureVerificationSessionData::try_find_pda(
+                &execute_data.payload_merkle_root,
+                payload_type,
+                &execute_data.signing_verifier_set_merkle_root,
+            )
+            .ok_or_else(|| {
+                SolanaIncluderError::GenericError(
+                    "Failed to derive verification session tracker PDA".to_string(),
+                )
+            })?;
 
         let ix_data = solana_axelar_gateway::instruction::InitializePayloadVerificationSession {
             merkle_root: execute_data.payload_merkle_root,
@@ -470,11 +473,21 @@ impl<
         .data();
 
         let (verifier_set_tracker_pda, _) =
-            get_verifier_set_tracker_pda(&execute_data.signing_verifier_set_merkle_root)
-                .map_err(|e| SolanaIncluderError::GenericError(e.to_string()))?;
+            solana_axelar_gateway::VerifierSetTracker::try_find_pda(
+                &execute_data.signing_verifier_set_merkle_root,
+            )
+            .ok_or_else(|| {
+                SolanaIncluderError::GenericError(
+                    "Failed to derive verifier set tracker PDA".to_string(),
+                )
+            })?;
 
-        let (gateway_root_pda, _) = get_gateway_root_config_internal()
-            .map_err(|e| SolanaIncluderError::GenericError(e.to_string()))?;
+        let (gateway_root_pda, _) = solana_axelar_gateway::GatewayConfig::try_find_pda()
+            .ok_or_else(|| {
+                SolanaIncluderError::GenericError(
+                    "Failed to derive gateway root config PDA".to_string(),
+                )
+            })?;
 
         let accounts = solana_axelar_gateway::accounts::InitializePayloadVerificationSession {
             payer: self.keypair.pubkey(),
@@ -528,19 +541,34 @@ impl<
         };
 
         // Collect PDAs
-        let (verification_session_tracker_pda, _) = get_signature_verification_pda(
-            &execute_data.payload_merkle_root,
-            &execute_data.signing_verifier_set_merkle_root,
-            payload_type,
-        )
-        .map_err(|e| SolanaIncluderError::GenericError(e.to_string()))?;
+        let (verification_session_tracker_pda, _) =
+            solana_axelar_gateway::SignatureVerificationSessionData::try_find_pda(
+                &execute_data.payload_merkle_root,
+                payload_type,
+                &execute_data.signing_verifier_set_merkle_root,
+            )
+            .ok_or_else(|| {
+                SolanaIncluderError::GenericError(
+                    "Failed to derive verification session tracker PDA".to_string(),
+                )
+            })?;
 
         let (verifier_set_tracker_pda, _) =
-            get_verifier_set_tracker_pda(&execute_data.signing_verifier_set_merkle_root)
-                .map_err(|e| SolanaIncluderError::GenericError(e.to_string()))?;
+            solana_axelar_gateway::VerifierSetTracker::try_find_pda(
+                &execute_data.signing_verifier_set_merkle_root,
+            )
+            .ok_or_else(|| {
+                SolanaIncluderError::GenericError(
+                    "Failed to derive verifier set tracker PDA".to_string(),
+                )
+            })?;
 
-        let (gateway_root_pda, _) = get_gateway_root_config_internal()
-            .map_err(|e| SolanaIncluderError::GenericError(e.to_string()))?;
+        let (gateway_root_pda, _) = solana_axelar_gateway::GatewayConfig::try_find_pda()
+            .ok_or_else(|| {
+                SolanaIncluderError::GenericError(
+                    "Failed to derive gateway root config PDA".to_string(),
+                )
+            })?;
 
         // Build and submit verification txs
         let signing_verifier_set_leaves = execute_data.signing_verifier_set_leaves.clone();
@@ -598,23 +626,42 @@ impl<
     ) -> Result<Option<u64>, SolanaIncluderError> {
         // Current verifier set tracker (the signers approving the rotation)
         let (current_verifier_set_tracker_pda, _) =
-            get_verifier_set_tracker_pda(&execute_data.signing_verifier_set_merkle_root)
-                .map_err(|e| SolanaIncluderError::GenericError(e.to_string()))?;
+            solana_axelar_gateway::VerifierSetTracker::try_find_pda(
+                &execute_data.signing_verifier_set_merkle_root,
+            )
+            .ok_or_else(|| {
+                SolanaIncluderError::GenericError(
+                    "Failed to derive current verifier set tracker PDA".to_string(),
+                )
+            })?;
 
         // New verifier set tracker (the set we're rotating to)
         let (new_verifier_set_tracker_pda, _) =
-            get_verifier_set_tracker_pda(new_verifier_set_merkle_root)
-                .map_err(|e| SolanaIncluderError::GenericError(e.to_string()))?;
+            solana_axelar_gateway::VerifierSetTracker::try_find_pda(new_verifier_set_merkle_root)
+                .ok_or_else(|| {
+                SolanaIncluderError::GenericError(
+                    "Failed to derive new verifier set tracker PDA".to_string(),
+                )
+            })?;
 
-        let (gateway_root_pda, _) = get_gateway_root_config_internal()
-            .map_err(|e| SolanaIncluderError::GenericError(e.to_string()))?;
+        let (gateway_root_pda, _) = solana_axelar_gateway::GatewayConfig::try_find_pda()
+            .ok_or_else(|| {
+                SolanaIncluderError::GenericError(
+                    "Failed to derive gateway root config PDA".to_string(),
+                )
+            })?;
 
-        let (verification_session_tracker_pda, _) = get_signature_verification_pda(
-            &execute_data.payload_merkle_root,
-            &execute_data.signing_verifier_set_merkle_root,
-            PayloadType::RotateSigners,
-        )
-        .map_err(|e| SolanaIncluderError::GenericError(e.to_string()))?;
+        let (verification_session_tracker_pda, _) =
+            solana_axelar_gateway::SignatureVerificationSessionData::try_find_pda(
+                &execute_data.payload_merkle_root,
+                PayloadType::RotateSigners,
+                &execute_data.signing_verifier_set_merkle_root,
+            )
+            .ok_or_else(|| {
+                SolanaIncluderError::GenericError(
+                    "Failed to derive verification session tracker PDA".to_string(),
+                )
+            })?;
 
         let (event_authority, _) = get_gateway_event_authority_pda()
             .map_err(|e| SolanaIncluderError::GenericError(e.to_string()))?;
@@ -656,15 +703,24 @@ impl<
         messages: Vec<MerklizedMessage>,
         execute_data: &ExecuteData,
     ) -> Result<Vec<(CrossChainId, u64)>, SolanaIncluderError> {
-        let (gateway_root_pda, _) = get_gateway_root_config_internal()
-            .map_err(|e| SolanaIncluderError::GenericError(e.to_string()))?;
+        let (gateway_root_pda, _) = solana_axelar_gateway::GatewayConfig::try_find_pda()
+            .ok_or_else(|| {
+                SolanaIncluderError::GenericError(
+                    "Failed to derive gateway root config PDA".to_string(),
+                )
+            })?;
 
-        let (verification_session_tracker_pda, _) = get_signature_verification_pda(
-            &execute_data.payload_merkle_root,
-            &execute_data.signing_verifier_set_merkle_root,
-            PayloadType::ApproveMessages,
-        )
-        .map_err(|e| SolanaIncluderError::GenericError(e.to_string()))?;
+        let (verification_session_tracker_pda, _) =
+            solana_axelar_gateway::SignatureVerificationSessionData::try_find_pda(
+                &execute_data.payload_merkle_root,
+                PayloadType::ApproveMessages,
+                &execute_data.signing_verifier_set_merkle_root,
+            )
+            .ok_or_else(|| {
+                SolanaIncluderError::GenericError(
+                    "Failed to derive verification session tracker PDA".to_string(),
+                )
+            })?;
 
         let (event_authority, _) = get_gateway_event_authority_pda()
             .map_err(|e| SolanaIncluderError::GenericError(e.to_string()))?;
@@ -674,8 +730,12 @@ impl<
             .into_iter()
             .map(|merklized_message| {
                 let command_id = merklized_message.leaf.message.command_id();
-                let (pda, _) = get_incoming_message_pda(&command_id)
-                    .map_err(|e| SolanaIncluderError::GenericError(e.to_string()))?;
+                let (pda, _) = solana_axelar_gateway::IncomingMessage::try_find_pda(&command_id)
+                    .ok_or_else(|| {
+                        SolanaIncluderError::GenericError(
+                            "Failed to derive incoming message PDA".to_string(),
+                        )
+                    })?;
 
                 let ix_data = solana_axelar_gateway::instruction::ApproveMessage {
                     merklized_message: merklized_message.clone(),
@@ -879,8 +939,10 @@ impl<
                 })?,
         };
         let command_id = message.command_id();
-        let (gateway_incoming_message_pda, ..) = get_incoming_message_pda(&command_id)
-            .map_err(|e| IncluderError::GenericError(e.to_string()))?;
+        let (gateway_incoming_message_pda, _) =
+            solana_axelar_gateway::IncomingMessage::try_find_pda(&command_id).ok_or_else(|| {
+                IncluderError::GenericError("Failed to derive incoming message PDA".to_string())
+            })?;
 
         if self
             .client
@@ -963,10 +1025,15 @@ impl<
 
         let receiver = Pubkey::from_str(&task.task.refund_recipient_address.clone())
             .map_err(|e| IncluderError::GenericError(e.to_string()))?;
-        let (operator_pda, _) = get_operator_pda(&self.keypair.pubkey())
-            .map_err(|e| IncluderError::GenericError(e.to_string()))?;
+        let (operator_pda, _) =
+            solana_axelar_operators::OperatorAccount::try_find_pda(&self.keypair.pubkey())
+                .ok_or_else(|| {
+                    IncluderError::GenericError("Failed to derive operator PDA".to_string())
+                })?;
         let (treasury, _) =
-            get_treasury_pda().map_err(|e| IncluderError::GenericError(e.to_string()))?;
+            solana_axelar_gas_service::Treasury::try_find_pda().ok_or_else(|| {
+                IncluderError::GenericError("Failed to derive treasury PDA".to_string())
+            })?;
         let (event_authority, _) = get_gas_service_event_authority_pda()
             .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
