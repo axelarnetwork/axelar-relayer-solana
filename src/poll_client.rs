@@ -88,7 +88,7 @@ impl SolanaRpcClientTrait for SolanaRpcClient {
             {
                 Ok(response) => {
                     return SolanaTransaction::from_encoded_confirmed_transaction_with_status_meta(
-                        signature, response,
+                        response,
                     );
                 }
                 Err(e) => {
