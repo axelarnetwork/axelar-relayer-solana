@@ -1,6 +1,7 @@
 use relayer_core::config::Config;
 use serde::Deserialize;
-use solana_sdk::{commitment_config::CommitmentConfig, signature::Keypair};
+use solana_commitment_config::CommitmentConfig;
+use solana_sdk::signature::Keypair;
 
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct SolanaConfig {

@@ -16,10 +16,10 @@ use solana::models::solana_transaction::PgSolanaTransactionModel;
 use solana::poll_client::SolanaRpcClient;
 use solana::subscriber_poller::SolanaPoller;
 use solana::transaction_builder::TransactionBuilder;
+use solana_commitment_config::CommitmentConfig;
 use solana_rpc::rpc::JsonRpcConfig;
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::account::AccountSharedData;
-use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::instruction::Instruction;
 use solana_sdk::native_token::LAMPORTS_PER_SOL;
 use solana_sdk::signature::{Keypair, Signer};
@@ -266,7 +266,7 @@ pub fn create_includer_components_with_redis(
 
     let gas_calculator = GasCalculator::new(includer_client.clone());
 
-    let keypair = Arc::new(Keypair::from_bytes(&payer.to_bytes()).unwrap());
+    let keypair = Arc::new(payer.insecure_clone());
 
     let mock_redis = mock_redis.unwrap_or_else(create_mock_redis);
 
@@ -660,9 +660,8 @@ impl TestEnvironment {
 
         // Initialize Gateway
         let gateway_root_pda = solana_axelar_gateway::GatewayConfig::find_pda().0;
-        let program_data = solana_sdk::bpf_loader_upgradeable::get_program_data_address(
-            &solana_axelar_gateway::ID,
-        );
+        let program_data =
+            solana_loader_v3_interface::get_program_data_address(&solana_axelar_gateway::ID);
 
         let (secret_key_1, compressed_pubkey_1) = generate_random_signer();
         let (secret_key_2, compressed_pubkey_2) = generate_random_signer();
