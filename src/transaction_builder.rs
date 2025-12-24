@@ -21,6 +21,10 @@ use async_trait::async_trait;
 use borsh::BorshDeserialize;
 use mpl_token_metadata;
 use relayer_core::utils::ThreadSafe;
+use solana_address_lookup_table_interface::instruction::{
+    create_lookup_table, extend_lookup_table,
+};
+use solana_address_lookup_table_interface::state::AddressLookupTable;
 use solana_axelar_gateway::executable::ExecutablePayload;
 use solana_axelar_gateway::Message;
 use solana_axelar_its::encoding::HubMessage;
@@ -28,8 +32,6 @@ use solana_axelar_its::instructions::{
     execute_deploy_interchain_token_extra_accounts, execute_interchain_transfer_extra_accounts,
     execute_link_token_extra_accounts,
 };
-use solana_sdk::address_lookup_table::instruction::{create_lookup_table, extend_lookup_table};
-use solana_sdk::address_lookup_table::state::AddressLookupTable;
 use solana_sdk::instruction::{AccountMeta, Instruction};
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signer::keypair::Keypair;
@@ -313,7 +315,7 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
         let mut accounts = solana_axelar_its::accounts::Execute {
             executable,
             payer: self.keypair.pubkey(),
-            system_program: solana_program::system_program::id(),
+            system_program: solana_sdk_ids::system_program::ID,
             event_authority: get_its_event_authority_pda()
                 .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?
                 .0,
@@ -322,7 +324,7 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
             token_mint,
             token_manager_ata,
             token_program,
-            associated_token_program: spl_associated_token_account::ID,
+            associated_token_program: spl_associated_token_account::program::ID,
             program: solana_axelar_its::ID,
         }
         .to_account_metas(None);
@@ -469,7 +471,7 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
             operator_proposal_pda,
             governance_event_authority,
             axelar_governance_program: solana_axelar_governance::ID,
-            system_program: solana_program::system_program::id(),
+            system_program: solana_sdk_ids::system_program::ID,
         }
         .to_account_metas(None);
 
@@ -587,7 +589,7 @@ mod tests {
     use crate::transaction_type::SolanaTransactionType;
     use alloy_sol_types::SolValue;
     use anchor_lang::prelude::AccountMeta;
-    use borsh::BorshSerialize;
+    
     use solana_axelar_gateway::executable::ExecutablePayload;
     use solana_axelar_gateway::payload::EncodingScheme;
     use solana_axelar_governance;
@@ -832,9 +834,7 @@ mod tests {
         };
 
         // Serialize using borsh
-        let its_payload = hub_message
-            .try_to_vec()
-            .expect("Failed to serialize HubMessage");
+        let its_payload = borsh::to_vec(&hub_message).expect("Failed to serialize HubMessage");
 
         let (its_instruction, its_accounts) = builder
             .build_execute_instruction(&message, &its_payload, its_destination)
@@ -958,9 +958,7 @@ mod tests {
         };
 
         // Serialize using borsh
-        let its_payload = hub_message
-            .try_to_vec()
-            .expect("Failed to serialize HubMessage");
+        let its_payload = borsh::to_vec(&hub_message).expect("Failed to serialize HubMessage");
 
         let (its_instruction, its_accounts) = builder
             .build_execute_instruction(&message, &its_payload, its_destination)
@@ -1034,9 +1032,7 @@ mod tests {
         };
 
         // Serialize using borsh
-        let its_payload = hub_message
-            .try_to_vec()
-            .expect("Failed to serialize HubMessage");
+        let its_payload = borsh::to_vec(&hub_message).expect("Failed to serialize HubMessage");
 
         // This should fail with PayloadDecodeError because the data field contains malformed bytes
         let result = builder
@@ -1117,9 +1113,7 @@ mod tests {
         };
 
         // Serialize using borsh
-        let its_payload = hub_message
-            .try_to_vec()
-            .expect("Failed to serialize HubMessage");
+        let its_payload = borsh::to_vec(&hub_message).expect("Failed to serialize HubMessage");
 
         // Should fail with PayloadDecodeError when signer accounts are detected
         let result = builder

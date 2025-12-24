@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use base64::prelude::BASE64_STANDARD;
 use base64::Engine;
-use borsh::BorshSerialize;
 use relayer_core::gmp_api::gmp_types::Event;
 use relayer_core::includer_worker::IncluderTrait;
 use relayer_core::ingestor::IngestorTrait;
@@ -74,7 +73,7 @@ async fn test_approve_and_execute_its_message() {
         message: ItsMessage::DeployInterchainToken(deploy_token),
     };
 
-    let deploy_payload_bytes = hub_message.try_to_vec().unwrap();
+    let deploy_payload_bytes = borsh::to_vec(&hub_message).unwrap();
     let deploy_payload_hash = solana_sdk::keccak::hashv(&[&deploy_payload_bytes]).to_bytes();
 
     // Create message for deploy
@@ -138,7 +137,7 @@ async fn test_approve_and_execute_its_message() {
             meta: None,
         },
         task: GatewayTxTaskFields {
-            execute_data: BASE64_STANDARD.encode(deploy_execute_data.try_to_vec().unwrap()),
+            execute_data: BASE64_STANDARD.encode(borsh::to_vec(&deploy_execute_data).unwrap()),
         },
     };
 
@@ -316,7 +315,7 @@ async fn test_approve_and_execute_its_message() {
         message: ItsMessage::InterchainTransfer(transfer),
     };
 
-    let transfer_payload_bytes = transfer_hub_message.try_to_vec().unwrap();
+    let transfer_payload_bytes = borsh::to_vec(&transfer_hub_message).unwrap();
     let transfer_payload_hash = solana_sdk::keccak::hashv(&[&transfer_payload_bytes]).to_bytes();
 
     let transfer_message = Message {
@@ -379,7 +378,7 @@ async fn test_approve_and_execute_its_message() {
             meta: None,
         },
         task: GatewayTxTaskFields {
-            execute_data: BASE64_STANDARD.encode(transfer_execute_data.try_to_vec().unwrap()),
+            execute_data: BASE64_STANDARD.encode(borsh::to_vec(&transfer_execute_data).unwrap()),
         },
     };
 
@@ -525,7 +524,7 @@ async fn test_approve_and_execute_its_message() {
         .get_minimum_balance_for_rent_exemption(82)
         .await
         .unwrap();
-    let create_mint_ix = solana_sdk::system_instruction::create_account(
+    let create_mint_ix = solana_system_interface::instruction::create_account(
         &env.payer.pubkey(),
         &link_mint_pubkey,
         rent,
@@ -575,7 +574,7 @@ async fn test_approve_and_execute_its_message() {
         message: ItsMessage::LinkToken(link_token),
     };
 
-    let link_payload_bytes = link_hub_message.try_to_vec().unwrap();
+    let link_payload_bytes = borsh::to_vec(&link_hub_message).unwrap();
     let link_payload_hash = solana_sdk::keccak::hashv(&[&link_payload_bytes]).to_bytes();
 
     let link_message = Message {
@@ -639,7 +638,7 @@ async fn test_approve_and_execute_its_message() {
             meta: None,
         },
         task: GatewayTxTaskFields {
-            execute_data: BASE64_STANDARD.encode(link_execute_data.try_to_vec().unwrap()),
+            execute_data: BASE64_STANDARD.encode(borsh::to_vec(&link_execute_data).unwrap()),
         },
     };
 
@@ -701,7 +700,7 @@ async fn test_approve_and_execute_its_message() {
         .get_minimum_balance_for_rent_exemption(82)
         .await
         .unwrap();
-    let create_mint_2022_ix = solana_sdk::system_instruction::create_account(
+    let create_mint_2022_ix = solana_system_interface::instruction::create_account(
         &env.payer.pubkey(),
         &link_mint_2022_pubkey,
         rent_2022,
@@ -754,7 +753,7 @@ async fn test_approve_and_execute_its_message() {
         message: ItsMessage::LinkToken(link_token_2022),
     };
 
-    let link_payload_bytes_2022 = link_hub_message_2022.try_to_vec().unwrap();
+    let link_payload_bytes_2022 = borsh::to_vec(&link_hub_message_2022).unwrap();
     let link_payload_hash_2022 = solana_sdk::keccak::hashv(&[&link_payload_bytes_2022]).to_bytes();
 
     let link_message_2022 = Message {
@@ -819,7 +818,7 @@ async fn test_approve_and_execute_its_message() {
             meta: None,
         },
         task: GatewayTxTaskFields {
-            execute_data: BASE64_STANDARD.encode(link_execute_data_2022.try_to_vec().unwrap()),
+            execute_data: BASE64_STANDARD.encode(borsh::to_vec(&link_execute_data_2022).unwrap()),
         },
     };
 
@@ -933,7 +932,7 @@ async fn test_its_messages_with_optional_fields() {
         message: ItsMessage::DeployInterchainToken(deploy_token),
     };
 
-    let deploy_payload_bytes = deploy_hub_message.try_to_vec().unwrap();
+    let deploy_payload_bytes = borsh::to_vec(&deploy_hub_message).unwrap();
     let deploy_payload_hash = solana_sdk::keccak::hashv(&[&deploy_payload_bytes]).to_bytes();
 
     let deploy_message = Message {
@@ -996,7 +995,7 @@ async fn test_its_messages_with_optional_fields() {
             meta: None,
         },
         task: GatewayTxTaskFields {
-            execute_data: BASE64_STANDARD.encode(deploy_execute_data.try_to_vec().unwrap()),
+            execute_data: BASE64_STANDARD.encode(borsh::to_vec(&deploy_execute_data).unwrap()),
         },
     };
 
@@ -1058,7 +1057,7 @@ async fn test_its_messages_with_optional_fields() {
         .get_minimum_balance_for_rent_exemption(82)
         .await
         .unwrap();
-    let create_mint_ix = solana_sdk::system_instruction::create_account(
+    let create_mint_ix = solana_system_interface::instruction::create_account(
         &env.payer.pubkey(),
         &link_mint_pubkey,
         rent,
@@ -1109,7 +1108,7 @@ async fn test_its_messages_with_optional_fields() {
         message: ItsMessage::LinkToken(link),
     };
 
-    let link_payload_bytes = link_hub_message.try_to_vec().unwrap();
+    let link_payload_bytes = borsh::to_vec(&link_hub_message).unwrap();
     let link_payload_hash = solana_sdk::keccak::hashv(&[&link_payload_bytes]).to_bytes();
 
     let link_message_id = "test-its-link-with-operator-001";
@@ -1173,7 +1172,7 @@ async fn test_its_messages_with_optional_fields() {
             meta: None,
         },
         task: GatewayTxTaskFields {
-            execute_data: BASE64_STANDARD.encode(link_execute_data.try_to_vec().unwrap()),
+            execute_data: BASE64_STANDARD.encode(borsh::to_vec(&link_execute_data).unwrap()),
         },
     };
 
@@ -1241,7 +1240,7 @@ async fn test_its_messages_with_optional_fields() {
     let init_accounts = solana_axelar_memo::accounts::Init {
         counter: counter_pda,
         payer: env.payer.pubkey(),
-        system_program: solana_sdk::system_program::ID,
+        system_program: solana_sdk_ids::system_program::ID,
     }
     .to_account_metas(None);
 
@@ -1356,7 +1355,7 @@ async fn test_its_messages_with_optional_fields() {
         message: ItsMessage::InterchainTransfer(transfer),
     };
 
-    let transfer_payload_bytes = transfer_hub_message.try_to_vec().unwrap();
+    let transfer_payload_bytes = borsh::to_vec(&transfer_hub_message).unwrap();
     let transfer_payload_hash = solana_sdk::keccak::hashv(&[&transfer_payload_bytes]).to_bytes();
 
     let transfer_message = Message {
@@ -1419,7 +1418,7 @@ async fn test_its_messages_with_optional_fields() {
             meta: None,
         },
         task: GatewayTxTaskFields {
-            execute_data: BASE64_STANDARD.encode(transfer_execute_data.try_to_vec().unwrap()),
+            execute_data: BASE64_STANDARD.encode(borsh::to_vec(&transfer_execute_data).unwrap()),
         },
     };
 
@@ -1521,7 +1520,7 @@ async fn test_its_concurrent_task_processing() {
             message: ItsMessage::InterchainTransfer(transfer),
         };
 
-        let transfer_payload_bytes = transfer_hub_message.try_to_vec().unwrap();
+        let transfer_payload_bytes = borsh::to_vec(&transfer_hub_message).unwrap();
         let transfer_payload_hash =
             solana_sdk::keccak::hashv(&[&transfer_payload_bytes]).to_bytes();
 
@@ -1584,7 +1583,8 @@ async fn test_its_concurrent_task_processing() {
                 meta: None,
             },
             task: GatewayTxTaskFields {
-                execute_data: BASE64_STANDARD.encode(transfer_execute_data.try_to_vec().unwrap()),
+                execute_data: BASE64_STANDARD
+                    .encode(borsh::to_vec(&transfer_execute_data).unwrap()),
             },
         };
 
@@ -1637,7 +1637,7 @@ async fn test_its_concurrent_task_processing() {
         message: ItsMessage::DeployInterchainToken(deploy_token),
     };
 
-    let deploy_payload_bytes = deploy_hub_message.try_to_vec().unwrap();
+    let deploy_payload_bytes = borsh::to_vec(&deploy_hub_message).unwrap();
     let deploy_payload_hash = solana_sdk::keccak::hashv(&[&deploy_payload_bytes]).to_bytes();
 
     let deploy_message = Message {
@@ -1714,7 +1714,7 @@ async fn test_its_concurrent_task_processing() {
             meta: None,
         },
         task: GatewayTxTaskFields {
-            execute_data: BASE64_STANDARD.encode(deploy_execute_data.try_to_vec().unwrap()),
+            execute_data: BASE64_STANDARD.encode(borsh::to_vec(&deploy_execute_data).unwrap()),
         },
     };
 

@@ -8,7 +8,9 @@ use solana::includer_client::{IncluderClient, IncluderClientTrait};
 use solana::redis::{RedisConnection, RedisConnectionTrait};
 use solana::transaction_type::SolanaTransactionType;
 use solana::utils::keypair_from_base58_string;
-use solana_sdk::address_lookup_table::instruction::{close_lookup_table, deactivate_lookup_table};
+use solana_address_lookup_table_interface::instruction::{
+    close_lookup_table, deactivate_lookup_table,
+};
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Keypair;
 use solana_sdk::signer::Signer as _;

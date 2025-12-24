@@ -31,56 +31,63 @@ ed25519-zebra = "=4.0.3"
 
 # Solana Crates
 
-anchor-lang = "0.31.1"
-anchor-spl = "0.31.1"
-borsh = { version = "0.10.4" }
-solana-client = "~2.3"
-solana-rpc-client = "~2.3"
-solana-rpc-client-api = "~2.3"
-solana-sdk = "~2.3"
-solana-program = "~2.3"
-solana-transaction-status = "~2.3"
-solana-pubsub-client = "~2.3"
-solana-transaction-status-client-types = "~2.3"
-mpl-token-metadata = "5.1.1"
+anchor-lang = "1.0.0-rc.1"
+anchor-spl = "1.0.0-rc.1"
+borsh = { version = "1.6.0" }
+solana-sdk = "~3.0"
+solana-sdk-ids = "~3.0"
+solana-program = "~3.0"
+solana-commitment-config = "~3.1"
+solana-client = "~3.1"
+solana-rpc-client = "~3.1"
+solana-rpc-client-api = "~3.1"
+solana-transaction-status = "~3.1"
+solana-pubsub-client = "~3.1"
+solana-transaction-status-client-types = "~3.1"
+solana-address-lookup-table-interface = "~3.0"
+solana-compute-budget-interface = "~3.0"
+mpl-token-metadata = "^5.1.2-alpha.2"
 
 # Relayer Crates
 
 relayer-core = { git = "https://github.com/commonprefix/axelar-relayer-core", branch = "main", features = [
     "mocks",
 ] }
-solana-transaction-parser = { git = "https://github.com/commonprefix/solana-transaction-parser", branch = "main", features = [
+# solana-transaction-parser = { git = "https://github.com/commonprefix/solana-transaction-parser", branch = "main", features = [
+#     "mocks",
+# ] }
+solana-transaction-parser = { path = "../solana-transaction-parser", features = [
     "mocks",
 ] }
 
 # Solana Axelar Programs
 
-solana-axelar-its = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "main", package = "solana-axelar-its", features = [
+solana-axelar-its = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "anchor-v1-rc", package = "solana-axelar-its", features = [
     "no-entrypoint",
     "devnet-amplifier",
 ] }
-solana-axelar-gateway = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "main", package = "solana-axelar-gateway", features = [
+solana-axelar-gateway = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "anchor-v1-rc", package = "solana-axelar-gateway", features = [
     "no-entrypoint",
     "devnet-amplifier",
 ] }
-solana-axelar-governance = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "main", package = "solana-axelar-governance", features = [
+solana-axelar-governance = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "anchor-v1-rc", package = "solana-axelar-governance", features = [
     "no-entrypoint",
     "devnet-amplifier",
 ] }
-solana-axelar-gas-service = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "main", package = "solana-axelar-gas-service", features = [
+solana-axelar-gas-service = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "anchor-v1-rc", package = "solana-axelar-gas-service", features = [
     "no-entrypoint",
     "devnet-amplifier",
 ] }
-solana-axelar-operators = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "main", package = "solana-axelar-operators", features = [
+solana-axelar-operators = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "anchor-v1-rc", package = "solana-axelar-operators", features = [
     "no-entrypoint",
     "devnet-amplifier",
 ] }
-solana-axelar-memo = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "main", package = "solana-axelar-memo", features = [
+solana-axelar-memo = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "anchor-v1-rc", package = "solana-axelar-memo", features = [
     "no-entrypoint",
     "devnet-amplifier",
 ] }
-solana-axelar-std = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "main" }
-governance-gmp = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "main", package = "governance-gmp" }
+solana-axelar-std = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "anchor-v1-rc" }
+governance-gmp = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "anchor-v1-rc", package = "governance-gmp" }
 alloy-sol-types = "0.7"
 
 bytemuck = "1.24.0"
@@ -96,15 +103,15 @@ mockall = "0.13.1"
 testcontainers = "0.24.0"
 testcontainers-modules = { version = "0.12.1", features = ["postgres"] }
 tracing-test = "0.2.5"
-solana-test-validator = "~2.3"
-solana-rpc = "~2.3"
-solana-loader-v3-interface = "5.0.0"
-solana-system-interface = "1.0.0"
+solana-test-validator = "~3.1"
+solana-rpc = "~3.1"
+solana-loader-v3-interface = "6.1.0"
+solana-system-interface = { version = "3.0.0", features = ["bincode"] }
 solana-sdk-ids = "2.2.1"
 libsecp256k1 = "0.6"
 rand = "0.8"
 lapin = "2.5"
-solana-axelar-gateway-test-fixtures = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "main" }
+solana-axelar-gateway-test-fixtures = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "anchor-v1-rc" }
 
 [lints.clippy]
 uninlined_format_args = "allow"
