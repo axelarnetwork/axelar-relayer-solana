@@ -352,7 +352,7 @@ impl<
                         .client
                         .get_transaction_cost_from_signature(&signature)
                         .await
-                        .unwrap_or(None); // if we fail to get the cost we still need to report the GMP
+                        .unwrap_or(Some(estimated_tx_cost)); // if we fail to get the cost we still need to report the GMP
 
                     // Include ALT cost if ALT transaction was sent successfully
                     let total_reverted_cost = reverted_tx_cost
