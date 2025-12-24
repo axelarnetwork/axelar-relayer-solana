@@ -12,8 +12,8 @@ use relayer_core::{error::ClientError, utils::ThreadSafe};
 use solana_client::{
     rpc_client::GetConfirmedSignaturesForAddress2Config, rpc_config::RpcTransactionConfig,
 };
+use solana_commitment_config::CommitmentConfig;
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
-use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Signature;
 use solana_transaction_status::UiTransactionEncoding;
