@@ -10249,7 +10249,6 @@ dependencies = [
  "solana-rpc-client",
  "solana-rpc-client-api",
  "solana-sdk",
- "solana-sdk-ids 2.2.1",
  "solana-sdk-ids 3.0.0",
  "solana-system-interface 3.0.0",
  "solana-test-validator",

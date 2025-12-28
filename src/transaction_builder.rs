@@ -331,8 +331,8 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
 
         debug!("GMP decoded payload: {:?}", gmp_decoded_payload);
 
-        match gmp_decoded_payload.clone() {
-            HubMessage::ReceiveFromHub { ref message, .. } => match message {
+        match &gmp_decoded_payload {
+            HubMessage::ReceiveFromHub { message, .. } => match message {
                 solana_axelar_its::encoding::Message::InterchainTransfer(transfer) => {
                     let destination_address =
                         Pubkey::try_from(transfer.destination_address.as_slice()).map_err(|e| {
@@ -589,7 +589,7 @@ mod tests {
     use crate::transaction_type::SolanaTransactionType;
     use alloy_sol_types::SolValue;
     use anchor_lang::prelude::AccountMeta;
-    
+
     use solana_axelar_gateway::executable::ExecutablePayload;
     use solana_axelar_gateway::payload::EncodingScheme;
     use solana_axelar_governance;
