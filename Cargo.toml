@@ -53,10 +53,7 @@ mpl-token-metadata = "^5.1.2-alpha.2"
 relayer-core = { git = "https://github.com/commonprefix/axelar-relayer-core", branch = "main", features = [
     "mocks",
 ] }
-# solana-transaction-parser = { git = "https://github.com/commonprefix/solana-transaction-parser", branch = "main", features = [
-#     "mocks",
-# ] }
-solana-transaction-parser = { path = "../solana-transaction-parser", features = [
+solana-transaction-parser = { git = "https://github.com/commonprefix/solana-transaction-parser", branch = "anchor-v1-rc", features = [
     "mocks",
 ] }
 
