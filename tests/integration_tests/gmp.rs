@@ -246,7 +246,7 @@ async fn test_call_contract_picked_up_and_sent_to_gmp() {
 async fn test_approve_and_execute_memo_message() {
     use base64::prelude::BASE64_STANDARD;
     use base64::Engine;
-    
+
     use solana_axelar_std::execute_data::{ExecuteData, MerklizedPayload};
     use solana_axelar_std::{CrossChainId, MerklizedMessage, Message, MessageLeaf};
     use solana_transaction_parser::gmp_types::{
@@ -1012,7 +1012,7 @@ async fn test_refund_task_duplicate_returns_already_processed() {
 async fn test_rotate_signers() {
     use base64::prelude::BASE64_STANDARD;
     use base64::Engine;
-    
+
     use solana_axelar_std::execute_data::{ExecuteData, MerklizedPayload};
     use solana_transaction_parser::gmp_types::{
         CommonTaskFields, GatewayTxTask, GatewayTxTaskFields,

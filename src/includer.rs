@@ -1143,9 +1143,9 @@ mod tests {
     use crate::transaction_builder::MockTransactionBuilderTrait;
     use crate::transaction_type::SolanaTransactionType;
     use base64::prelude::BASE64_STANDARD;
-    
+
     use relayer_core::gmp_api::MockGmpApiTrait;
-    
+
     use solana_address_lookup_table_interface::state::LookupTableMeta;
     use solana_axelar_std::{
         MerklizedMessage, MessageLeaf, PublicKey, SigningVerifierSetInfo, VerifierSetLeaf,
