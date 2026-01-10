@@ -27,11 +27,11 @@ use relayer_core::{
     database::Database, gmp_api::GmpApiTrait, includer::Includer, includer_worker::IncluderWorker,
     payload_cache::PayloadCache, queue::Queue,
 };
+use solana_address_lookup_table_interface::state::AddressLookupTable;
 use solana_axelar_gas_service;
 use solana_axelar_std::execute_data::{ExecuteData, MerklizedPayload, PayloadType};
 use solana_axelar_std::MerklizedMessage;
 use solana_axelar_std::{CrossChainId, Message};
-use solana_sdk::address_lookup_table::state::AddressLookupTable;
 use solana_sdk::clock::Slot;
 use solana_sdk::instruction::Instruction;
 use solana_sdk::pubkey::Pubkey;
@@ -475,7 +475,7 @@ impl<
             gateway_root_pda,
             verification_session_account: verification_session_tracker_pda,
             verifier_set_tracker_pda,
-            system_program: solana_program::system_program::id(),
+            system_program: solana_sdk_ids::system_program::ID,
         };
 
         let ix = Instruction {
@@ -621,7 +621,7 @@ impl<
         let accounts = solana_axelar_gateway::accounts::RotateSigners {
             payer: self.keypair.pubkey(),
             program: solana_axelar_gateway::ID,
-            system_program: solana_program::system_program::id(),
+            system_program: solana_sdk_ids::system_program::ID,
             gateway_root_pda,
             verifier_set_tracker_pda: current_verifier_set_tracker_pda,
             operator: Some(self.keypair.pubkey()),
@@ -681,7 +681,7 @@ impl<
                     funder: self.keypair.pubkey(),
                     incoming_message_pda: pda,
                     program: solana_axelar_gateway::ID,
-                    system_program: solana_program::system_program::id(),
+                    system_program: solana_sdk_ids::system_program::ID,
                     gateway_root_pda,
                     verification_session_account: verification_session_tracker_pda,
                     event_authority,
@@ -1064,17 +1064,18 @@ mod tests {
     use crate::transaction_builder::MockTransactionBuilderTrait;
     use crate::transaction_type::SolanaTransactionType;
     use base64::prelude::BASE64_STANDARD;
-    use borsh::BorshSerialize;
+
     use relayer_core::gmp_api::MockGmpApiTrait;
+
+    use solana_address_lookup_table_interface::state::LookupTableMeta;
     use solana_axelar_std::{
         MerklizedMessage, MessageLeaf, PublicKey, SigningVerifierSetInfo, VerifierSetLeaf,
     };
+    use solana_compute_budget_interface::ComputeBudgetInstruction;
     use solana_sdk::account::Account;
-    use solana_sdk::address_lookup_table::state::LookupTableMeta;
-    use solana_sdk::address_lookup_table::AddressLookupTableAccount;
-    use solana_sdk::compute_budget::ComputeBudgetInstruction;
     use solana_sdk::hash::Hash;
     use solana_sdk::instruction::AccountMeta;
+    use solana_sdk::message::AddressLookupTableAccount;
     use solana_sdk::message::{v0, VersionedMessage};
     use solana_sdk::pubkey::Pubkey;
     use solana_sdk::transaction::{Transaction, TransactionError, VersionedTransaction};
@@ -1175,7 +1176,7 @@ mod tests {
                 meta: None,
             },
             task: GatewayTxTaskFields {
-                execute_data: BASE64_STANDARD.encode(execute_data.try_to_vec().unwrap()),
+                execute_data: BASE64_STANDARD.encode(borsh::to_vec(&execute_data).unwrap()),
             },
         }
     }
@@ -1649,7 +1650,7 @@ mod tests {
         // Mock transaction_builder.build to return a transaction with a high compute unit price
         let high_micro_price = 2_000_000_000_000u64;
         let keypair_bytes = keypair.to_bytes();
-        let keypair_for_mock = Keypair::from_bytes(&keypair_bytes[..]).unwrap();
+        let keypair_for_mock = Keypair::try_from(&keypair_bytes[..]).unwrap();
         transaction_builder
             .expect_build()
             .times(1)
@@ -2362,9 +2363,9 @@ mod tests {
             .returning(|| Box::pin(async { Ok(1000u64) }));
 
         let alt_ix_create =
-            Instruction::new_with_bytes(solana_program::system_program::ID, &[1], vec![]);
+            Instruction::new_with_bytes(solana_sdk_ids::system_program::ID, &[1], vec![]);
         let alt_ix_extend =
-            Instruction::new_with_bytes(solana_program::system_program::ID, &[2], vec![]);
+            Instruction::new_with_bytes(solana_sdk_ids::system_program::ID, &[2], vec![]);
 
         // Create a valid base58-encoded keypair string for testing
         let test_authority_keypair = Keypair::new();
@@ -2464,7 +2465,7 @@ mod tests {
                     Ok(Account {
                         lamports: 1_000_000,
                         data: account_data,
-                        owner: solana_sdk::address_lookup_table::program::id(),
+                        owner: solana_address_lookup_table_interface::program::id(),
                         executable: false,
                         rent_epoch: 0,
                     })
@@ -2627,9 +2628,9 @@ mod tests {
             .returning(|| Box::pin(async { Ok(1000u64) }));
 
         let alt_ix_create =
-            Instruction::new_with_bytes(solana_program::system_program::ID, &[3], vec![]);
+            Instruction::new_with_bytes(solana_sdk_ids::system_program::ID, &[3], vec![]);
         let alt_ix_extend =
-            Instruction::new_with_bytes(solana_program::system_program::ID, &[4], vec![]);
+            Instruction::new_with_bytes(solana_sdk_ids::system_program::ID, &[4], vec![]);
 
         // Create a valid base58-encoded keypair string for testing
         let test_authority_keypair = Keypair::new();
@@ -2802,9 +2803,9 @@ mod tests {
             .returning(|| Box::pin(async { Ok(1000u64) }));
 
         let alt_ix_create =
-            Instruction::new_with_bytes(solana_program::system_program::ID, &[5], vec![]);
+            Instruction::new_with_bytes(solana_sdk_ids::system_program::ID, &[5], vec![]);
         let alt_ix_extend =
-            Instruction::new_with_bytes(solana_program::system_program::ID, &[6], vec![]);
+            Instruction::new_with_bytes(solana_sdk_ids::system_program::ID, &[6], vec![]);
 
         let test_authority_keypair = Keypair::new();
         let authority_keypair_str = test_authority_keypair.to_base58_string();
@@ -2825,7 +2826,7 @@ mod tests {
                 ))
             });
 
-        let lookup_account = AddressLookupTableAccount {
+        let lookup_account = solana_sdk::message::AddressLookupTableAccount {
             key: alt_pubkey,
             addresses: alt_addresses.clone(),
         };
@@ -2903,7 +2904,7 @@ mod tests {
                     Ok(Account {
                         lamports: 1_000_000,
                         data: account_data,
-                        owner: solana_sdk::address_lookup_table::program::id(),
+                        owner: solana_address_lookup_table_interface::program::id(),
                         executable: false,
                         rent_epoch: 0,
                     })
@@ -3214,7 +3215,7 @@ mod tests {
         };
 
         let execute_data_b64 =
-            base64::prelude::BASE64_STANDARD.encode(execute_data.try_to_vec().unwrap());
+            base64::prelude::BASE64_STANDARD.encode(borsh::to_vec(&execute_data).unwrap());
 
         let task = GatewayTxTask {
             common: CommonTaskFields {
@@ -3558,7 +3559,7 @@ mod tests {
         };
 
         let execute_data_b64 =
-            base64::prelude::BASE64_STANDARD.encode(execute_data.try_to_vec().unwrap());
+            base64::prelude::BASE64_STANDARD.encode(borsh::to_vec(&execute_data).unwrap());
 
         let task = GatewayTxTask {
             common: CommonTaskFields {
@@ -3788,7 +3789,7 @@ mod tests {
         };
 
         let execute_data_b64 =
-            base64::prelude::BASE64_STANDARD.encode(execute_data.try_to_vec().unwrap());
+            base64::prelude::BASE64_STANDARD.encode(borsh::to_vec(&execute_data).unwrap());
 
         let task = GatewayTxTask {
             common: CommonTaskFields {
@@ -3970,7 +3971,7 @@ mod tests {
         };
 
         let execute_data_b64 =
-            base64::prelude::BASE64_STANDARD.encode(execute_data.try_to_vec().unwrap());
+            base64::prelude::BASE64_STANDARD.encode(borsh::to_vec(&execute_data).unwrap());
 
         let task = GatewayTxTask {
             common: CommonTaskFields {
@@ -4155,7 +4156,7 @@ mod tests {
         };
 
         let execute_data_b64 =
-            base64::prelude::BASE64_STANDARD.encode(execute_data.try_to_vec().unwrap());
+            base64::prelude::BASE64_STANDARD.encode(borsh::to_vec(&execute_data).unwrap());
 
         let task = GatewayTxTask {
             common: CommonTaskFields {
@@ -4340,7 +4341,7 @@ mod tests {
         };
 
         let execute_data_b64 =
-            base64::prelude::BASE64_STANDARD.encode(execute_data.try_to_vec().unwrap());
+            base64::prelude::BASE64_STANDARD.encode(borsh::to_vec(&execute_data).unwrap());
 
         let task = GatewayTxTask {
             common: CommonTaskFields {
@@ -4547,7 +4548,7 @@ mod tests {
         };
 
         let execute_data_b64 =
-            base64::prelude::BASE64_STANDARD.encode(execute_data.try_to_vec().unwrap());
+            base64::prelude::BASE64_STANDARD.encode(borsh::to_vec(&execute_data).unwrap());
 
         let task = GatewayTxTask {
             common: CommonTaskFields {
@@ -5007,9 +5008,9 @@ mod tests {
             .returning(|| Box::pin(async { Ok(1000u64) }));
 
         let alt_ix_create =
-            Instruction::new_with_bytes(solana_program::system_program::ID, &[7], vec![]);
+            Instruction::new_with_bytes(solana_sdk_ids::system_program::ID, &[7], vec![]);
         let alt_ix_extend =
-            Instruction::new_with_bytes(solana_program::system_program::ID, &[8], vec![]);
+            Instruction::new_with_bytes(solana_sdk_ids::system_program::ID, &[8], vec![]);
 
         let test_authority_keypair = Keypair::new();
         let authority_keypair_str = test_authority_keypair.to_base58_string();
@@ -5106,7 +5107,7 @@ mod tests {
                     Ok(Account {
                         lamports: 1_000_000,
                         data: account_data,
-                        owner: solana_sdk::address_lookup_table::program::id(),
+                        owner: solana_address_lookup_table_interface::program::id(),
                         executable: false,
                         rent_epoch: 0,
                     })

@@ -8,7 +8,6 @@ use alloy_sol_types::SolValue as _;
 use anchor_lang::{InstructionData, ToAccountMetas};
 use base64::prelude::BASE64_STANDARD;
 use base64::Engine;
-use borsh::BorshSerialize;
 use governance_gmp::alloy_primitives::U256;
 use relayer_core::gmp_api::MockGmpApiTrait;
 use relayer_core::includer_worker::IncluderTrait;
@@ -70,7 +69,7 @@ async fn test_governance_schedule_timelock_proposal() {
 
     let (governance_config_pda, _governance_config_bump) = get_governance_config_pda();
     let program_data =
-        solana_sdk::bpf_loader_upgradeable::get_program_data_address(&solana_axelar_governance::ID);
+        solana_loader_v3_interface::get_program_data_address(&solana_axelar_governance::ID);
 
     let authorized_chain = "ethereum";
     let authorized_address = "0xSourceAddress";
@@ -91,7 +90,7 @@ async fn test_governance_schedule_timelock_proposal() {
             upgrade_authority: env.upgrade_authority.pubkey(),
             program_data,
             governance_config: governance_config_pda,
-            system_program: solana_sdk::system_program::ID,
+            system_program: solana_sdk_ids::system_program::ID,
         }
         .to_account_metas(None),
         data: solana_axelar_governance::instruction::InitializeConfig {
@@ -133,7 +132,7 @@ async fn test_governance_schedule_timelock_proposal() {
     let gmp_payload = governance_gmp::GovernanceCommandPayload {
         command: governance_gmp::GovernanceCommand::ScheduleTimeLockProposal,
         target: target_bytes.to_vec().into(),
-        call_data: call_data.try_to_vec().unwrap().into(),
+        call_data: borsh::to_vec(&call_data).unwrap().into(),
         native_value,
         eta: eta_u256,
     };
@@ -194,7 +193,7 @@ async fn test_governance_schedule_timelock_proposal() {
         },
     };
 
-    let execute_data_b64 = BASE64_STANDARD.encode(execute_data.try_to_vec().unwrap());
+    let execute_data_b64 = BASE64_STANDARD.encode(borsh::to_vec(&execute_data).unwrap());
 
     let gateway_task = GatewayTxTask {
         common: CommonTaskFields {

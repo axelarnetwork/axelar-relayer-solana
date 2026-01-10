@@ -10,7 +10,7 @@ pub mod fixtures {
     }
 
     pub fn rpc_response_fixtures() -> Vec<RpcGetTransactionResponse> {
-        let body = include_str!("../tests/testdata/rpc_batch_repsonse.json");
+        let body = include_str!("../tests/testdata/rpc_batch_response.json");
         serde_json::from_str::<Vec<RpcGetTransactionResponse>>(body)
             .expect("Failed to deserialize RpcGetTransactionResponse array")
     }
