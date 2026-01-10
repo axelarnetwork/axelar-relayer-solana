@@ -143,6 +143,12 @@ impl IncluderClientTrait for IncluderClient {
                 }
             };
 
+            let expected_signature = transaction.get_signature().copied().ok_or_else(|| {
+                IncluderClientError::GenericError(
+                    "Transaction has no signature before sending".to_string(),
+                )
+            })?;
+
             match res {
                 Ok(signature) => {
                     // At this point, the transaction has been sent and confirmed. We need to return the signature,
@@ -157,9 +163,32 @@ impl IncluderClientTrait for IncluderClient {
                     return Ok((signature, cost));
                 }
                 Err(e) => {
-                    // TODO: we can reach this point even if the transaction was sent and confirmed successfully,
-                    // and we'll fail to account for the fee.
-                    // We might have to manually implement send_and_confirm()
+                    // Check if the transaction was actually included on-chain despite the error.
+                    // This can happen if the transaction was sent and confirmed, but we got an
+                    // RPC error during confirmation (e.g., network timeout, RPC failure).
+                    // If the transaction exists on-chain, we should account for the fee.
+                    if let Ok(Some(Ok(()))) = self.get_signature_status(&expected_signature).await {
+                        // Transaction was successfully included on-chain!
+                        warn!(
+                            "Transaction was included on-chain despite error: {}. Signature: {}",
+                            e, expected_signature
+                        );
+                        // Get the transaction cost and return success
+                        let cost = match self
+                            .get_transaction_cost_from_signature(&expected_signature)
+                            .await
+                        {
+                            Ok(cost) => cost,
+                            Err(cost_err) => {
+                                warn!(
+                                    "Failed to get transaction cost from signature: {}",
+                                    cost_err
+                                );
+                                None
+                            }
+                        };
+                        return Ok((expected_signature, cost));
+                    }
                     if let Some(execute_data) = execute_data {
                         if check_if_error_includes_an_expected_account(&e.to_string(), execute_data)
                             .map_err(|e| IncluderClientError::GenericError(e.to_string()))?
