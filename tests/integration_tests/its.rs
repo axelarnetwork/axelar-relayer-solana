@@ -5,10 +5,6 @@ use std::sync::Arc;
 use base64::prelude::BASE64_STANDARD;
 use base64::Engine;
 use borsh::BorshSerialize;
-use interchain_token_transfer_gmp::alloy_primitives::{Bytes, FixedBytes, Uint};
-use interchain_token_transfer_gmp::{
-    DeployInterchainToken, GMPPayload, InterchainTransfer, LinkToken, ReceiveFromHub,
-};
 use relayer_core::gmp_api::gmp_types::Event;
 use relayer_core::includer_worker::IncluderTrait;
 use relayer_core::ingestor::IngestorTrait;
@@ -17,6 +13,9 @@ use solana::includer::SolanaIncluder;
 use solana::ingestor::SolanaIngestor;
 use solana::mocks::{MockRefundsModel, MockUpdateEvents};
 use solana_axelar_gateway_test_fixtures::create_verifier_info;
+use solana_axelar_its::encoding::{
+    DeployInterchainToken, HubMessage, InterchainTransfer, LinkToken, Message as ItsMessage,
+};
 use solana_axelar_its::utils::interchain_token_id;
 use solana_axelar_std::execute_data::{ExecuteData, MerklizedPayload};
 use solana_axelar_std::PayloadType;
@@ -63,23 +62,19 @@ async fn test_approve_and_execute_its_message() {
 
     // Create DeployInterchainToken payload
     let deploy_token = DeployInterchainToken {
-        selector: Uint::from(1u64),
-        token_id: FixedBytes::from(token_id),
+        token_id,
         name: "Test Token".to_string(),
         symbol: "TEST".to_string(),
         decimals: 9,
-        minter: Bytes::from(vec![]),
+        minter: None,
     };
 
-    let deploy_inner = GMPPayload::DeployInterchainToken(deploy_token).encode();
-    let deploy_receive_from_hub = ReceiveFromHub {
-        selector: Uint::from(4u64),
+    let hub_message = HubMessage::ReceiveFromHub {
         source_chain: "axelar".to_string(), // Must be in trusted_chains
-        payload: Bytes::from(deploy_inner),
+        message: ItsMessage::DeployInterchainToken(deploy_token),
     };
 
-    let deploy_gmp_payload = GMPPayload::ReceiveFromHub(deploy_receive_from_hub);
-    let deploy_payload_bytes = deploy_gmp_payload.encode();
+    let deploy_payload_bytes = hub_message.try_to_vec().unwrap();
     let deploy_payload_hash = solana_sdk::keccak::hashv(&[&deploy_payload_bytes]).to_bytes();
 
     // Create message for deploy
@@ -309,23 +304,19 @@ async fn test_approve_and_execute_its_message() {
     let destination_address_bytes = destination_pubkey.to_bytes().to_vec();
 
     let transfer = InterchainTransfer {
-        selector: Uint::from(0u64),
-        token_id: FixedBytes::from(token_id),
-        source_address: Bytes::from(source_address_bytes),
-        destination_address: Bytes::from(destination_address_bytes),
-        amount: Uint::from(transfer_amount),
-        data: Bytes::from(vec![]),
+        token_id,
+        source_address: source_address_bytes,
+        destination_address: destination_address_bytes,
+        amount: transfer_amount,
+        data: None,
     };
 
-    let transfer_inner = GMPPayload::InterchainTransfer(transfer).encode();
-    let transfer_receive_from_hub = ReceiveFromHub {
-        selector: Uint::from(4u64),
+    let transfer_hub_message = HubMessage::ReceiveFromHub {
         source_chain: "axelar".to_string(), // Must be in trusted_chains
-        payload: Bytes::from(transfer_inner),
+        message: ItsMessage::InterchainTransfer(transfer),
     };
 
-    let transfer_gmp_payload = GMPPayload::ReceiveFromHub(transfer_receive_from_hub);
-    let transfer_payload_bytes = transfer_gmp_payload.encode();
+    let transfer_payload_bytes = transfer_hub_message.try_to_vec().unwrap();
     let transfer_payload_hash = solana_sdk::keccak::hashv(&[&transfer_payload_bytes]).to_bytes();
 
     let transfer_message = Message {
@@ -572,23 +563,19 @@ async fn test_approve_and_execute_its_message() {
     let link_message_id = "test-its-link-token-001";
 
     let link_token = LinkToken {
-        selector: Uint::from(5u64),
-        token_id: FixedBytes::from(link_token_id),
-        token_manager_type: Uint::from(2u64), // LockUnlock = 2
-        source_token_address: Bytes::from(link_mint_pubkey.to_bytes().to_vec()),
-        destination_token_address: Bytes::from(link_mint_pubkey.to_bytes().to_vec()),
-        link_params: Bytes::from(vec![]), // No operator
+        token_id: link_token_id,
+        token_manager_type: 2, // LockUnlock = 2
+        source_token_address: link_mint_pubkey.to_bytes().to_vec(),
+        destination_token_address: link_mint_pubkey.to_bytes().to_vec(),
+        params: None, // No operator
     };
 
-    let link_inner = GMPPayload::LinkToken(link_token).encode();
-    let link_receive_from_hub = ReceiveFromHub {
-        selector: Uint::from(4u64),
+    let link_hub_message = HubMessage::ReceiveFromHub {
         source_chain: "axelar".to_string(),
-        payload: Bytes::from(link_inner),
+        message: ItsMessage::LinkToken(link_token),
     };
 
-    let link_gmp_payload = GMPPayload::ReceiveFromHub(link_receive_from_hub);
-    let link_payload_bytes = link_gmp_payload.encode();
+    let link_payload_bytes = link_hub_message.try_to_vec().unwrap();
     let link_payload_hash = solana_sdk::keccak::hashv(&[&link_payload_bytes]).to_bytes();
 
     let link_message = Message {
@@ -755,23 +742,19 @@ async fn test_approve_and_execute_its_message() {
     let link_message_id_2022 = "test-its-link-token-2022-001";
 
     let link_token_2022 = LinkToken {
-        selector: Uint::from(5u64),
-        token_id: FixedBytes::from(link_token_id_2022),
-        token_manager_type: Uint::from(2u64), // LockUnlock = 2
-        source_token_address: Bytes::from(link_mint_2022_pubkey.to_bytes().to_vec()),
-        destination_token_address: Bytes::from(link_mint_2022_pubkey.to_bytes().to_vec()),
-        link_params: Bytes::from(vec![]), // No operator
+        token_id: link_token_id_2022,
+        token_manager_type: 2, // LockUnlock = 2
+        source_token_address: link_mint_2022_pubkey.to_bytes().to_vec(),
+        destination_token_address: link_mint_2022_pubkey.to_bytes().to_vec(),
+        params: None, // No operator
     };
 
-    let link_inner_2022 = GMPPayload::LinkToken(link_token_2022).encode();
-    let link_receive_from_hub_2022 = ReceiveFromHub {
-        selector: Uint::from(4u64),
+    let link_hub_message_2022 = HubMessage::ReceiveFromHub {
         source_chain: "axelar".to_string(),
-        payload: Bytes::from(link_inner_2022),
+        message: ItsMessage::LinkToken(link_token_2022),
     };
 
-    let link_gmp_payload_2022 = GMPPayload::ReceiveFromHub(link_receive_from_hub_2022);
-    let link_payload_bytes_2022 = link_gmp_payload_2022.encode();
+    let link_payload_bytes_2022 = link_hub_message_2022.try_to_vec().unwrap();
     let link_payload_hash_2022 = solana_sdk::keccak::hashv(&[&link_payload_bytes_2022]).to_bytes();
 
     let link_message_2022 = Message {
@@ -938,23 +921,19 @@ async fn test_its_messages_with_optional_fields() {
     let minter_bytes = minter_pubkey.to_bytes().to_vec();
 
     let deploy_token = DeployInterchainToken {
-        selector: Uint::from(1u64),
-        token_id: FixedBytes::from(token_id),
+        token_id,
         name: "Minted Token".to_string(),
         symbol: "MINT".to_string(),
         decimals: 6,
-        minter: Bytes::from(minter_bytes),
+        minter: Some(minter_bytes),
     };
 
-    let deploy_inner = GMPPayload::DeployInterchainToken(deploy_token).encode();
-    let deploy_receive_from_hub = ReceiveFromHub {
-        selector: Uint::from(4u64),
+    let deploy_hub_message = HubMessage::ReceiveFromHub {
         source_chain: "axelar".to_string(),
-        payload: Bytes::from(deploy_inner),
+        message: ItsMessage::DeployInterchainToken(deploy_token),
     };
 
-    let deploy_gmp_payload = GMPPayload::ReceiveFromHub(deploy_receive_from_hub);
-    let deploy_payload_bytes = deploy_gmp_payload.encode();
+    let deploy_payload_bytes = deploy_hub_message.try_to_vec().unwrap();
     let deploy_payload_hash = solana_sdk::keccak::hashv(&[&deploy_payload_bytes]).to_bytes();
 
     let deploy_message = Message {
@@ -1118,23 +1097,19 @@ async fn test_its_messages_with_optional_fields() {
     let operator_bytes = operator_pubkey.to_bytes().to_vec();
 
     let link = LinkToken {
-        selector: Uint::from(5u64),
-        token_id: FixedBytes::from(link_token_id),
-        token_manager_type: Uint::from(2u64), // LockUnlock = 2
-        source_token_address: Bytes::from(vec![0xAB; 20]), // Different source address
-        destination_token_address: Bytes::from(link_mint_pubkey.to_bytes().to_vec()),
-        link_params: Bytes::from(operator_bytes), // Non-empty operator!
+        token_id: link_token_id,
+        token_manager_type: 2,                // LockUnlock = 2
+        source_token_address: vec![0xAB; 20], // Different source address
+        destination_token_address: link_mint_pubkey.to_bytes().to_vec(),
+        params: Some(operator_bytes), // Non-empty operator!
     };
 
-    let link_inner = GMPPayload::LinkToken(link).encode();
-    let link_receive_from_hub = ReceiveFromHub {
-        selector: Uint::from(4u64),
+    let link_hub_message = HubMessage::ReceiveFromHub {
         source_chain: "axelar".to_string(),
-        payload: Bytes::from(link_inner),
+        message: ItsMessage::LinkToken(link),
     };
 
-    let link_gmp_payload = GMPPayload::ReceiveFromHub(link_receive_from_hub);
-    let link_payload_bytes = link_gmp_payload.encode();
+    let link_payload_bytes = link_hub_message.try_to_vec().unwrap();
     let link_payload_hash = solana_sdk::keccak::hashv(&[&link_payload_bytes]).to_bytes();
 
     let link_message_id = "test-its-link-with-operator-001";
@@ -1369,23 +1344,19 @@ async fn test_its_messages_with_optional_fields() {
     let destination_address_bytes = memo_program_pubkey.to_bytes().to_vec();
 
     let transfer = InterchainTransfer {
-        selector: Uint::from(0u64),
-        token_id: FixedBytes::from(token_id),
-        source_address: Bytes::from(source_address_bytes),
-        destination_address: Bytes::from(destination_address_bytes), // Memo program
-        amount: Uint::from(transfer_amount),
-        data: Bytes::from(executable_data),
+        token_id,
+        source_address: source_address_bytes,
+        destination_address: destination_address_bytes, // Memo program
+        amount: transfer_amount,
+        data: Some(executable_data),
     };
 
-    let transfer_inner = GMPPayload::InterchainTransfer(transfer).encode();
-    let transfer_receive_from_hub = ReceiveFromHub {
-        selector: Uint::from(4u64),
+    let transfer_hub_message = HubMessage::ReceiveFromHub {
         source_chain: "axelar".to_string(),
-        payload: Bytes::from(transfer_inner),
+        message: ItsMessage::InterchainTransfer(transfer),
     };
 
-    let transfer_gmp_payload = GMPPayload::ReceiveFromHub(transfer_receive_from_hub);
-    let transfer_payload_bytes = transfer_gmp_payload.encode();
+    let transfer_payload_bytes = transfer_hub_message.try_to_vec().unwrap();
     let transfer_payload_hash = solana_sdk::keccak::hashv(&[&transfer_payload_bytes]).to_bytes();
 
     let transfer_message = Message {
@@ -1538,23 +1509,19 @@ async fn test_its_concurrent_task_processing() {
         let destination_address_bytes = destination_pubkey.to_bytes().to_vec();
 
         let transfer = InterchainTransfer {
-            selector: Uint::from(0u64),
-            token_id: FixedBytes::from(token_id),
-            source_address: Bytes::from(source_address_bytes),
-            destination_address: Bytes::from(destination_address_bytes),
-            amount: Uint::from(transfer_amount),
-            data: Bytes::from(vec![]),
+            token_id,
+            source_address: source_address_bytes,
+            destination_address: destination_address_bytes,
+            amount: transfer_amount,
+            data: None,
         };
 
-        let transfer_inner = GMPPayload::InterchainTransfer(transfer).encode();
-        let transfer_receive_from_hub = ReceiveFromHub {
-            selector: Uint::from(4u64),
+        let transfer_hub_message = HubMessage::ReceiveFromHub {
             source_chain: "axelar".to_string(),
-            payload: Bytes::from(transfer_inner),
+            message: ItsMessage::InterchainTransfer(transfer),
         };
 
-        let transfer_gmp_payload = GMPPayload::ReceiveFromHub(transfer_receive_from_hub);
-        let transfer_payload_bytes = transfer_gmp_payload.encode();
+        let transfer_payload_bytes = transfer_hub_message.try_to_vec().unwrap();
         let transfer_payload_hash =
             solana_sdk::keccak::hashv(&[&transfer_payload_bytes]).to_bytes();
 
@@ -1658,23 +1625,19 @@ async fn test_its_concurrent_task_processing() {
     let source_address = its_hub_address.clone();
 
     let deploy_token = DeployInterchainToken {
-        selector: Uint::from(1u64),
-        token_id: FixedBytes::from(token_id),
+        token_id,
         name: "Concurrent Test Token".to_string(),
         symbol: "CONC".to_string(),
         decimals: 9,
-        minter: Bytes::from(env.payer.pubkey().to_bytes().to_vec()),
+        minter: Some(env.payer.pubkey().to_bytes().to_vec()),
     };
 
-    let deploy_inner = GMPPayload::DeployInterchainToken(deploy_token).encode();
-    let deploy_receive_from_hub = ReceiveFromHub {
-        selector: Uint::from(4u64),
+    let deploy_hub_message = HubMessage::ReceiveFromHub {
         source_chain: "axelar".to_string(),
-        payload: Bytes::from(deploy_inner),
+        message: ItsMessage::DeployInterchainToken(deploy_token),
     };
 
-    let deploy_gmp_payload = GMPPayload::ReceiveFromHub(deploy_receive_from_hub);
-    let deploy_payload_bytes = deploy_gmp_payload.encode();
+    let deploy_payload_bytes = deploy_hub_message.try_to_vec().unwrap();
     let deploy_payload_hash = solana_sdk::keccak::hashv(&[&deploy_payload_bytes]).to_bytes();
 
     let deploy_message = Message {
