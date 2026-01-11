@@ -11,7 +11,6 @@ use relayer_core::queue::{QueueItem, QueueTrait};
 use solana::includer::SolanaIncluder;
 use solana::ingestor::SolanaIngestor;
 use solana::mocks::{MockRefundsModel, MockUpdateEvents};
-use solana_axelar_gateway_test_fixtures::create_verifier_info;
 use solana_axelar_its::encoding::{
     DeployInterchainToken, HubMessage, InterchainTransfer, LinkToken, Message as ItsMessage,
 };

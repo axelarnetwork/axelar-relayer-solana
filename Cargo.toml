@@ -3,121 +3,6 @@ name = "solana"
 version = "0.1.0"
 edition = "2021"
 
-[dependencies]
-dotenv = "0.15.0"
-tokio = { version = "1.41.1", features = ["full", "test-util"] }
-anyhow = "1.0.93"
-serde = "1.0.215"
-error-stack = "0.5.0"
-serde_json = "1.0.133"
-redis = { version = "0.32.4", features = ["tokio-rustls-comp"] }
-tracing = "0.1.40"
-sqlx = { version = "0.8.1", features = [
-    "runtime-tokio-rustls",
-    "postgres",
-    "chrono",
-] }
-chrono = { version = "0.4.40", features = ["serde"] }
-futures = "0.3.31"
-futures-util = "0.3.31"
-async-trait = "0.1.88"
-thiserror = "2.0.3"
-hex = "0.4.3"
-tokio-util = "0.7.12"
-bs58 = "0.5"
-base64 = "0.22.1"
-httpmock = "0.7.0"
-ed25519-zebra = "=4.0.3"
-
-# Solana Crates
-
-anchor-lang = "1.0.0-rc.1"
-anchor-spl = "1.0.0-rc.1"
-borsh = { version = "1.6.0" }
-solana-sdk = "~3.0"
-solana-sdk-ids = "~3.0"
-solana-program = "~3.0"
-solana-commitment-config = "~3.1"
-solana-client = "~3.1"
-solana-rpc-client = "~3.1"
-solana-rpc-client-api = "~3.1"
-solana-transaction-status = "~3.1"
-solana-pubsub-client = "~3.1"
-solana-transaction-status-client-types = "~3.1"
-solana-address-lookup-table-interface = "~3.0"
-solana-compute-budget-interface = "~3.0"
-mpl-token-metadata = "^5.1.2-alpha.2"
-
-# Relayer Crates
-
-relayer-core = { git = "https://github.com/commonprefix/axelar-relayer-core", branch = "main", features = [
-    "mocks",
-] }
-solana-transaction-parser = { git = "https://github.com/commonprefix/solana-transaction-parser", branch = "anchor-v1-rc", features = [
-    "mocks",
-] }
-
-# Solana Axelar Programs
-
-solana-axelar-its = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "main", package = "solana-axelar-its", features = [
-    "no-entrypoint",
-    "devnet-amplifier",
-] }
-solana-axelar-gateway = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "main", package = "solana-axelar-gateway", features = [
-    "no-entrypoint",
-    "devnet-amplifier",
-] }
-solana-axelar-governance = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "main", package = "solana-axelar-governance", features = [
-    "no-entrypoint",
-    "devnet-amplifier",
-] }
-solana-axelar-gas-service = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "main", package = "solana-axelar-gas-service", features = [
-    "no-entrypoint",
-    "devnet-amplifier",
-] }
-solana-axelar-operators = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "main", package = "solana-axelar-operators", features = [
-    "no-entrypoint",
-    "devnet-amplifier",
-] }
-solana-axelar-memo = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "main", package = "solana-axelar-memo", features = [
-    "no-entrypoint",
-    "devnet-amplifier",
-] }
-solana-axelar-std = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "main" }
-governance-gmp = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "main", package = "governance-gmp" }
-alloy-sol-types = "0.7"
-
-bytemuck = "1.24.0"
-bincode = "1"
-reqwest = "0.12.24"
-mockall = "0.13.1"
-statrs = "0.16"
-regex = "1.10"
-
-
-[dev-dependencies]
-mockall = "0.13.1"
-testcontainers = "0.24.0"
-testcontainers-modules = { version = "0.12.1", features = ["postgres"] }
-tracing-test = "0.2.5"
-solana-test-validator = "~3.1"
-solana-rpc = "~3.1"
-solana-loader-v3-interface = "6.1.0"
-solana-system-interface = { version = "3.0.0", features = ["bincode"] }
-solana-sdk-ids = "~3.0"
-libsecp256k1 = "0.6"
-rand = "0.8"
-lapin = "2.5"
-solana-axelar-gateway-test-fixtures = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "main" }
-
-[lints.clippy]
-uninlined_format_args = "allow"
-unwrap_used = "warn"
-indexing_slicing = "warn"
-clone_on_ref_ptr = "warn"
-redundant_clone = "warn"
-unnecessary_box_returns = "warn"
-
 [[bin]]
 name = "subscriber"
 path = "src/bin/subscriber.rs"
@@ -142,10 +27,121 @@ path = "src/bin/recovery/subscriber.rs"
 name = "cu_price_calculator"
 path = "src/bin/cu_price_calculator.rs"
 
-
 [features]
 instrumentation = []
 # Enable this feature in integration tests to access mock types
 # Default feature so rust-analyzer always sees the mocks
 default = ["test-mocks"]
 test-mocks = []
+
+[dependencies]
+alloy-sol-types = "0.7"
+anyhow = "1.0.93"
+async-trait = "0.1.88"
+base64 = "0.22.1"
+bincode = "1"
+bs58 = "0.5"
+bytemuck = "1.24.0"
+chrono = { version = "0.4.40", features = ["serde"] }
+dotenv = "0.15.0"
+ed25519-zebra = "=4.0.3"
+error-stack = "0.5.0"
+futures = "0.3.31"
+futures-util = "0.3.31"
+hex = "0.4.3"
+httpmock = "0.7.0"
+mockall = "0.13.1"
+redis = { version = "0.32.4", features = ["tokio-rustls-comp"] }
+regex = "1.10"
+reqwest = "0.12.24"
+serde = "1.0.215"
+serde_json = "1.0.133"
+sqlx = { version = "0.8.1", features = [
+    "runtime-tokio-rustls",
+    "postgres",
+    "chrono",
+] }
+statrs = "0.16"
+thiserror = "2.0.3"
+tokio = { version = "1.41.1", features = ["full", "test-util"] }
+tokio-util = "0.7.12"
+tracing = "0.1.40"
+
+# Solana Crates
+
+anchor-lang = "1.0.0-rc.1"
+anchor-spl = "1.0.0-rc.1"
+borsh = { version = "1.6.0" }
+mpl-token-metadata = "^5.1.2-alpha.2"
+solana-address-lookup-table-interface = "~3.0"
+solana-client = "~3.1"
+solana-commitment-config = "~3.1"
+solana-compute-budget-interface = "~3.0"
+solana-program = "~3.0"
+solana-pubsub-client = "~3.1"
+solana-rpc-client = "~3.1"
+solana-rpc-client-api = "~3.1"
+solana-sdk = "~3.0"
+solana-sdk-ids = "~3.0"
+solana-transaction-status = "~3.1"
+solana-transaction-status-client-types = "~3.1"
+
+# Relayer Crates
+
+relayer-core = { git = "https://github.com/commonprefix/axelar-relayer-core", branch = "main", features = [
+    "mocks",
+] }
+solana-transaction-parser = { git = "https://github.com/commonprefix/solana-transaction-parser", branch = "anchor-v1-rc", features = [
+    "mocks",
+] }
+
+# Solana Axelar Crates
+
+governance-gmp = { version = "0.1.3" }
+solana-axelar-std = { version = "0.1.5" }
+
+# Solana Axelar Programs
+
+solana-axelar-gas-service = { version = "0.1.8", features = [
+    "no-entrypoint",
+    "devnet-amplifier",
+] }
+solana-axelar-gateway = { version = "0.1.8", features = [
+    "no-entrypoint",
+    "devnet-amplifier",
+] }
+solana-axelar-governance = { version = "0.1.8", features = [
+    "no-entrypoint",
+    "devnet-amplifier",
+] }
+solana-axelar-its = { version = "0.1.8", features = [
+    "no-entrypoint",
+    "devnet-amplifier",
+] }
+solana-axelar-operators = { version = "0.1.8", features = [
+    "no-entrypoint",
+    "devnet-amplifier",
+] }
+
+[dev-dependencies]
+lapin = "2.5"
+libsecp256k1 = "0.6"
+mockall = "0.13.1"
+rand = "0.8"
+solana-axelar-memo = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "main", package = "solana-axelar-memo", features = [ "no-entrypoint", "devnet-amplifier" ] }
+solana-loader-v3-interface = "6.1.0"
+solana-rpc = "~3.1"
+solana-sdk-ids = "~3.0"
+solana-system-interface = { version = "3.0.0", features = ["bincode"] }
+solana-test-validator = "~3.1"
+testcontainers = "0.24.0"
+testcontainers-modules = { version = "0.12.1", features = ["postgres"] }
+tracing-test = "0.2.5"
+
+[lints.clippy]
+uninlined_format_args = "allow"
+unwrap_used = "warn"
+indexing_slicing = "warn"
+clone_on_ref_ptr = "warn"
+redundant_clone = "warn"
+unnecessary_box_returns = "warn"

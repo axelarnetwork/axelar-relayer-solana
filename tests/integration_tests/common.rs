@@ -242,6 +242,40 @@ pub fn create_mock_gmp_api_for_execute() -> MockGmpApiTrait {
     mock_gmp_api
 }
 
+// Taken from https://github.com/axelarnetwork/axelar-amplifier-solana/blob/7d843884d9e0ada635819c6a207278ec70699ea0/helpers/solana-axelar-gateway-test-fixtures/src/lib.rs#L411
+// as a test util
+#[cfg(test)]
+pub fn create_verifier_info(
+    secret_key: &libsecp256k1::SecretKey,
+    payload_merkle_root: [u8; 32],
+    verifier_leaf: &VerifierSetLeaf,
+    position: usize,
+    verifier_merkle_tree: &MerkleTree,
+    payload_type: solana_axelar_std::PayloadType,
+) -> solana_axelar_std::SigningVerifierSetInfo {
+    let hashed_message = solana_axelar_std::execute_data::prefixed_message_hash_payload_type(
+        payload_type,
+        &payload_merkle_root,
+    );
+
+    let message = libsecp256k1::Message::parse(&hashed_message);
+    let (signature, recovery_id) = libsecp256k1::sign(&message, secret_key);
+    let mut signature_bytes = signature.serialize().to_vec();
+    signature_bytes.push(recovery_id.serialize() + 27);
+    let signature_array: [u8; 65] = signature_bytes.try_into().unwrap();
+    let signature = solana_axelar_std::Signature(signature_array);
+
+    let merkle_proof = verifier_merkle_tree.proof(&[position]);
+    let merkle_proof_bytes = merkle_proof.to_bytes();
+
+    solana_axelar_std::SigningVerifierSetInfo {
+        signature,
+        leaf: *verifier_leaf,
+        merkle_proof: merkle_proof_bytes,
+        payload_type,
+    }
+}
+
 #[cfg(test)]
 pub struct IncluderComponents {
     pub includer_client: IncluderClient,
@@ -557,7 +591,7 @@ impl TestEnvironment {
                 solana_axelar_its::state::UserRoles::find_pda(&its_root_pda, &operator.pubkey());
 
             let user_roles_state = solana_axelar_its::state::UserRoles {
-                roles: solana_axelar_its::state::Roles::OPERATOR,
+                roles: solana_axelar_its::state::roles::OPERATOR,
                 bump: user_roles_bump,
             };
 

@@ -13,7 +13,6 @@ use relayer_core::gmp_api::MockGmpApiTrait;
 use relayer_core::includer_worker::IncluderTrait;
 use solana::includer::SolanaIncluder;
 use solana::mocks::MockRefundsModel;
-use solana_axelar_gateway_test_fixtures::create_verifier_info;
 use solana_axelar_governance::SolanaAccountMetadata;
 use solana_axelar_std::execute_data::{ExecuteData, MerklizedPayload};
 use solana_axelar_std::{

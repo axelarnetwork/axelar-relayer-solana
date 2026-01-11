@@ -21,7 +21,6 @@ use solana_transaction_parser::parser::TransactionParser;
 use solana_transaction_parser::redis::MockCostCacheTrait;
 
 use solana_axelar_gateway::ID as GATEWAY_PROGRAM_ID;
-use solana_axelar_gateway_test_fixtures::create_verifier_info;
 use solana_axelar_std::{hasher::LeafHash, MerkleTree, PublicKey, VerifierSetLeaf};
 
 use super::common::*;
