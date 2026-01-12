@@ -22,6 +22,8 @@ use crate::{
     },
 };
 
+const MAX_GET_TRANSACTION_COST_ATTEMPTS: usize = 3;
+
 #[async_trait]
 #[cfg_attr(test, mockall::automock)]
 pub trait IncluderClientTrait: ThreadSafe {
@@ -298,7 +300,7 @@ impl IncluderClientTrait for IncluderClient {
         use solana_transaction_status::UiTransactionEncoding;
 
         let mut last_error = None;
-        for attempt in 0..3 {
+        for attempt in 0..MAX_GET_TRANSACTION_COST_ATTEMPTS {
             match self
                 .inner()
                 .get_transaction_with_config(
@@ -319,29 +321,24 @@ impl IncluderClientTrait for IncluderClient {
                     }
                 }
                 Err(e) => {
-                    last_error = Some(e);
-                    if attempt < 2 {
+                    if attempt < MAX_GET_TRANSACTION_COST_ATTEMPTS - 1 {
                         warn!(
-                            "Failed to get transaction cost for signature {} (attempt {}/3): {}. Retrying in 1 second...",
+                            "Failed to get transaction cost for signature {} (attempt {}/{}): {}. Retrying...",
                             signature,
                             attempt + 1,
-                            last_error.as_ref().unwrap()
+                            MAX_GET_TRANSACTION_COST_ATTEMPTS,
+                            e
                         );
                         sleep(Duration::from_millis(500)).await;
-                    } else {
-                        warn!(
-                            "Failed to get transaction cost for signature {} after 3 attempts: {}",
-                            signature,
-                            last_error.as_ref().unwrap()
-                        );
                     }
+                    last_error = Some(e);
                 }
             }
         }
 
-        // All attempts failed, return the last error
-        Err(IncluderClientError::GenericError(
-            last_error.unwrap().to_string(),
+        Err(last_error.map_or_else(
+            || IncluderClientError::GenericError("Failed to get transaction cost".to_string()),
+            |error| IncluderClientError::GenericError(error.to_string()),
         ))
     }
 }
