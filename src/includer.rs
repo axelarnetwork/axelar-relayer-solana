@@ -316,7 +316,11 @@ impl<
             ));
         }
 
-        match self.client.send_transaction(transaction, None).await {
+        match self
+            .client
+            .send_transaction(transaction.clone(), None)
+            .await
+        {
             Ok((signature, actual_tx_cost)) => {
                 info!("Transaction sent successfully: {}", signature.to_string());
 
@@ -335,11 +339,19 @@ impl<
             Err(e) => match e {
                 IncluderClientError::UnrecoverableTransactionError(e) => {
                     warn!("Transaction reverted: {}", e);
+                    let signature = transaction.get_signature().copied().ok_or_else(|| {
+                        IncluderError::GenericError("Failed to get signature".to_string())
+                    })?;
+                    let reverted_tx_cost = self
+                        .client
+                        .get_transaction_cost_from_signature(&signature)
+                        .await
+                        .unwrap_or(Some(estimated_tx_cost)); // if we fail to get the cost we still need to report the GMP
+
                     // Include ALT cost if ALT transaction was sent successfully
-                    // TODO: this might be off. We need to know the actual cost of the transaction
-                    // in the case where it failed.
-                    let total_reverted_cost =
-                        estimated_tx_cost.saturating_add(alt_cost.unwrap_or(0));
+                    let total_reverted_cost = reverted_tx_cost
+                        .unwrap_or(estimated_tx_cost)
+                        .saturating_add(alt_cost.unwrap_or(0));
                     let event = self.gmp_api.execute_message(
                         task.task.message.message_id.clone(),
                         task.task.message.source_chain.clone(),
@@ -2914,6 +2926,7 @@ mod tests {
         let send_calls = Arc::new(AtomicUsize::new(0));
         let send_calls_clone = Arc::clone(&send_calls);
         let alt_signature_clone = alt_signature;
+        let main_tx_signature = main_tx.signatures[0];
 
         mock_client
             .expect_send_transaction()
@@ -2929,6 +2942,18 @@ mod tests {
                         ))
                     })
                 }
+            });
+
+        // Mock get_transaction_cost_from_signature for the failed main transaction
+        let main_tx_actual_cost = 5_000u64; // Same as estimated cost in this test
+        let main_tx_signature_for_check = main_tx_signature;
+        mock_client
+            .expect_get_transaction_cost_from_signature()
+            .times(1)
+            .withf(move |sig| *sig == main_tx_signature_for_check)
+            .returning(move |_| {
+                let cost = main_tx_actual_cost;
+                Box::pin(async move { Ok(Some(cost)) })
             });
 
         let msg_id_for_alt = message_id.clone();
@@ -5116,6 +5141,7 @@ mod tests {
         // ALT transaction succeeds, main transaction fails with UnrecoverableTransactionError
         let send_calls = Arc::new(AtomicUsize::new(0));
         let send_calls_clone = Arc::clone(&send_calls);
+        let main_tx_signature = main_tx.signatures[0];
 
         mock_client
             .expect_send_transaction()
@@ -5134,6 +5160,19 @@ mod tests {
                         ))
                     })
                 }
+            });
+
+        // Mock get_transaction_cost_from_signature for the failed main transaction
+        // Return the actual cost (same as estimated in this test)
+        let main_tx_actual_cost = main_tx_estimated_cost;
+        let main_tx_signature_for_check = main_tx_signature;
+        mock_client
+            .expect_get_transaction_cost_from_signature()
+            .times(1)
+            .withf(move |sig| *sig == main_tx_signature_for_check)
+            .returning(move |_| {
+                let cost = main_tx_actual_cost;
+                Box::pin(async move { Ok(Some(cost)) })
             });
 
         let msg_id_for_alt = message_id.clone();
