@@ -350,7 +350,7 @@ impl<
 
                     // Include ALT cost if ALT transaction was sent successfully
                     let total_reverted_cost = reverted_tx_cost
-                        .unwrap_or(0)
+                        .unwrap_or(estimated_tx_cost)
                         .saturating_add(alt_cost.unwrap_or(0));
                     let event = self.gmp_api.execute_message(
                         task.task.message.message_id.clone(),
