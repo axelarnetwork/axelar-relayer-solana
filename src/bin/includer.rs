@@ -59,11 +59,9 @@ async fn main() -> anyhow::Result<()> {
         SolanaPostgresDB,
         IncluderClient,
         solana::transaction_builder::TransactionBuilder<
-            solana::gas_calculator::GasCalculator<
-                IncluderClient,
-                solana::fees_client::FeesClient<IncluderClient>,
-            >,
+            solana::gas_calculator::GasCalculator<IncluderClient>,
             solana::includer_client::IncluderClient,
+            RedisConnection,
         >,
     >::create_includer(
         config,

@@ -134,6 +134,10 @@ path = "src/bin/alt_manager.rs"
 name = "subscriber_recovery"
 path = "src/bin/recovery/subscriber.rs"
 
+[[bin]]
+name = "cu_price_calculator"
+path = "src/bin/cu_price_calculator.rs"
+
 
 [features]
 instrumentation = []

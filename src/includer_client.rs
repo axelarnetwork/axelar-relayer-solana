@@ -11,6 +11,7 @@ use solana_sdk::{
     signature::Signature,
 };
 use std::{sync::Arc, time::Duration};
+use tokio::time::sleep;
 use tracing::{error, warn};
 
 use crate::{
@@ -20,6 +21,8 @@ use crate::{
         check_if_error_includes_an_expected_account, is_recoverable, is_slot_already_verified,
     },
 };
+
+const MAX_GET_TRANSACTION_COST_ATTEMPTS: usize = 3;
 
 #[async_trait]
 #[cfg_attr(test, mockall::automock)]
@@ -32,7 +35,6 @@ pub trait IncluderClientTrait: ThreadSafe {
     async fn get_slot(&self) -> Result<u64, IncluderClientError>;
     async fn get_recent_prioritization_fees(
         &self,
-        addresses: &[Pubkey],
     ) -> Result<Vec<RpcPrioritizationFee>, IncluderClientError>;
     async fn send_transaction(
         &self,
@@ -119,10 +121,9 @@ impl IncluderClientTrait for IncluderClient {
 
     async fn get_recent_prioritization_fees(
         &self,
-        addresses: &[Pubkey],
     ) -> Result<Vec<RpcPrioritizationFee>, IncluderClientError> {
         self.inner()
-            .get_recent_prioritization_fees(addresses)
+            .get_recent_prioritization_fees(&[])
             .await
             .map_err(|e| IncluderClientError::GenericError(e.to_string()))
     }
@@ -145,6 +146,12 @@ impl IncluderClientTrait for IncluderClient {
                 }
             };
 
+            let expected_signature = transaction.get_signature().copied().ok_or_else(|| {
+                IncluderClientError::GenericError(
+                    "Transaction has no signature before sending".to_string(),
+                )
+            })?;
+
             match res {
                 Ok(signature) => {
                     // At this point, the transaction has been sent and confirmed. We need to return the signature,
@@ -159,9 +166,32 @@ impl IncluderClientTrait for IncluderClient {
                     return Ok((signature, cost));
                 }
                 Err(e) => {
-                    // TODO: we can reach this point even if the transaction was sent and confirmed successfully,
-                    // and we'll fail to account for the fee.
-                    // We might have to manually implement send_and_confirm()
+                    // Check if the transaction was actually included on-chain despite the error.
+                    // This can happen if the transaction was sent and confirmed, but we got an
+                    // RPC error during confirmation (e.g., network timeout, RPC failure).
+                    // If the transaction exists on-chain, we should account for the fee.
+                    if let Ok(Some(Ok(()))) = self.get_signature_status(&expected_signature).await {
+                        // Transaction was successfully included on-chain!
+                        warn!(
+                            "Transaction was included on-chain despite error: {}. Signature: {}",
+                            e, expected_signature
+                        );
+                        // Get the transaction cost and return success
+                        let cost = match self
+                            .get_transaction_cost_from_signature(&expected_signature)
+                            .await
+                        {
+                            Ok(cost) => cost,
+                            Err(cost_err) => {
+                                warn!(
+                                    "Failed to get transaction cost from signature: {}",
+                                    cost_err
+                                );
+                                None
+                            }
+                        };
+                        return Ok((expected_signature, cost));
+                    }
                     if let Some(execute_data) = execute_data {
                         if check_if_error_includes_an_expected_account(&e.to_string(), execute_data)
                             .map_err(|e| IncluderClientError::GenericError(e.to_string()))?
@@ -269,24 +299,47 @@ impl IncluderClientTrait for IncluderClient {
         use solana_rpc_client_api::config::RpcTransactionConfig;
         use solana_transaction_status::UiTransactionEncoding;
 
-        let transaction_info = self
-            .inner()
-            .get_transaction_with_config(
-                signature,
-                RpcTransactionConfig {
-                    encoding: Some(UiTransactionEncoding::Json),
-                    commitment: Some(self.commitment),
-                    max_supported_transaction_version: Some(0),
-                },
-            )
-            .await
-            .map_err(|e| IncluderClientError::GenericError(e.to_string()))?;
-
-        if let Some(meta) = &transaction_info.transaction.meta {
-            Ok(Some(meta.fee))
-        } else {
-            Ok(None)
+        let mut last_error = None;
+        for attempt in 0..MAX_GET_TRANSACTION_COST_ATTEMPTS {
+            match self
+                .inner()
+                .get_transaction_with_config(
+                    signature,
+                    RpcTransactionConfig {
+                        encoding: Some(UiTransactionEncoding::Json),
+                        commitment: Some(self.commitment),
+                        max_supported_transaction_version: Some(0),
+                    },
+                )
+                .await
+            {
+                Ok(transaction_info) => {
+                    if let Some(meta) = &transaction_info.transaction.meta {
+                        return Ok(Some(meta.fee));
+                    } else {
+                        return Ok(None);
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to get transaction cost for signature {} (attempt {}/{}): {}.",
+                        signature,
+                        attempt + 1,
+                        MAX_GET_TRANSACTION_COST_ATTEMPTS,
+                        e
+                    );
+                    last_error = Some(e);
+                    if attempt < MAX_GET_TRANSACTION_COST_ATTEMPTS - 1 {
+                        sleep(Duration::from_millis(500)).await;
+                    }
+                }
+            }
         }
+
+        Err(last_error.map_or_else(
+            || IncluderClientError::GenericError("Failed to get transaction cost".to_string()),
+            |error| IncluderClientError::GenericError(error.to_string()),
+        ))
     }
 }
 

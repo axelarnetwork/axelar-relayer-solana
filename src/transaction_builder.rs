@@ -1,6 +1,7 @@
 use crate::gas_calculator::GasCalculatorTrait;
 use crate::includer::ALTInfo;
 use crate::includer_client::IncluderClientTrait;
+use crate::redis::RedisConnectionTrait;
 use crate::utils::{
     calculate_total_cost_lamports, create_transaction, extract_proposal_hash_from_payload,
     get_destination_ata, get_gateway_event_authority_pda, get_governance_event_authority_pda,
@@ -32,15 +33,22 @@ use std::sync::Arc;
 use tracing::{debug, error};
 
 #[derive(Clone)]
-pub struct TransactionBuilder<GE: GasCalculatorTrait, IC: IncluderClientTrait> {
+pub struct TransactionBuilder<
+    GE: GasCalculatorTrait,
+    IC: IncluderClientTrait,
+    R: RedisConnectionTrait + Clone,
+> {
     keypair: Arc<Keypair>,
     gas_calculator: GE,
     includer_client: Arc<IC>,
+    redis_conn: R,
 }
 
 #[cfg_attr(test, mockall::automock)]
 #[async_trait]
-pub trait TransactionBuilderTrait<IC: IncluderClientTrait>: ThreadSafe {
+pub trait TransactionBuilderTrait<IC: IncluderClientTrait, R: RedisConnectionTrait + Clone>:
+    ThreadSafe
+{
     async fn build(
         &self,
         ixs: &[Instruction],
@@ -84,21 +92,27 @@ pub trait TransactionBuilderTrait<IC: IncluderClientTrait>: ThreadSafe {
     ) -> Result<(Instruction, Instruction, Pubkey, String), TransactionBuilderError>;
 }
 
-impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
-    TransactionBuilder<GE, IC>
+impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + Clone>
+    TransactionBuilder<GE, IC, R>
 {
-    pub fn new(keypair: Arc<Keypair>, gas_calculator: GE, includer_client: Arc<IC>) -> Self {
+    pub fn new(
+        keypair: Arc<Keypair>,
+        gas_calculator: GE,
+        includer_client: Arc<IC>,
+        redis_conn: R,
+    ) -> Self {
         Self {
             keypair,
             gas_calculator,
             includer_client,
+            redis_conn,
         }
     }
 }
 
 #[async_trait]
-impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
-    TransactionBuilderTrait<IC> for TransactionBuilder<GE, IC>
+impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + Clone>
+    TransactionBuilderTrait<IC, R> for TransactionBuilder<GE, IC, R>
 {
     async fn build(
         &self,
@@ -130,8 +144,8 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
         };
 
         let unit_price = self
-            .gas_calculator
-            .compute_unit_price(ixs, 75)
+            .redis_conn
+            .get_cu_price()
             .await
             .map_err(|e| TransactionBuilderError::ClientError(e.to_string()))?;
 
@@ -152,7 +166,7 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
             ixs.to_vec(),
             alt_info.clone(),
             alt_addresses.clone(),
-            unit_price,
+            unit_price.unwrap_or(0),
             500_0000,
             &self.keypair,
             signing_keypairs.clone(),
@@ -173,7 +187,7 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
             ixs.to_vec(),
             alt_info,
             alt_addresses,
-            unit_price,
+            unit_price.unwrap_or(0),
             compute_budget,
             &self.keypair,
             signing_keypairs,
@@ -395,16 +409,12 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
                     } else {
                         None
                     };
-                    let minter_roles_pda = minter
-                        .map(|minter| {
-                            get_minter_roles_pda(&token_manager_pda, &minter)
-                                .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))
-                                .map(|(pda, _)| pda)
-                        })
-                        .transpose()?;
+                    let minter_roles_pda =
+                        minter.map(|minter| get_minter_roles_pda(&token_manager_pda, &minter).0);
 
                     let (mpl_token_metadata_account, _) =
-                        mpl_token_metadata::accounts::Metadata::find_pda(&token_mint);
+                        get_mpl_token_metadata_account(&token_mint)
+                            .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
 
                     accounts.extend(execute_deploy_interchain_token_extra_accounts(
                         solana_program::sysvar::instructions::ID,
@@ -420,13 +430,8 @@ impl<GE: GasCalculatorTrait + ThreadSafe, IC: IncluderClientTrait + ThreadSafe>
                         .as_ref()
                         // Check if we should be erroring here or ignoring the value if invalid
                         .and_then(|p| Pubkey::try_from(p.as_slice()).ok());
-                    let minter_roles_pda = minter
-                        .map(|minter| {
-                            get_minter_roles_pda(&token_manager_pda, &minter)
-                                .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))
-                                .map(|(pda, _)| pda)
-                        })
-                        .transpose()?;
+                    let minter_roles_pda =
+                        minter.map(|minter| get_minter_roles_pda(&token_manager_pda, &minter).0);
 
                     accounts.extend(execute_link_token_extra_accounts(minter, minter_roles_pda))
                 }
@@ -633,6 +638,7 @@ mod tests {
     use crate::gas_calculator::MockGasCalculatorTrait;
     use crate::includer::ALTInfo;
     use crate::includer_client::MockIncluderClientTrait;
+    use crate::redis::MockRedisConnectionTrait;
     use crate::transaction_builder::{TransactionBuilder, TransactionBuilderTrait};
     use crate::transaction_type::SolanaTransactionType;
     use alloy_sol_types::SolValue;
@@ -658,6 +664,7 @@ mod tests {
         let keypair = Arc::new(Keypair::new());
         let mut mock_gas = MockGasCalculatorTrait::new();
         let mut mock_client = MockIncluderClientTrait::new();
+        let mut mock_redis = MockRedisConnectionTrait::new();
 
         let alt_pubkey = Pubkey::new_unique();
         let alt_account_1 = Pubkey::new_unique();
@@ -676,10 +683,10 @@ mod tests {
 
         let recent_blockhash = Hash::new_unique();
 
-        mock_gas
-            .expect_compute_unit_price()
+        mock_redis
+            .expect_get_cu_price()
             .times(1)
-            .return_once(|_a, _b| Ok(100_000u64));
+            .returning(move || Ok(Some(100_000u64)));
 
         mock_gas
             .expect_compute_budget()
@@ -696,8 +703,12 @@ mod tests {
 
         let alt_info = ALTInfo::new(Some(alt_pubkey)).with_addresses(alt_addresses);
 
-        let builder =
-            TransactionBuilder::new(Arc::clone(&keypair), mock_gas, Arc::new(mock_client));
+        let builder = TransactionBuilder::new(
+            Arc::clone(&keypair),
+            mock_gas,
+            Arc::new(mock_client),
+            mock_redis,
+        );
 
         let (tx, _cost) = builder
             .build(std::slice::from_ref(&user_ix), Some(alt_info), None)
@@ -725,6 +736,7 @@ mod tests {
         let keypair = Arc::new(Keypair::new());
         let mut mock_gas = MockGasCalculatorTrait::new();
         let mut mock_client = MockIncluderClientTrait::new();
+        let mut mock_redis = MockRedisConnectionTrait::new();
 
         let user_program = Pubkey::new_unique();
         let user_ix = Instruction::new_with_bytes(
@@ -735,10 +747,10 @@ mod tests {
 
         let recent_blockhash = Hash::new_unique();
 
-        mock_gas
-            .expect_compute_unit_price()
+        mock_redis
+            .expect_get_cu_price()
             .times(1)
-            .return_once(|_a, _b| Ok(100_000u64));
+            .returning(move || Ok(Some(100_000u64)));
 
         mock_gas
             .expect_compute_budget()
@@ -753,8 +765,12 @@ mod tests {
                 Box::pin(async move { Ok(hash) })
             });
 
-        let builder =
-            TransactionBuilder::new(Arc::clone(&keypair), mock_gas, Arc::new(mock_client));
+        let builder = TransactionBuilder::new(
+            Arc::clone(&keypair),
+            mock_gas,
+            Arc::new(mock_client),
+            mock_redis,
+        );
 
         let (tx, _cost) = builder
             .build(std::slice::from_ref(&user_ix), None, None)
@@ -777,6 +793,7 @@ mod tests {
         let keypair = Arc::new(Keypair::new());
         let mut mock_gas = MockGasCalculatorTrait::new();
         let mut mock_client = MockIncluderClientTrait::new();
+        let mut mock_redis = MockRedisConnectionTrait::new();
 
         let extra_keypair1 = Keypair::new();
         let extra_keypair2 = Keypair::new();
@@ -797,10 +814,10 @@ mod tests {
 
         let recent_blockhash = Hash::new_unique();
 
-        mock_gas
-            .expect_compute_unit_price()
+        mock_redis
+            .expect_get_cu_price()
             .times(1)
-            .return_once(|_a, _b| Ok(100_000u64));
+            .returning(move || Ok(Some(100_000u64)));
 
         mock_gas
             .expect_compute_budget()
@@ -815,8 +832,12 @@ mod tests {
                 Box::pin(async move { Ok(hash) })
             });
 
-        let builder =
-            TransactionBuilder::new(Arc::clone(&keypair), mock_gas, Arc::new(mock_client));
+        let builder = TransactionBuilder::new(
+            Arc::clone(&keypair),
+            mock_gas,
+            Arc::new(mock_client),
+            mock_redis,
+        );
 
         let (tx, _cost) = builder
             .build(
@@ -844,6 +865,7 @@ mod tests {
         let keypair = Arc::new(Keypair::new());
         let mock_gas = MockGasCalculatorTrait::new();
         let mock_client = MockIncluderClientTrait::new();
+        let mock_redis = MockRedisConnectionTrait::new();
 
         let message = Message {
             cc_id: CrossChainId {
@@ -856,8 +878,12 @@ mod tests {
             payload_hash: [0u8; 32],
         };
 
-        let builder =
-            TransactionBuilder::new(Arc::clone(&keypair), mock_gas, Arc::new(mock_client));
+        let builder = TransactionBuilder::new(
+            Arc::clone(&keypair),
+            mock_gas,
+            Arc::new(mock_client),
+            mock_redis,
+        );
 
         let its_destination = solana_axelar_its::ID;
 
@@ -957,6 +983,7 @@ mod tests {
         let keypair = Arc::new(Keypair::new());
         let mock_gas = MockGasCalculatorTrait::new();
         let mock_client = MockIncluderClientTrait::new();
+        let mock_redis = MockRedisConnectionTrait::new();
 
         let message = Message {
             cc_id: CrossChainId {
@@ -969,8 +996,12 @@ mod tests {
             payload_hash: [0u8; 32],
         };
 
-        let builder =
-            TransactionBuilder::new(Arc::clone(&keypair), mock_gas, Arc::new(mock_client));
+        let builder = TransactionBuilder::new(
+            Arc::clone(&keypair),
+            mock_gas,
+            Arc::new(mock_client),
+            mock_redis,
+        );
 
         let its_destination = solana_axelar_its::ID;
         let destination_pubkey = Pubkey::new_unique();
@@ -1044,6 +1075,7 @@ mod tests {
         let keypair = Arc::new(Keypair::new());
         let mock_gas = MockGasCalculatorTrait::new();
         let mock_client = MockIncluderClientTrait::new();
+        let mock_redis = MockRedisConnectionTrait::new();
 
         let message = Message {
             cc_id: CrossChainId {
@@ -1056,8 +1088,12 @@ mod tests {
             payload_hash: [0u8; 32],
         };
 
-        let builder =
-            TransactionBuilder::new(Arc::clone(&keypair), mock_gas, Arc::new(mock_client));
+        let builder = TransactionBuilder::new(
+            Arc::clone(&keypair),
+            mock_gas,
+            Arc::new(mock_client),
+            mock_redis,
+        );
 
         let its_destination = solana_axelar_its::ID;
         let destination_pubkey = Pubkey::new_unique();
@@ -1115,6 +1151,7 @@ mod tests {
         let keypair = Arc::new(Keypair::new());
         let mock_gas = MockGasCalculatorTrait::new();
         let mock_client = MockIncluderClientTrait::new();
+        let mock_redis = MockRedisConnectionTrait::new();
 
         let message = Message {
             cc_id: CrossChainId {
@@ -1127,8 +1164,12 @@ mod tests {
             payload_hash: [0u8; 32],
         };
 
-        let builder =
-            TransactionBuilder::new(Arc::clone(&keypair), mock_gas, Arc::new(mock_client));
+        let builder = TransactionBuilder::new(
+            Arc::clone(&keypair),
+            mock_gas,
+            Arc::new(mock_client),
+            mock_redis,
+        );
 
         let its_destination = solana_axelar_its::ID;
         let destination_pubkey = Pubkey::new_unique();
@@ -1201,6 +1242,7 @@ mod tests {
         let keypair = Arc::new(Keypair::new());
         let mock_gas = MockGasCalculatorTrait::new();
         let mock_client = MockIncluderClientTrait::new();
+        let mock_redis = MockRedisConnectionTrait::new();
 
         let message = Message {
             cc_id: CrossChainId {
@@ -1213,8 +1255,12 @@ mod tests {
             payload_hash: [0u8; 32],
         };
 
-        let builder =
-            TransactionBuilder::new(Arc::clone(&keypair), mock_gas, Arc::new(mock_client));
+        let builder = TransactionBuilder::new(
+            Arc::clone(&keypair),
+            mock_gas,
+            Arc::new(mock_client),
+            mock_redis,
+        );
 
         let destination_program = Pubkey::new_unique();
 
