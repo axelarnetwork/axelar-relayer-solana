@@ -321,17 +321,17 @@ impl IncluderClientTrait for IncluderClient {
                     }
                 }
                 Err(e) => {
+                    warn!(
+                        "Failed to get transaction cost for signature {} (attempt {}/{}): {}.",
+                        signature,
+                        attempt + 1,
+                        MAX_GET_TRANSACTION_COST_ATTEMPTS,
+                        e
+                    );
+                    last_error = Some(e);
                     if attempt < MAX_GET_TRANSACTION_COST_ATTEMPTS - 1 {
-                        warn!(
-                            "Failed to get transaction cost for signature {} (attempt {}/{}): {}. Retrying...",
-                            signature,
-                            attempt + 1,
-                            MAX_GET_TRANSACTION_COST_ATTEMPTS,
-                            e
-                        );
                         sleep(Duration::from_millis(500)).await;
                     }
-                    last_error = Some(e);
                 }
             }
         }
