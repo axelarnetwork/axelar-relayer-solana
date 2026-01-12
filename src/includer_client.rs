@@ -11,6 +11,7 @@ use solana_sdk::{
     signature::Signature,
 };
 use std::{sync::Arc, time::Duration};
+use tokio::time::sleep;
 use tracing::{error, warn};
 
 use crate::{
@@ -296,24 +297,52 @@ impl IncluderClientTrait for IncluderClient {
         use solana_rpc_client_api::config::RpcTransactionConfig;
         use solana_transaction_status::UiTransactionEncoding;
 
-        let transaction_info = self
-            .inner()
-            .get_transaction_with_config(
-                signature,
-                RpcTransactionConfig {
-                    encoding: Some(UiTransactionEncoding::Json),
-                    commitment: Some(self.commitment),
-                    max_supported_transaction_version: Some(0),
-                },
-            )
-            .await
-            .map_err(|e| IncluderClientError::GenericError(e.to_string()))?;
-
-        if let Some(meta) = &transaction_info.transaction.meta {
-            Ok(Some(meta.fee))
-        } else {
-            Ok(None)
+        let mut last_error = None;
+        for attempt in 0..3 {
+            match self
+                .inner()
+                .get_transaction_with_config(
+                    signature,
+                    RpcTransactionConfig {
+                        encoding: Some(UiTransactionEncoding::Json),
+                        commitment: Some(self.commitment),
+                        max_supported_transaction_version: Some(0),
+                    },
+                )
+                .await
+            {
+                Ok(transaction_info) => {
+                    if let Some(meta) = &transaction_info.transaction.meta {
+                        return Ok(Some(meta.fee));
+                    } else {
+                        return Ok(None);
+                    }
+                }
+                Err(e) => {
+                    last_error = Some(e);
+                    if attempt < 2 {
+                        warn!(
+                            "Failed to get transaction cost for signature {} (attempt {}/3): {}. Retrying in 1 second...",
+                            signature,
+                            attempt + 1,
+                            last_error.as_ref().unwrap()
+                        );
+                        sleep(Duration::from_millis(500)).await;
+                    } else {
+                        warn!(
+                            "Failed to get transaction cost for signature {} after 3 attempts: {}",
+                            signature,
+                            last_error.as_ref().unwrap()
+                        );
+                    }
+                }
+            }
         }
+
+        // All attempts failed, return the last error
+        Err(IncluderClientError::GenericError(
+            last_error.unwrap().to_string(),
+        ))
     }
 }
 
