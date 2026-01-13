@@ -20,6 +20,9 @@ jobs:
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "format"
+          cache-all-crates: true
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -42,12 +45,16 @@ jobs:
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "clippy"
+          cache-all-crates: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Clippy on entire codebase
         run: cargo clippy --workspace --all-targets -- -D warnings
 
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest-8-cores
     timeout-minutes: 45
     steps:
       - name: Checkout
