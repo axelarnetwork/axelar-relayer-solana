@@ -12,7 +12,7 @@ use solana_transaction_parser::gmp_types::{CannotExecuteMessageReason, Event};
 use std::str::FromStr;
 use tracing::{debug, error};
 
-use solana_axelar_gateway::{seed_prefixes, ID};
+use solana_axelar_gateway::seed_prefixes;
 use solana_rpc_client_api::response::RpcConfirmedTransactionStatusWithSignature;
 use solana_sdk::{
     commitment_config::{CommitmentConfig, CommitmentLevel},
@@ -137,10 +137,6 @@ pub async fn upsert_and_publish<SM: SolanaTransactionModel>(
     Ok(inserted)
 }
 
-pub fn get_incoming_message_pda(command_id: &[u8]) -> Result<(Pubkey, u8), anyhow::Error> {
-    Pubkey::try_find_program_address(&[seed_prefixes::INCOMING_MESSAGE_SEED, command_id], &ID)
-        .ok_or_else(|| anyhow::anyhow!("Failed to get incoming message PDA"))
-}
 pub fn get_gateway_event_authority_pda() -> Result<(Pubkey, u8), anyhow::Error> {
     Pubkey::try_find_program_address(&[b"__event_authority"], &solana_axelar_gateway::ID)
         .ok_or_else(|| anyhow!("Failed to derive gateway event authority PDA"))
@@ -424,8 +420,8 @@ pub fn check_if_error_includes_an_expected_account(
         let incoming_message_pdas: Vec<Pubkey> = command_ids
             .iter()
             .map(|command_id| {
-                let (pda, _) = get_incoming_message_pda(command_id)
-                    .map_err(|e| anyhow::anyhow!("Failed to get incoming message PDA: {}", e))?;
+                let (pda, _) = solana_axelar_gateway::IncomingMessage::try_find_pda(command_id)
+                    .ok_or_else(|| anyhow::anyhow!("Failed to get incoming message PDA"))?;
                 Ok(pda)
             })
             .collect::<Result<Vec<_>, anyhow::Error>>()?;
@@ -680,7 +676,8 @@ mod tests {
             MerklizedPayload::NewMessages { messages } => messages[0].leaf.message.command_id(),
             _ => panic!("Expected NewMessages"),
         };
-        let (incoming_msg_pda, _) = get_incoming_message_pda(&command_id).unwrap();
+        let (incoming_msg_pda, _) =
+            solana_axelar_gateway::IncomingMessage::try_find_pda(&command_id).unwrap();
 
         let error_message = format!(
             "Allocate: account Address {{ address: {}, base: None }} already in use",
@@ -705,7 +702,8 @@ mod tests {
             MerklizedPayload::NewMessages { messages } => messages[0].leaf.message.command_id(),
             _ => panic!("Expected NewMessages"),
         };
-        let (incoming_msg_pda, _) = get_incoming_message_pda(&command_id).unwrap();
+        let (incoming_msg_pda, _) =
+            solana_axelar_gateway::IncomingMessage::try_find_pda(&command_id).unwrap();
 
         let error_message = format!(
             "Allocate: account Address {{ address: {}, base: None }} already in use",
@@ -730,7 +728,8 @@ mod tests {
             MerklizedPayload::NewMessages { messages } => messages[1].leaf.message.command_id(),
             _ => panic!("Expected NewMessages"),
         };
-        let (incoming_msg_pda, _) = get_incoming_message_pda(&command_id).unwrap();
+        let (incoming_msg_pda, _) =
+            solana_axelar_gateway::IncomingMessage::try_find_pda(&command_id).unwrap();
 
         let error_message = format!(
             "Allocate: account Address {{ address: {}, base: None }} already in use",
@@ -755,7 +754,8 @@ mod tests {
             MerklizedPayload::NewMessages { messages } => messages[2].leaf.message.command_id(),
             _ => panic!("Expected NewMessages"),
         };
-        let (incoming_msg_pda, _) = get_incoming_message_pda(&command_id).unwrap();
+        let (incoming_msg_pda, _) =
+            solana_axelar_gateway::IncomingMessage::try_find_pda(&command_id).unwrap();
 
         let error_message = format!(
             "Allocate: account Address {{ address: {}, base: None }} already in use",

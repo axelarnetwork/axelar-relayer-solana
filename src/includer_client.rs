@@ -472,7 +472,8 @@ mod tests {
         }
         .expect("Expected a message");
 
-        let (incoming_msg_pda, _) = crate::utils::get_incoming_message_pda(&command_id).unwrap();
+        let (incoming_msg_pda, _) =
+            solana_axelar_gateway::IncomingMessage::try_find_pda(&command_id).unwrap();
         let error_message = format!(
             "Allocate: account Address {{ address: {}, base: None }} already in use",
             incoming_msg_pda
