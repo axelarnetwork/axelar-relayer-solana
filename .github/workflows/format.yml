@@ -54,7 +54,7 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
 
   test:
-    runs-on: ubuntu-latest-8-cores
+    runs-on: ubuntu-latest-8-cores-32-gb
     timeout-minutes: 45
     steps:
       - name: Checkout
