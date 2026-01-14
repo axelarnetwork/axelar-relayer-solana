@@ -106,7 +106,7 @@ impl SolanaTransaction {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct RpcGetTransactionResponse {
     pub jsonrpc: String,
     pub result: Option<EncodedConfirmedTransactionWithStatusMeta>,
@@ -120,10 +120,10 @@ mod tests {
 
     #[test]
     fn test_from_rpc_response_with_test_data() {
-        let rpc_response_fixtures = crate::test_utils::fixtures::rpc_response_fixtures();
-        let fixture = &rpc_response_fixtures[0];
+        let mut rpc_response_fixtures = crate::test_utils::fixtures::rpc_response_fixtures();
+        let fixture = rpc_response_fixtures.remove(0);
 
-        let transaction = SolanaTransaction::from_rpc_response(fixture.clone()).unwrap();
+        let transaction = SolanaTransaction::from_rpc_response(fixture).unwrap();
 
         // Verify signature extraction
         let expected_signature = Signature::from_str("2E1HEKZLXDthn9qU8rXnj5nmUoDnbSWP6KsmbVWZ1PsA7Q63gEKWmRqy374wuxvwVDLhjX9RJYHeyfFmRQRTuMyF").unwrap();
@@ -165,8 +165,8 @@ mod tests {
         let rpc_response_fixtures = crate::test_utils::fixtures::rpc_response_fixtures();
 
         // Test all fixtures to ensure they all parse correctly
-        for (i, fixture) in rpc_response_fixtures.iter().enumerate() {
-            let transaction = SolanaTransaction::from_rpc_response(fixture.clone())
+        for (i, fixture) in rpc_response_fixtures.into_iter().enumerate() {
+            let transaction = SolanaTransaction::from_rpc_response(fixture)
                 .unwrap_or_else(|_| panic!("Failed to parse fixture {}", i));
 
             // Basic validation
@@ -178,11 +178,11 @@ mod tests {
 
     #[test]
     fn test_from_encoded_confirmed_transaction_with_status_meta_with_test_data() {
-        let fixtures = crate::test_utils::fixtures::encoded_confirmed_tx_with_meta_fixtures();
-        let fixture = &fixtures[0];
+        let mut fixtures = crate::test_utils::fixtures::encoded_confirmed_tx_with_meta_fixtures();
+        let fixture = fixtures.remove(0);
 
         let transaction =
-            SolanaTransaction::from_encoded_confirmed_transaction_with_status_meta(fixture.clone())
+            SolanaTransaction::from_encoded_confirmed_transaction_with_status_meta(fixture)
                 .unwrap();
 
         // Verify signature extraction from the fixture
@@ -215,12 +215,10 @@ mod tests {
         let fixtures = crate::test_utils::fixtures::encoded_confirmed_tx_with_meta_fixtures();
 
         // Test all fixtures to ensure they all parse correctly
-        for (i, fixture) in fixtures.iter().enumerate() {
+        for (i, fixture) in fixtures.into_iter().enumerate() {
             let transaction =
-                SolanaTransaction::from_encoded_confirmed_transaction_with_status_meta(
-                    fixture.clone(),
-                )
-                .unwrap_or_else(|_| panic!("Failed to parse fixture {}", i));
+                SolanaTransaction::from_encoded_confirmed_transaction_with_status_meta(fixture)
+                    .unwrap_or_else(|_| panic!("Failed to parse fixture {}", i));
 
             // Basic validation
             assert!(!transaction.signature.to_string().is_empty());
@@ -246,11 +244,14 @@ mod tests {
 
     #[test]
     fn test_both_methods_produce_same_result() {
-        let rpc_response_fixtures = crate::test_utils::fixtures::rpc_response_fixtures();
+        // Load fixtures twice - once for each method (avoids need for Clone)
+        let rpc_fixtures = crate::test_utils::fixtures::rpc_response_fixtures();
+        let encoded_fixtures = crate::test_utils::fixtures::rpc_response_fixtures();
 
-        for fixture in rpc_response_fixtures {
-            if let Some(result) = fixture.result.clone() {
-                let tx1 = SolanaTransaction::from_rpc_response(fixture.clone()).unwrap();
+        for (rpc_fixture, encoded_fixture) in rpc_fixtures.into_iter().zip(encoded_fixtures) {
+            // Use encoded_fixture to get the inner result, rpc_fixture for the full response
+            if let Some(result) = encoded_fixture.result {
+                let tx1 = SolanaTransaction::from_rpc_response(rpc_fixture).unwrap();
                 let tx2 =
                     SolanaTransaction::from_encoded_confirmed_transaction_with_status_meta(result)
                         .unwrap();

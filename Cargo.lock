@@ -10090,7 +10090,7 @@ dependencies = [
  "libsecp256k1 0.6.0",
  "mockall 0.13.1",
  "mpl-token-metadata",
- "program-utils 0.1.5 (registry+https://github.com/rust-lang/crates.io-index)",
+ "program-utils",
  "rand 0.8.5",
  "redis",
  "regex",
