@@ -1,6 +1,7 @@
 //! Common test utilities and setup for integration tests
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 
 use anchor_lang::{AnchorSerialize, Discriminator, InstructionData, ToAccountMetas};
@@ -34,6 +35,95 @@ use tokio_util::sync::CancellationToken;
 
 use solana_axelar_gateway::state::config::{InitialVerifierSet, InitializeConfigParams};
 use solana_axelar_std::{hasher::LeafHash, MerkleTree, PublicKey, VerifierSetLeaf, U256};
+
+// Supports up to 8 parallel tests
+
+/// Base port for test validators. Each slot gets 1000 ports to accommodate all validator services.
+/// Slot 0: 10000-10999, Slot 1: 11000-11999, etc.
+const BASE_PORT: u16 = 10000;
+const PORTS_PER_SLOT: u16 = 1000;
+const MAX_SLOTS: u8 = 8;
+
+/// Bitmask tracking which slots are in use (bit N = slot N)
+static SLOT_MASK: AtomicU8 = AtomicU8::new(0);
+
+/// Port configuration for a test validator
+#[derive(Debug, Clone)]
+pub struct TestPorts {
+    pub slot: u8,
+    pub rpc_port: u16,
+    pub faucet_port: u16,
+    pub gossip_port: u16,
+    /// Port range for validator internal services (TPU, repair, etc.)
+    pub port_range_start: u16,
+    pub port_range_end: u16,
+}
+
+impl TestPorts {
+    fn new(slot: u8) -> Self {
+        let base = BASE_PORT + (slot as u16 * PORTS_PER_SLOT);
+        Self {
+            slot,
+            rpc_port: base,
+            faucet_port: base + 1,
+            gossip_port: base + 2,
+            // Reserve ports 10-999 in each slot for validator internal services
+            port_range_start: base + 10,
+            port_range_end: base + PORTS_PER_SLOT - 1,
+        }
+    }
+}
+
+pub struct PortSlotGuard {
+    slot: u8,
+}
+
+impl Drop for PortSlotGuard {
+    fn drop(&mut self) {
+        let mask = 1u8 << self.slot;
+        SLOT_MASK.fetch_and(!mask, Ordering::SeqCst);
+    }
+}
+
+/// Allocates a unique port slot for a test.
+/// Returns None if all 8 slots are in use.
+fn allocate_slot() -> Option<(TestPorts, PortSlotGuard)> {
+    loop {
+        let current = SLOT_MASK.load(Ordering::SeqCst);
+
+        // Find first free slot
+        let mut slot = None;
+        for i in 0..MAX_SLOTS {
+            if current & (1 << i) == 0 {
+                slot = Some(i);
+                break;
+            }
+        }
+
+        let slot = slot?; // All slots in use
+        let new_mask = current | (1 << slot);
+
+        // Try to claim the slot atomically
+        if SLOT_MASK
+            .compare_exchange(current, new_mask, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            return Some((TestPorts::new(slot), PortSlotGuard { slot }));
+        }
+        // Another thread claimed a slot, retry
+    }
+}
+
+async fn allocate_slot_with_retry() -> (TestPorts, PortSlotGuard) {
+    let mut delay_ms = 100;
+    loop {
+        if let Some(result) = allocate_slot() {
+            return result;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+        delay_ms = (delay_ms * 2).min(5000);
+    }
+}
 
 #[cfg(test)]
 pub struct TestQueue {
@@ -89,15 +179,6 @@ pub fn programs_dir() -> PathBuf {
         .join("tests")
         .join("testdata")
         .join("programs")
-}
-
-#[cfg(test)]
-pub fn cleanup_leftover_validators() {
-    use std::process::Command;
-    let _ = Command::new("pkill")
-        .args(["-9", "-f", "solana-test-validator"])
-        .output();
-    std::thread::sleep(std::time::Duration::from_millis(500));
 }
 
 /// Generate a random secp256k1 signer for gateway verification
@@ -283,11 +364,26 @@ pub struct TestEnvironment {
     #[allow(dead_code)]
     pub db_container: ContainerAsync<postgres::Postgres>,
     pub its_hub_address: String,
+    /// Port slot guard - keeps the port range reserved until the test finishes
+    #[allow(dead_code)]
+    port_slot_guard: PortSlotGuard,
+    /// Port configuration used by this test
+    #[allow(dead_code)]
+    pub test_ports: TestPorts,
 }
 
 impl TestEnvironment {
     pub async fn new() -> Self {
-        cleanup_leftover_validators();
+        // Allocate unique ports for this test to enable parallel execution
+        let (test_ports, port_slot_guard) = allocate_slot_with_retry().await;
+        println!(
+            "Test allocated port slot {} (RPC: {}, gossip: {}, port_range: {}-{})",
+            test_ports.slot,
+            test_ports.rpc_port,
+            test_ports.gossip_port,
+            test_ports.port_range_start,
+            test_ports.port_range_end
+        );
 
         let init_sql = format!(
             "{}\n{}\n{}\n",
@@ -322,6 +418,23 @@ impl TestEnvironment {
         let operator = Keypair::new();
 
         let mut validator = TestValidatorGenesis::default();
+
+        // Configure unique ports for parallel test execution
+        validator.rpc_port(test_ports.rpc_port);
+        validator.gossip_port(test_ports.gossip_port);
+        validator.port_range((test_ports.port_range_start, test_ports.port_range_end));
+        validator.faucet_addr(Some(std::net::SocketAddr::new(
+            std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+            test_ports.faucet_port,
+        )));
+
+        // Use a unique ledger directory based on the port slot
+        let ledger_path = std::env::temp_dir().join(format!(
+            "solana-test-validator-{}-{}",
+            test_ports.slot,
+            std::process::id()
+        ));
+        validator.ledger_path(&ledger_path);
 
         let mut rpc_config = JsonRpcConfig::default_for_test();
         rpc_config.enable_rpc_transaction_history = true;
@@ -622,7 +735,10 @@ impl TestEnvironment {
             .await
             .expect("Failed to initialize gateway");
 
-        println!("Test environment initialized successfully");
+        println!(
+            "Test environment initialized successfully (slot {}, RPC port {})",
+            test_ports.slot, test_ports.rpc_port
+        );
 
         Self {
             test_validator,
@@ -642,15 +758,29 @@ impl TestEnvironment {
             memo_program_id,
             db_container,
             its_hub_address,
+            port_slot_guard,
+            test_ports,
         }
     }
 
     pub async fn cleanup(self) {
+        // Clean up the ledger directory
+        let ledger_path = std::env::temp_dir().join(format!(
+            "solana-test-validator-{}-{}",
+            self.test_ports.slot,
+            std::process::id()
+        ));
+
         drop(self.rpc_client);
         drop(self.postgres_db);
         drop(self.transaction_model);
         drop(self.test_validator);
-        cleanup_leftover_validators();
         drop(self.db_container);
+
+        // Clean up ledger directory after validator is stopped
+        let _ = std::fs::remove_dir_all(&ledger_path);
+
+        // Port slot guard is dropped here, releasing the slot for other tests
+        drop(self.port_slot_guard);
     }
 }
