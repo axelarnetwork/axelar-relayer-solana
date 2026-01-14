@@ -1,7 +1,7 @@
 //! Common test utilities and setup for integration tests
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::Arc;
 
 use anchor_lang::{AnchorSerialize, Discriminator, InstructionData, ToAccountMetas};
@@ -36,21 +36,18 @@ use tokio_util::sync::CancellationToken;
 use solana_axelar_gateway::state::config::{InitialVerifierSet, InitializeConfigParams};
 use solana_axelar_std::{hasher::LeafHash, MerkleTree, PublicKey, VerifierSetLeaf, U256};
 
-// Supports up to 8 parallel tests
-
-/// Base port for test validators. Each slot gets 1000 ports to accommodate all validator services.
-/// Slot 0: 10000-10999, Slot 1: 11000-11999, etc.
+/// Base port for test validators. Each test gets 1000 ports.
+/// Test 0: 10000-10999, Test 1: 11000-11999, etc.
 const BASE_PORT: u16 = 10000;
 const PORTS_PER_SLOT: u16 = 1000;
-const MAX_SLOTS: u8 = 8;
 
-/// Bitmask tracking which slots are in use (bit N = slot N)
-static SLOT_MASK: AtomicU8 = AtomicU8::new(0);
+/// Atomic counter for allocating unique slot numbers - never reused within a test run
+static SLOT_COUNTER: AtomicU16 = AtomicU16::new(0);
 
 /// Port configuration for a test validator
 #[derive(Debug, Clone)]
 pub struct TestPorts {
-    pub slot: u8,
+    pub slot: u16,
     pub rpc_port: u16,
     pub faucet_port: u16,
     pub gossip_port: u16,
@@ -60,8 +57,8 @@ pub struct TestPorts {
 }
 
 impl TestPorts {
-    fn new(slot: u8) -> Self {
-        let base = BASE_PORT + (slot as u16 * PORTS_PER_SLOT);
+    fn new(slot: u16) -> Self {
+        let base = BASE_PORT + (slot * PORTS_PER_SLOT);
         Self {
             slot,
             rpc_port: base,
@@ -74,56 +71,23 @@ impl TestPorts {
     }
 }
 
+/// Guard that does nothing on drop - slots are never reused
 pub struct PortSlotGuard {
-    slot: u8,
+    #[allow(dead_code)]
+    slot: u16,
 }
 
-impl Drop for PortSlotGuard {
-    fn drop(&mut self) {
-        let mask = 1u8 << self.slot;
-        SLOT_MASK.fetch_and(!mask, Ordering::SeqCst);
-    }
-}
-
-/// Allocates a unique port slot for a test.
-/// Returns None if all 8 slots are in use.
-fn allocate_slot() -> Option<(TestPorts, PortSlotGuard)> {
-    loop {
-        let current = SLOT_MASK.load(Ordering::SeqCst);
-
-        // Find first free slot
-        let mut slot = None;
-        for i in 0..MAX_SLOTS {
-            if current & (1 << i) == 0 {
-                slot = Some(i);
-                break;
-            }
-        }
-
-        let slot = slot?; // All slots in use
-        let new_mask = current | (1 << slot);
-
-        // Try to claim the slot atomically
-        if SLOT_MASK
-            .compare_exchange(current, new_mask, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
-        {
-            return Some((TestPorts::new(slot), PortSlotGuard { slot }));
-        }
-        // Another thread claimed a slot, retry
-    }
+/// Allocates a unique port slot for a test. Each slot is unique and never reused.
+fn allocate_slot() -> (TestPorts, PortSlotGuard) {
+    let slot = SLOT_COUNTER.fetch_add(1, Ordering::SeqCst);
+    (TestPorts::new(slot), PortSlotGuard { slot })
 }
 
 async fn allocate_slot_with_retry() -> (TestPorts, PortSlotGuard) {
-    let mut delay_ms = 100;
-    loop {
-        if let Some(result) = allocate_slot() {
-            return result;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-        delay_ms = (delay_ms * 2).min(5000);
-    }
+    // No retry needed - we always get a unique slot
+    allocate_slot()
 }
+
 
 #[cfg(test)]
 pub struct TestQueue {
