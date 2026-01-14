@@ -36,13 +36,31 @@ use tokio_util::sync::CancellationToken;
 use solana_axelar_gateway::state::config::{InitialVerifierSet, InitializeConfigParams};
 use solana_axelar_std::{hasher::LeafHash, MerkleTree, PublicKey, VerifierSetLeaf, U256};
 
-/// Base port for test validators. Each test gets 1000 ports.
-/// Test 0: 10000-10999, Test 1: 11000-11999, etc.
-const BASE_PORT: u16 = 10000;
+/// Each test gets 1000 ports. Base port is randomized per test run to avoid conflicts.
 const PORTS_PER_SLOT: u16 = 1000;
 
 /// Atomic counter for allocating unique slot numbers - never reused within a test run
 static SLOT_COUNTER: AtomicU16 = AtomicU16::new(0);
+
+/// Base port offset computed once per test run using timestamp and PID for uniqueness
+static BASE_PORT: std::sync::OnceLock<u16> = std::sync::OnceLock::new();
+
+fn get_base_port() -> u16 {
+    *BASE_PORT.get_or_init(|| {
+        // Use timestamp + process ID to generate a unique base port for this test run
+        // Range: 20000-32000 (leaving room for up to 32 tests * 1000 ports without overflow)
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u32)
+            .unwrap_or(0);
+        let pid = std::process::id();
+        // Combine timestamp and pid for uniqueness
+        let combined = now.wrapping_add(pid);
+        // Range from 20000 to 32000 (12 possible starting points)
+        let offset = ((combined % 12) * 1000) as u16;
+        20000 + offset
+    })
+}
 
 /// Port configuration for a test validator
 #[derive(Debug, Clone)]
@@ -58,15 +76,23 @@ pub struct TestPorts {
 
 impl TestPorts {
     fn new(slot: u16) -> Self {
-        let base = BASE_PORT + (slot * PORTS_PER_SLOT);
+        // Ensure we don't overflow: max port is 65535, we need 1000 ports per slot
+        // With base up to 32000, slot can be up to 33 before overflow (32000 + 33*1000 = 65000)
+        let base = get_base_port().saturating_add(slot.saturating_mul(PORTS_PER_SLOT));
+        // If we're close to overflow, wrap around (shouldn't happen with 12 tests, but be safe)
+        let base = if base > 64000 {
+            20000u16.saturating_add((slot % 32).saturating_mul(PORTS_PER_SLOT))
+        } else {
+            base
+        };
         Self {
             slot,
             rpc_port: base,
-            faucet_port: base + 1,
-            gossip_port: base + 2,
+            faucet_port: base.saturating_add(1),
+            gossip_port: base.saturating_add(2),
             // Reserve ports 10-999 in each slot for validator internal services
-            port_range_start: base + 10,
-            port_range_end: base + PORTS_PER_SLOT - 1,
+            port_range_start: base.saturating_add(10),
+            port_range_end: base.saturating_add(PORTS_PER_SLOT - 1),
         }
     }
 }
@@ -87,7 +113,6 @@ async fn allocate_slot_with_retry() -> (TestPorts, PortSlotGuard) {
     // No retry needed - we always get a unique slot
     allocate_slot()
 }
-
 
 #[cfg(test)]
 pub struct TestQueue {
