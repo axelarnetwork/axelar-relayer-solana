@@ -1,5 +1,4 @@
 use crate::{includer::ALTInfo, transaction_type::SolanaTransactionType, types::SolanaTransaction};
-use anchor_lang::Key;
 use anchor_spl::{associated_token::spl_associated_token_account, token_2022::spl_token_2022};
 use anyhow::anyhow;
 use regex::Regex;
@@ -13,7 +12,7 @@ use solana_transaction_parser::gmp_types::{CannotExecuteMessageReason, Event};
 use std::str::FromStr;
 use tracing::{debug, error};
 
-use solana_axelar_gateway::{seed_prefixes, ID};
+use solana_axelar_gateway::seed_prefixes;
 use solana_rpc_client_api::response::RpcConfirmedTransactionStatusWithSignature;
 use solana_sdk::{
     commitment_config::{CommitmentConfig, CommitmentLevel},
@@ -60,26 +59,6 @@ pub fn get_tx_batch_command(
     }
 
     serde_json::to_string(&batch).unwrap_or_else(|_| "[]".to_string())
-}
-
-pub fn get_recent_prioritization_fees_command(addresses: Vec<Pubkey>) -> String {
-    let account_keys: Vec<String> = addresses.iter().map(|pk| pk.to_string()).collect();
-
-    let request = json!({
-        "jsonrpc": "2.0",
-        "id": "1",
-        "method": "getPriorityFeeEstimate",
-        "params": [
-            {
-                "accountKeys": account_keys,
-                "options": {
-                    "includeAllPriorityFeeLevels": false
-                }
-            }
-        ]
-    });
-
-    serde_json::to_string(&request).unwrap_or_else(|_| "{}".to_string())
 }
 
 pub async fn post_request(url: &str, body_json: &str) -> anyhow::Result<String> {
@@ -158,52 +137,9 @@ pub async fn upsert_and_publish<SM: SolanaTransactionModel>(
     Ok(inserted)
 }
 
-pub fn get_signature_verification_pda(
-    payload_merkle_root: &[u8; 32],
-    signing_verifier_set_merkle_root: &[u8; 32],
-    payload_type: solana_axelar_std::PayloadType,
-) -> Result<(Pubkey, u8), anyhow::Error> {
-    let payload_type_seed: u8 = payload_type.into();
-    Pubkey::try_find_program_address(
-        &[
-            seed_prefixes::SIGNATURE_VERIFICATION_SEED,
-            payload_merkle_root,
-            &[payload_type_seed],
-            signing_verifier_set_merkle_root,
-        ],
-        &ID,
-    )
-    .ok_or_else(|| anyhow::anyhow!("Failed to get signature verification PDA"))
-}
-
-pub fn get_verifier_set_tracker_pda(
-    signing_verifier_set_merkle_root: &[u8; 32],
-) -> Result<(Pubkey, u8), anyhow::Error> {
-    Pubkey::try_find_program_address(
-        &[
-            seed_prefixes::VERIFIER_SET_TRACKER_SEED,
-            signing_verifier_set_merkle_root,
-        ],
-        &ID,
-    )
-    .ok_or_else(|| anyhow::anyhow!("Failed to get verifier set tracker PDA"))
-}
-
-pub fn get_incoming_message_pda(command_id: &[u8]) -> Result<(Pubkey, u8), anyhow::Error> {
-    Pubkey::try_find_program_address(&[seed_prefixes::INCOMING_MESSAGE_SEED, command_id], &ID)
-        .ok_or_else(|| anyhow::anyhow!("Failed to get incoming message PDA"))
-}
 pub fn get_gateway_event_authority_pda() -> Result<(Pubkey, u8), anyhow::Error> {
     Pubkey::try_find_program_address(&[b"__event_authority"], &solana_axelar_gateway::ID)
         .ok_or_else(|| anyhow!("Failed to derive gateway event authority PDA"))
-}
-
-pub fn get_governance_config_pda() -> Result<(Pubkey, u8), anyhow::Error> {
-    Pubkey::try_find_program_address(
-        &[solana_axelar_governance::GovernanceConfig::SEED_PREFIX],
-        &solana_axelar_governance::ID,
-    )
-    .ok_or_else(|| anyhow!("Failed to derive governance config PDA"))
 }
 
 pub fn get_governance_event_authority_pda() -> Result<(Pubkey, u8), anyhow::Error> {
@@ -230,48 +166,9 @@ pub fn get_operator_proposal_pda(command_id: &[u8]) -> Result<(Pubkey, u8), anyh
     .ok_or_else(|| anyhow!("Failed to derive operator proposal PDA"))
 }
 
-pub fn get_validate_message_signing_pda(
-    command_id: &[u8],
-    program_id: &Pubkey,
-) -> Result<(Pubkey, u8), anyhow::Error> {
-    Pubkey::try_find_program_address(
-        &[
-            solana_axelar_gateway::seed_prefixes::VALIDATE_MESSAGE_SIGNING_SEED,
-            command_id,
-        ],
-        program_id,
-    )
-    .ok_or_else(|| anyhow!("Failed to derive validate message signing PDA"))
-}
-
-pub fn get_gateway_root_config_internal() -> Result<(Pubkey, u8), anyhow::Error> {
-    Pubkey::try_find_program_address(
-        &[solana_axelar_gateway::seed_prefixes::GATEWAY_SEED],
-        &solana_axelar_gateway::ID,
-    )
-    .ok_or_else(|| anyhow!("Failed to derive gateway root config PDA"))
-}
-
-pub fn get_its_root_pda() -> (Pubkey, u8) {
-    solana_axelar_its::InterchainTokenService::find_pda()
-}
-
 pub fn get_its_event_authority_pda() -> Result<(Pubkey, u8), anyhow::Error> {
     Pubkey::try_find_program_address(&[b"__event_authority"], &solana_axelar_its::ID)
         .ok_or_else(|| anyhow!("Failed to derive ITS event authority PDA"))
-}
-
-pub fn get_token_manager_pda(
-    its_root_pda: &Pubkey,
-    token_id: &[u8],
-) -> Result<(Pubkey, u8), anyhow::Error> {
-    let token_id_array: [u8; 32] = token_id
-        .try_into()
-        .map_err(|e| anyhow::anyhow!("token_id must be 32 bytes: {}", e))?;
-    Ok(solana_axelar_its::TokenManager::find_pda(
-        token_id_array,
-        *its_root_pda,
-    ))
 }
 
 pub fn get_token_mint_pda(
@@ -301,41 +198,12 @@ pub fn get_token_manager_ata_with_program(
     (ata, 0)
 }
 
-pub fn get_mpl_token_metadata_account(
-    token_mint_pda: &Pubkey,
+pub fn get_minter_roles_pda(
+    token_manager_pda: &Pubkey,
+    minter: &Pubkey,
 ) -> Result<(Pubkey, u8), anyhow::Error> {
-    Pubkey::try_find_program_address(
-        &[
-            b"metadata",
-            mpl_token_metadata::ID.as_ref(),
-            token_mint_pda.as_ref(),
-        ],
-        &mpl_token_metadata::ID,
-    )
-    .ok_or_else(|| anyhow!("Failed to derive MPL token metadata PDA"))
-}
-
-pub fn get_minter_roles_pda(token_manager_pda: &Pubkey, minter: &Pubkey) -> (Pubkey, u8) {
-    solana_axelar_its::UserRoles::find_pda(token_manager_pda, minter)
-}
-
-pub fn get_operator_pda(operator: &Pubkey) -> Result<(Pubkey, u8), anyhow::Error> {
-    Pubkey::try_find_program_address(
-        &[
-            solana_axelar_operators::OperatorAccount::SEED_PREFIX,
-            operator.key().as_ref(),
-        ],
-        &solana_axelar_operators::ID,
-    )
-    .ok_or_else(|| anyhow!("Failed to derive operator PDA"))
-}
-
-pub fn get_treasury_pda() -> Result<(Pubkey, u8), anyhow::Error> {
-    Pubkey::try_find_program_address(
-        &[solana_axelar_gas_service::state::Treasury::SEED_PREFIX],
-        &solana_axelar_gas_service::ID,
-    )
-    .ok_or_else(|| anyhow!("Failed to derive treasury PDA"))
+    solana_axelar_its::UserRoles::try_find_pda(token_manager_pda, minter)
+        .ok_or_else(|| anyhow!("Failed to derive minter roles PDA"))
 }
 
 pub fn get_gas_service_event_authority_pda() -> Result<(Pubkey, u8), anyhow::Error> {
@@ -552,8 +420,8 @@ pub fn check_if_error_includes_an_expected_account(
         let incoming_message_pdas: Vec<Pubkey> = command_ids
             .iter()
             .map(|command_id| {
-                let (pda, _) = get_incoming_message_pda(command_id)
-                    .map_err(|e| anyhow::anyhow!("Failed to get incoming message PDA: {}", e))?;
+                let (pda, _) = solana_axelar_gateway::IncomingMessage::try_find_pda(command_id)
+                    .ok_or_else(|| anyhow::anyhow!("Failed to get incoming message PDA"))?;
                 Ok(pda)
             })
             .collect::<Result<Vec<_>, anyhow::Error>>()?;
@@ -808,7 +676,8 @@ mod tests {
             MerklizedPayload::NewMessages { messages } => messages[0].leaf.message.command_id(),
             _ => panic!("Expected NewMessages"),
         };
-        let (incoming_msg_pda, _) = get_incoming_message_pda(&command_id).unwrap();
+        let (incoming_msg_pda, _) =
+            solana_axelar_gateway::IncomingMessage::try_find_pda(&command_id).unwrap();
 
         let error_message = format!(
             "Allocate: account Address {{ address: {}, base: None }} already in use",
@@ -833,7 +702,8 @@ mod tests {
             MerklizedPayload::NewMessages { messages } => messages[0].leaf.message.command_id(),
             _ => panic!("Expected NewMessages"),
         };
-        let (incoming_msg_pda, _) = get_incoming_message_pda(&command_id).unwrap();
+        let (incoming_msg_pda, _) =
+            solana_axelar_gateway::IncomingMessage::try_find_pda(&command_id).unwrap();
 
         let error_message = format!(
             "Allocate: account Address {{ address: {}, base: None }} already in use",
@@ -858,7 +728,8 @@ mod tests {
             MerklizedPayload::NewMessages { messages } => messages[1].leaf.message.command_id(),
             _ => panic!("Expected NewMessages"),
         };
-        let (incoming_msg_pda, _) = get_incoming_message_pda(&command_id).unwrap();
+        let (incoming_msg_pda, _) =
+            solana_axelar_gateway::IncomingMessage::try_find_pda(&command_id).unwrap();
 
         let error_message = format!(
             "Allocate: account Address {{ address: {}, base: None }} already in use",
@@ -883,7 +754,8 @@ mod tests {
             MerklizedPayload::NewMessages { messages } => messages[2].leaf.message.command_id(),
             _ => panic!("Expected NewMessages"),
         };
-        let (incoming_msg_pda, _) = get_incoming_message_pda(&command_id).unwrap();
+        let (incoming_msg_pda, _) =
+            solana_axelar_gateway::IncomingMessage::try_find_pda(&command_id).unwrap();
 
         let error_message = format!(
             "Allocate: account Address {{ address: {}, base: None }} already in use",
