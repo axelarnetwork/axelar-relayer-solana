@@ -1,3 +1,39 @@
+[workspace]
+members = [".", "parsers"]
+resolver = "2"
+
+# Shared dependencies - use { workspace = true } in member crates
+[workspace.dependencies]
+# Core
+anchor-lang = "1.0.0-rc.1"
+anyhow = "1.0.93"
+async-trait = "0.1.88"
+base64 = "0.22.1"
+bs58 = "0.5"
+chrono = { version = "0.4.40", features = ["serde"] }
+hex = "0.4.3"
+mockall = "0.13.1"
+redis = { version = "0.32.4", features = ["tokio-rustls-comp"] }
+serde = { version = "1.0.215", features = ["derive"] }
+serde_json = "1.0.133"
+thiserror = "2.0.3"
+tokio = { version = "1.41.1", features = ["full", "test-util"] }
+tracing = "0.1.40"
+uuid = { version = "1.0", features = ["v4"] }
+
+# Solana Crates
+solana-sdk = "~3.0"
+solana-transaction-status = "~3.1"
+solana-transaction-status-client-types = "~3.1"
+
+# Solana Axelar Programs
+solana-axelar-gas-service = { version = "0.1.8", features = ["no-entrypoint"] }
+solana-axelar-gateway = { version = "0.1.8", features = ["no-entrypoint"] }
+solana-axelar-its = { version = "0.1.8", features = ["no-entrypoint"] }
+
+# Relayer Core
+relayer-core = { git = "https://github.com/commonprefix/axelar-relayer-core", branch = "main", features = ["mocks"] }
+
 [package]
 name = "solana"
 version = "0.1.0"
@@ -67,40 +103,40 @@ default = ["test-mocks", "devnet-amplifier"]
 
 [dependencies]
 alloy-sol-types = "0.7"
-anyhow = "1.0.93"
-async-trait = "0.1.88"
-base64 = "0.22.1"
+anyhow.workspace = true
+async-trait.workspace = true
+base64.workspace = true
 bincode = "1"
-bs58 = "0.5"
+bs58.workspace = true
 bytemuck = "1.24.0"
-chrono = { version = "0.4.40", features = ["serde"] }
+chrono.workspace = true
 dotenv = "0.15.0"
 ed25519-zebra = "=4.0.3"
 error-stack = "0.5.0"
 futures = "0.3.31"
 futures-util = "0.3.31"
-hex = "0.4.3"
+hex.workspace = true
 httpmock = "0.7.0"
-mockall = "0.13.1"
-redis = { version = "0.32.4", features = ["tokio-rustls-comp"] }
+mockall.workspace = true
+redis.workspace = true
 regex = "1.10"
 reqwest = "0.12.24"
-serde = "1.0.215"
-serde_json = "1.0.133"
+serde.workspace = true
+serde_json.workspace = true
 sqlx = { version = "0.8.1", features = [
     "runtime-tokio-rustls",
     "postgres",
     "chrono",
 ] }
 statrs = "0.16"
-thiserror = "2.0.3"
-tokio = { version = "1.41.1", features = ["full", "test-util"] }
+thiserror.workspace = true
+tokio.workspace = true
 tokio-util = "0.7.12"
-tracing = "0.1.40"
+tracing.workspace = true
 
 # Solana Crates
 
-anchor-lang = "1.0.0-rc.1"
+anchor-lang.workspace = true
 anchor-spl = "1.0.0-rc.1"
 borsh = { version = "1.6.0" }
 mpl-token-metadata = "^5.1.2-alpha.2"
@@ -112,19 +148,15 @@ solana-program = "~3.0"
 solana-pubsub-client = "~3.1"
 solana-rpc-client = "~3.1"
 solana-rpc-client-api = "~3.1"
-solana-sdk = "~3.0"
+solana-sdk.workspace = true
 solana-sdk-ids = "~3.0"
-solana-transaction-status = "~3.1"
-solana-transaction-status-client-types = "~3.1"
+solana-transaction-status.workspace = true
+solana-transaction-status-client-types.workspace = true
 
 # Relayer Crates
 
-relayer-core = { git = "https://github.com/commonprefix/axelar-relayer-core", branch = "main", features = [
-    "mocks",
-] }
-solana-transaction-parser = { git = "https://github.com/commonprefix/solana-transaction-parser", branch = "anchor-v1-rc", features = [
-    "mocks",
-] }
+relayer-core.workspace = true
+solana-transaction-parser = { path = "parsers", features = ["mocks"] }
 
 # Solana Axelar Crates
 
@@ -134,18 +166,12 @@ solana-axelar-std = { version = "0.1.5" }
 
 # Solana Axelar Programs
 
-solana-axelar-gas-service = { version = "0.1.8", features = [
-    "no-entrypoint",
-] }
-solana-axelar-gateway = { version = "0.1.8", features = [
-    "no-entrypoint",
-] }
+solana-axelar-gas-service.workspace = true
+solana-axelar-gateway.workspace = true
 solana-axelar-governance = { version = "0.1.8", features = [
     "no-entrypoint",
 ] }
-solana-axelar-its = { version = "0.1.8", features = [
-    "no-entrypoint",
-] }
+solana-axelar-its.workspace = true
 solana-axelar-operators = { version = "0.1.8", features = [
     "no-entrypoint",
 ] }
