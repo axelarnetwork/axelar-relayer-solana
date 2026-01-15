@@ -13813,16 +13813,13 @@ dependencies = [
 [[package]]
 name = "solana-transaction-parser"
 version = "0.1.0"
-source = "git+https://github.com/commonprefix/solana-transaction-parser?branch=anchor-v1-rc#90a9bfaa2dcbdfbea35c9c1c8491d4fd1105ff01"
 dependencies = [
  "anchor-lang",
  "anyhow",
  "async-trait",
  "base64 0.22.1",
- "borsh 1.6.0",
  "bs58",
  "chrono",
- "dotenv",
  "hex",
  "mockall 0.13.1",
  "redis",
@@ -13833,7 +13830,6 @@ dependencies = [
  "solana-axelar-gateway 0.1.8 (registry+https://github.com/rust-lang/crates.io-index)",
  "solana-axelar-its 0.1.8 (registry+https://github.com/rust-lang/crates.io-index)",
  "solana-sdk",
- "solana-sdk-ids",
  "solana-transaction-status",
  "solana-transaction-status-client-types",
  "thiserror 2.0.17",
