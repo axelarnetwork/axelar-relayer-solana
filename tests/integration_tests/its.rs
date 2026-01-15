@@ -295,7 +295,7 @@ async fn test_approve_and_execute_its_message() {
     println!("Interchain Transfer...");
 
     let transfer_message_id = "test-its-transfer-001";
-    let destination_pubkey = env.payer.pubkey();
+    let destination_pubkey = env.operator.pubkey();
     let transfer_amount = 1_000_000u64;
 
     let source_address_bytes = "ethereum_address_123".as_bytes().to_vec();
@@ -465,45 +465,53 @@ async fn test_approve_and_execute_its_message() {
     let ingestor_execute = SolanaIngestor::new(parser_execute, mock_update_events_execute);
 
     let mut found_executed_event = false;
-    for item in &queued_items_execute {
-        if let QueueItem::Transaction(tx_data) = item {
-            match ingestor_execute
-                .handle_transaction(tx_data.to_string())
-                .await
-            {
-                Ok(events) => {
-                    for event in &events {
-                        if let Event::MessageExecuted {
-                            common,
-                            message_id: event_message_id,
-                            source_chain: event_source_chain,
-                            status,
-                            cost,
-                            ..
-                        } = event
-                        {
-                            println!("Parsed MessageExecuted event!");
-                            println!("Event ID: {}", common.event_id);
-                            println!("Message ID: {}", event_message_id);
-                            println!("Source Chain: {}", event_source_chain);
-                            println!("Status: {:?}", status);
-                            println!("Cost: {:?}", cost);
-
-                            if *event_message_id == deploy_message_id
-                                || *event_message_id == transfer_message_id
+    let max_wait_execute = std::time::Duration::from_secs(30);
+    let start_execute = std::time::Instant::now();
+    while start_execute.elapsed() < max_wait_execute && !found_executed_event {
+        let queued_items_execute = test_queue.get_items().await;
+        for item in &queued_items_execute {
+            if let QueueItem::Transaction(tx_data) = item {
+                match ingestor_execute
+                    .handle_transaction(tx_data.to_string())
+                    .await
+                {
+                    Ok(events) => {
+                        for event in &events {
+                            if let Event::MessageExecuted {
+                                common,
+                                message_id: event_message_id,
+                                source_chain: event_source_chain,
+                                status,
+                                cost,
+                                ..
+                            } = event
                             {
-                                found_executed_event = true;
+                                println!("Parsed MessageExecuted event!");
+                                println!("Event ID: {}", common.event_id);
+                                println!("Message ID: {}", event_message_id);
+                                println!("Source Chain: {}", event_source_chain);
+                                println!("Status: {:?}", status);
+                                println!("Cost: {:?}", cost);
+
+                                if *event_message_id == deploy_message_id
+                                    || *event_message_id == transfer_message_id
+                                {
+                                    found_executed_event = true;
+                                }
                             }
                         }
                     }
-                }
-                Err(e) => {
-                    if tx_data.contains("itsmM2AJ27dSAXVhCfj34MtnFqyUmnLF7kbKbmyqRQA") {
-                        println!("Parse error for ITS transaction: {:?}", e);
+                    Err(e) => {
+                        if tx_data.contains("itsmM2AJ27dSAXVhCfj34MtnFqyUmnLF7kbKbmyqRQA") {
+                            println!("Parse error for ITS transaction: {:?}", e);
+                        }
+                        panic!("Parse error: {:?}", e);
                     }
-                    panic!("Parse error: {:?}", e);
                 }
             }
+        }
+        if !found_executed_event {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         }
     }
 
@@ -915,7 +923,7 @@ async fn test_its_messages_with_optional_fields() {
     let salt = [10u8; 32];
     let token_id = interchain_token_id(&env.payer.pubkey(), &salt);
 
-    let minter_pubkey = env.payer.pubkey();
+    let minter_pubkey = env.operator.pubkey();
     let minter_bytes = minter_pubkey.to_bytes().to_vec();
 
     let deploy_token = DeployInterchainToken {
@@ -1091,7 +1099,7 @@ async fn test_its_messages_with_optional_fields() {
     let link_salt = [20u8; 32];
     let link_token_id = interchain_token_id(&env.payer.pubkey(), &link_salt);
 
-    let operator_pubkey = env.payer.pubkey();
+    let operator_pubkey = env.operator.pubkey();
     let operator_bytes = operator_pubkey.to_bytes().to_vec();
 
     let link = LinkToken {
@@ -1305,7 +1313,7 @@ async fn test_its_messages_with_optional_fields() {
     let mint_tx = solana_sdk::transaction::Transaction::new_signed_with_payer(
         &[mint_ix],
         Some(&env.payer.pubkey()),
-        &[&env.payer],
+        &[&env.payer, &env.operator],
         mint_blockhash,
     );
 

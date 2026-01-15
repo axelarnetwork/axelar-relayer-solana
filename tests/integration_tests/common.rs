@@ -801,8 +801,5 @@ impl TestEnvironment {
 
         // Clean up ledger directory after validator is stopped
         let _ = std::fs::remove_dir_all(&ledger_path);
-
-        // Port slot guard is dropped here, releasing the slot for other tests
-        drop(self.port_slot_guard);
     }
 }

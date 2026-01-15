@@ -75,4 +75,4 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Run tests
-        run: cargo test --workspace --release -- --test-threads=1
+        run: cargo test --workspace --release
