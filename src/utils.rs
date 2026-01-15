@@ -8,15 +8,15 @@ use relayer_core::{
 };
 use serde_json::json;
 use solana_axelar_std::execute_data::{ExecuteData, MerklizedPayload};
+use solana_compute_budget_interface::ComputeBudgetInstruction;
 use solana_transaction_parser::gmp_types::{CannotExecuteMessageReason, Event};
 use std::str::FromStr;
 use tracing::{debug, error};
 
 use solana_axelar_gateway::seed_prefixes;
+use solana_commitment_config::{CommitmentConfig, CommitmentLevel};
 use solana_rpc_client_api::response::RpcConfirmedTransactionStatusWithSignature;
 use solana_sdk::{
-    commitment_config::{CommitmentConfig, CommitmentLevel},
-    compute_budget::ComputeBudgetInstruction,
     instruction::Instruction,
     message::{v0, AddressLookupTableAccount, VersionedMessage},
     pubkey::Pubkey,
@@ -221,7 +221,7 @@ pub fn get_destination_ata(
             spl_token_2022::id().as_ref(),
             token_mint_pda.as_ref(),
         ],
-        &spl_associated_token_account::id(),
+        &spl_associated_token_account::program::id(),
     )
     .ok_or_else(|| anyhow!("Failed to derive destination ATA PDA"))
 }
@@ -378,12 +378,13 @@ pub fn keypair_to_base58_string(keypair: &Keypair) -> String {
     keypair.to_base58_string()
 }
 
+// Keypair has `from_base58_string` but it panics.
 pub fn keypair_from_base58_string(s: &str) -> Result<Keypair, anyhow::Error> {
     let mut buf = [0u8; 64]; // Ed25519 keypair length
     bs58::decode(s)
         .onto(&mut buf)
         .map_err(|e| anyhow!("Failed to decode base58 keypair: {}", e))?;
-    Keypair::from_bytes(&buf).map_err(|e| anyhow!("Failed to create keypair from bytes: {}", e))
+    Keypair::try_from(&buf[..]).map_err(|e| anyhow!("Failed to create keypair from bytes: {}", e))
 }
 
 pub fn check_if_error_includes_an_expected_account(
@@ -1136,7 +1137,7 @@ mod tests {
 2025-11-25T18:02:30.415864Z DEBUG solana_rpc_client::nonblocking::rpc_client:   9: Program 11111111111111111111111111111111 failed: custom program error: 0x0
 2025-11-25T18:02:30.415891Z DEBUG solana_rpc_client::nonblocking::rpc_client:  10: Program gtw3LYHmSe3y1cRqCeBuTpyB4KDQHfaqqHQs6Rw19DX consumed 5909 of 7150 compute units
 2025-11-25T18:02:30.415919Z DEBUG solana_rpc_client::nonblocking::rpc_client:  11: Program gtw3LYHmSe3y1cRqCeBuTpyB4KDQHfaqqHQs6Rw19DX failed: custom program error: 0x0
-2025-11-25T18:02:30.415947Z DEBUG solana_rpc_client::nonblocking::rpc_client: 
+2025-11-25T18:02:30.415947Z DEBUG solana_rpc_client::nonblocking::rpc_client:
 2025-11-25T18:02:30.416016Z ERROR relayer_core::includer: Failed to consume delivery: GatewayTxTaskError("Generic error: Generic error: Generic error: TransactionError: Error processing Instruction 2: custom program error: 0x0")"#;
         assert!(is_addr_in_use(
             full_message,
@@ -1175,7 +1176,7 @@ mod tests {
 2025-11-26T16:50:25.618080Z DEBUG solana_rpc_client::nonblocking::rpc_client:   7: Program log: AnchorError thrown in programs/solana-axelar-gateway/src/state/verification_session.rs:164. Error Code: SlotAlreadyVerified. Error Number: 6006. Error Message: SlotAlreadyVerified.
 2025-11-26T16:50:25.618115Z DEBUG solana_rpc_client::nonblocking::rpc_client:   8: Program gtw3LYHmSe3y1cRqCeBuTpyB4KDQHfaqqHQs6Rw19DX consumed 9333 of 11259 compute units
 2025-11-26T16:50:25.618140Z DEBUG solana_rpc_client::nonblocking::rpc_client:   9: Program gtw3LYHmSe3y1cRqCeBuTpyB4KDQHfaqqHQs6Rw19DX failed: custom program error: 0x1776
-2025-11-26T16:50:25.618165Z DEBUG solana_rpc_client::nonblocking::rpc_client: 
+2025-11-26T16:50:25.618165Z DEBUG solana_rpc_client::nonblocking::rpc_client:
 2025-11-26T16:50:25.618307Z ERROR relayer_core::includer: Failed to consume delivery: GatewayTxTaskError("Generic error: TransactionError: Error processing Instruction 2: custom program error: 0x1776")"#;
         assert!(is_slot_already_verified(full_message));
     }

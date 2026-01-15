@@ -4,15 +4,13 @@ use std::sync::Arc;
 
 use base64::prelude::BASE64_STANDARD;
 use base64::Engine;
-use borsh::BorshSerialize;
-use relayer_core::gmp_api::gmp_types::Event;
+use relayer_core::gmp_api::gmp_types::{Event, MessageExecutionStatus};
 use relayer_core::includer_worker::IncluderTrait;
 use relayer_core::ingestor::IngestorTrait;
 use relayer_core::queue::{QueueItem, QueueTrait};
 use solana::includer::SolanaIncluder;
 use solana::ingestor::SolanaIngestor;
 use solana::mocks::{MockRefundsModel, MockUpdateEvents};
-use solana_axelar_gateway_test_fixtures::create_verifier_info;
 use solana_axelar_its::encoding::{
     DeployInterchainToken, HubMessage, InterchainTransfer, LinkToken, Message as ItsMessage,
 };
@@ -74,7 +72,7 @@ async fn test_approve_and_execute_its_message() {
         message: ItsMessage::DeployInterchainToken(deploy_token),
     };
 
-    let deploy_payload_bytes = hub_message.try_to_vec().unwrap();
+    let deploy_payload_bytes = borsh::to_vec(&hub_message).unwrap();
     let deploy_payload_hash = solana_sdk::keccak::hashv(&[&deploy_payload_bytes]).to_bytes();
 
     // Create message for deploy
@@ -138,7 +136,7 @@ async fn test_approve_and_execute_its_message() {
             meta: None,
         },
         task: GatewayTxTaskFields {
-            execute_data: BASE64_STANDARD.encode(deploy_execute_data.try_to_vec().unwrap()),
+            execute_data: BASE64_STANDARD.encode(borsh::to_vec(&deploy_execute_data).unwrap()),
         },
     };
 
@@ -297,7 +295,7 @@ async fn test_approve_and_execute_its_message() {
     println!("Interchain Transfer...");
 
     let transfer_message_id = "test-its-transfer-001";
-    let destination_pubkey = env.payer.pubkey();
+    let destination_pubkey = env.operator.pubkey();
     let transfer_amount = 1_000_000u64;
 
     let source_address_bytes = "ethereum_address_123".as_bytes().to_vec();
@@ -316,7 +314,7 @@ async fn test_approve_and_execute_its_message() {
         message: ItsMessage::InterchainTransfer(transfer),
     };
 
-    let transfer_payload_bytes = transfer_hub_message.try_to_vec().unwrap();
+    let transfer_payload_bytes = borsh::to_vec(&transfer_hub_message).unwrap();
     let transfer_payload_hash = solana_sdk::keccak::hashv(&[&transfer_payload_bytes]).to_bytes();
 
     let transfer_message = Message {
@@ -379,7 +377,7 @@ async fn test_approve_and_execute_its_message() {
             meta: None,
         },
         task: GatewayTxTaskFields {
-            execute_data: BASE64_STANDARD.encode(transfer_execute_data.try_to_vec().unwrap()),
+            execute_data: BASE64_STANDARD.encode(borsh::to_vec(&transfer_execute_data).unwrap()),
         },
     };
 
@@ -467,45 +465,58 @@ async fn test_approve_and_execute_its_message() {
     let ingestor_execute = SolanaIngestor::new(parser_execute, mock_update_events_execute);
 
     let mut found_executed_event = false;
-    for item in &queued_items_execute {
-        if let QueueItem::Transaction(tx_data) = item {
-            match ingestor_execute
-                .handle_transaction(tx_data.to_string())
-                .await
-            {
-                Ok(events) => {
-                    for event in &events {
-                        if let Event::MessageExecuted {
-                            common,
-                            message_id: event_message_id,
-                            source_chain: event_source_chain,
-                            status,
-                            cost,
-                            ..
-                        } = event
-                        {
-                            println!("Parsed MessageExecuted event!");
-                            println!("Event ID: {}", common.event_id);
-                            println!("Message ID: {}", event_message_id);
-                            println!("Source Chain: {}", event_source_chain);
-                            println!("Status: {:?}", status);
-                            println!("Cost: {:?}", cost);
-
-                            if *event_message_id == deploy_message_id
-                                || *event_message_id == transfer_message_id
+    let max_wait_execute = std::time::Duration::from_secs(30);
+    let start_execute = std::time::Instant::now();
+    while start_execute.elapsed() < max_wait_execute && !found_executed_event {
+        let queued_items_execute = test_queue.get_items().await;
+        for item in &queued_items_execute {
+            if let QueueItem::Transaction(tx_data) = item {
+                match ingestor_execute
+                    .handle_transaction(tx_data.to_string())
+                    .await
+                {
+                    Ok(events) => {
+                        for event in &events {
+                            if let Event::MessageExecuted {
+                                common,
+                                message_id: event_message_id,
+                                source_chain: event_source_chain,
+                                status,
+                                cost,
+                                ..
+                            } = event
                             {
-                                found_executed_event = true;
+                                println!("Parsed MessageExecuted event!");
+                                println!("Event ID: {}", common.event_id);
+                                println!("Message ID: {}", event_message_id);
+                                println!("Source Chain: {}", event_source_chain);
+                                println!("Status: {:?}", status);
+                                println!("Cost: {:?}", cost);
+
+                                if *event_message_id == deploy_message_id
+                                    || *event_message_id == transfer_message_id
+                                {
+                                    assert!(
+                                        matches!(status, MessageExecutionStatus::SUCCESSFUL),
+                                        "MessageExecuted status should be SUCCESSFUL for {}",
+                                        event_message_id
+                                    );
+                                    found_executed_event = true;
+                                }
                             }
                         }
                     }
-                }
-                Err(e) => {
-                    if tx_data.contains("itsmM2AJ27dSAXVhCfj34MtnFqyUmnLF7kbKbmyqRQA") {
-                        println!("Parse error for ITS transaction: {:?}", e);
+                    Err(e) => {
+                        if tx_data.contains("itsmM2AJ27dSAXVhCfj34MtnFqyUmnLF7kbKbmyqRQA") {
+                            println!("Parse error for ITS transaction: {:?}", e);
+                        }
+                        panic!("Parse error: {:?}", e);
                     }
-                    panic!("Parse error: {:?}", e);
                 }
             }
+        }
+        if !found_executed_event {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         }
     }
 
@@ -525,7 +536,7 @@ async fn test_approve_and_execute_its_message() {
         .get_minimum_balance_for_rent_exemption(82)
         .await
         .unwrap();
-    let create_mint_ix = solana_sdk::system_instruction::create_account(
+    let create_mint_ix = solana_system_interface::instruction::create_account(
         &env.payer.pubkey(),
         &link_mint_pubkey,
         rent,
@@ -575,7 +586,7 @@ async fn test_approve_and_execute_its_message() {
         message: ItsMessage::LinkToken(link_token),
     };
 
-    let link_payload_bytes = link_hub_message.try_to_vec().unwrap();
+    let link_payload_bytes = borsh::to_vec(&link_hub_message).unwrap();
     let link_payload_hash = solana_sdk::keccak::hashv(&[&link_payload_bytes]).to_bytes();
 
     let link_message = Message {
@@ -639,7 +650,7 @@ async fn test_approve_and_execute_its_message() {
             meta: None,
         },
         task: GatewayTxTaskFields {
-            execute_data: BASE64_STANDARD.encode(link_execute_data.try_to_vec().unwrap()),
+            execute_data: BASE64_STANDARD.encode(borsh::to_vec(&link_execute_data).unwrap()),
         },
     };
 
@@ -701,7 +712,7 @@ async fn test_approve_and_execute_its_message() {
         .get_minimum_balance_for_rent_exemption(82)
         .await
         .unwrap();
-    let create_mint_2022_ix = solana_sdk::system_instruction::create_account(
+    let create_mint_2022_ix = solana_system_interface::instruction::create_account(
         &env.payer.pubkey(),
         &link_mint_2022_pubkey,
         rent_2022,
@@ -754,7 +765,7 @@ async fn test_approve_and_execute_its_message() {
         message: ItsMessage::LinkToken(link_token_2022),
     };
 
-    let link_payload_bytes_2022 = link_hub_message_2022.try_to_vec().unwrap();
+    let link_payload_bytes_2022 = borsh::to_vec(&link_hub_message_2022).unwrap();
     let link_payload_hash_2022 = solana_sdk::keccak::hashv(&[&link_payload_bytes_2022]).to_bytes();
 
     let link_message_2022 = Message {
@@ -819,7 +830,7 @@ async fn test_approve_and_execute_its_message() {
             meta: None,
         },
         task: GatewayTxTaskFields {
-            execute_data: BASE64_STANDARD.encode(link_execute_data_2022.try_to_vec().unwrap()),
+            execute_data: BASE64_STANDARD.encode(borsh::to_vec(&link_execute_data_2022).unwrap()),
         },
     };
 
@@ -917,7 +928,7 @@ async fn test_its_messages_with_optional_fields() {
     let salt = [10u8; 32];
     let token_id = interchain_token_id(&env.payer.pubkey(), &salt);
 
-    let minter_pubkey = env.payer.pubkey();
+    let minter_pubkey = env.operator.pubkey();
     let minter_bytes = minter_pubkey.to_bytes().to_vec();
 
     let deploy_token = DeployInterchainToken {
@@ -933,7 +944,7 @@ async fn test_its_messages_with_optional_fields() {
         message: ItsMessage::DeployInterchainToken(deploy_token),
     };
 
-    let deploy_payload_bytes = deploy_hub_message.try_to_vec().unwrap();
+    let deploy_payload_bytes = borsh::to_vec(&deploy_hub_message).unwrap();
     let deploy_payload_hash = solana_sdk::keccak::hashv(&[&deploy_payload_bytes]).to_bytes();
 
     let deploy_message = Message {
@@ -996,7 +1007,7 @@ async fn test_its_messages_with_optional_fields() {
             meta: None,
         },
         task: GatewayTxTaskFields {
-            execute_data: BASE64_STANDARD.encode(deploy_execute_data.try_to_vec().unwrap()),
+            execute_data: BASE64_STANDARD.encode(borsh::to_vec(&deploy_execute_data).unwrap()),
         },
     };
 
@@ -1058,7 +1069,7 @@ async fn test_its_messages_with_optional_fields() {
         .get_minimum_balance_for_rent_exemption(82)
         .await
         .unwrap();
-    let create_mint_ix = solana_sdk::system_instruction::create_account(
+    let create_mint_ix = solana_system_interface::instruction::create_account(
         &env.payer.pubkey(),
         &link_mint_pubkey,
         rent,
@@ -1093,7 +1104,7 @@ async fn test_its_messages_with_optional_fields() {
     let link_salt = [20u8; 32];
     let link_token_id = interchain_token_id(&env.payer.pubkey(), &link_salt);
 
-    let operator_pubkey = env.payer.pubkey();
+    let operator_pubkey = env.operator.pubkey();
     let operator_bytes = operator_pubkey.to_bytes().to_vec();
 
     let link = LinkToken {
@@ -1109,7 +1120,7 @@ async fn test_its_messages_with_optional_fields() {
         message: ItsMessage::LinkToken(link),
     };
 
-    let link_payload_bytes = link_hub_message.try_to_vec().unwrap();
+    let link_payload_bytes = borsh::to_vec(&link_hub_message).unwrap();
     let link_payload_hash = solana_sdk::keccak::hashv(&[&link_payload_bytes]).to_bytes();
 
     let link_message_id = "test-its-link-with-operator-001";
@@ -1173,7 +1184,7 @@ async fn test_its_messages_with_optional_fields() {
             meta: None,
         },
         task: GatewayTxTaskFields {
-            execute_data: BASE64_STANDARD.encode(link_execute_data.try_to_vec().unwrap()),
+            execute_data: BASE64_STANDARD.encode(borsh::to_vec(&link_execute_data).unwrap()),
         },
     };
 
@@ -1241,7 +1252,7 @@ async fn test_its_messages_with_optional_fields() {
     let init_accounts = solana_axelar_memo::accounts::Init {
         counter: counter_pda,
         payer: env.payer.pubkey(),
-        system_program: solana_sdk::system_program::ID,
+        system_program: solana_sdk_ids::system_program::ID,
     }
     .to_account_metas(None);
 
@@ -1307,7 +1318,7 @@ async fn test_its_messages_with_optional_fields() {
     let mint_tx = solana_sdk::transaction::Transaction::new_signed_with_payer(
         &[mint_ix],
         Some(&env.payer.pubkey()),
-        &[&env.payer],
+        &[&env.payer, &env.operator],
         mint_blockhash,
     );
 
@@ -1356,7 +1367,7 @@ async fn test_its_messages_with_optional_fields() {
         message: ItsMessage::InterchainTransfer(transfer),
     };
 
-    let transfer_payload_bytes = transfer_hub_message.try_to_vec().unwrap();
+    let transfer_payload_bytes = borsh::to_vec(&transfer_hub_message).unwrap();
     let transfer_payload_hash = solana_sdk::keccak::hashv(&[&transfer_payload_bytes]).to_bytes();
 
     let transfer_message = Message {
@@ -1419,7 +1430,7 @@ async fn test_its_messages_with_optional_fields() {
             meta: None,
         },
         task: GatewayTxTaskFields {
-            execute_data: BASE64_STANDARD.encode(transfer_execute_data.try_to_vec().unwrap()),
+            execute_data: BASE64_STANDARD.encode(borsh::to_vec(&transfer_execute_data).unwrap()),
         },
     };
 
@@ -1521,7 +1532,7 @@ async fn test_its_concurrent_task_processing() {
             message: ItsMessage::InterchainTransfer(transfer),
         };
 
-        let transfer_payload_bytes = transfer_hub_message.try_to_vec().unwrap();
+        let transfer_payload_bytes = borsh::to_vec(&transfer_hub_message).unwrap();
         let transfer_payload_hash =
             solana_sdk::keccak::hashv(&[&transfer_payload_bytes]).to_bytes();
 
@@ -1584,7 +1595,8 @@ async fn test_its_concurrent_task_processing() {
                 meta: None,
             },
             task: GatewayTxTaskFields {
-                execute_data: BASE64_STANDARD.encode(transfer_execute_data.try_to_vec().unwrap()),
+                execute_data: BASE64_STANDARD
+                    .encode(borsh::to_vec(&transfer_execute_data).unwrap()),
             },
         };
 
@@ -1637,7 +1649,7 @@ async fn test_its_concurrent_task_processing() {
         message: ItsMessage::DeployInterchainToken(deploy_token),
     };
 
-    let deploy_payload_bytes = deploy_hub_message.try_to_vec().unwrap();
+    let deploy_payload_bytes = borsh::to_vec(&deploy_hub_message).unwrap();
     let deploy_payload_hash = solana_sdk::keccak::hashv(&[&deploy_payload_bytes]).to_bytes();
 
     let deploy_message = Message {
@@ -1714,7 +1726,7 @@ async fn test_its_concurrent_task_processing() {
             meta: None,
         },
         task: GatewayTxTaskFields {
-            execute_data: BASE64_STANDARD.encode(deploy_execute_data.try_to_vec().unwrap()),
+            execute_data: BASE64_STANDARD.encode(borsh::to_vec(&deploy_execute_data).unwrap()),
         },
     };
 

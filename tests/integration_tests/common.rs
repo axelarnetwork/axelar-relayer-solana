@@ -1,7 +1,7 @@
 //! Common test utilities and setup for integration tests
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::Arc;
 
 use anchor_lang::{AnchorSerialize, Discriminator, InstructionData, ToAccountMetas};
@@ -16,10 +16,10 @@ use solana::models::solana_transaction::PgSolanaTransactionModel;
 use solana::poll_client::SolanaRpcClient;
 use solana::subscriber_poller::SolanaPoller;
 use solana::transaction_builder::TransactionBuilder;
+use solana_commitment_config::CommitmentConfig;
 use solana_rpc::rpc::JsonRpcConfig;
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::account::AccountSharedData;
-use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::instruction::Instruction;
 use solana_sdk::native_token::LAMPORTS_PER_SOL;
 use solana_sdk::signature::{Keypair, Signer};
@@ -36,21 +36,36 @@ use tokio_util::sync::CancellationToken;
 use solana_axelar_gateway::state::config::{InitialVerifierSet, InitializeConfigParams};
 use solana_axelar_std::{hasher::LeafHash, MerkleTree, PublicKey, VerifierSetLeaf, U256};
 
-// Supports up to 8 parallel tests
-
-/// Base port for test validators. Each slot gets 1000 ports to accommodate all validator services.
-/// Slot 0: 10000-10999, Slot 1: 11000-11999, etc.
-const BASE_PORT: u16 = 10000;
+/// Each test gets 1000 ports. Base port is randomized per test run to avoid conflicts.
 const PORTS_PER_SLOT: u16 = 1000;
-const MAX_SLOTS: u8 = 8;
 
-/// Bitmask tracking which slots are in use (bit N = slot N)
-static SLOT_MASK: AtomicU8 = AtomicU8::new(0);
+/// Atomic counter for allocating unique slot numbers - never reused within a test run
+static SLOT_COUNTER: AtomicU16 = AtomicU16::new(0);
+
+/// Base port offset computed once per test run using timestamp and PID for uniqueness
+static BASE_PORT: std::sync::OnceLock<u16> = std::sync::OnceLock::new();
+
+fn get_base_port() -> u16 {
+    *BASE_PORT.get_or_init(|| {
+        // Use timestamp + process ID to generate a unique base port for this test run
+        // Range: 20000-32000 (leaving room for up to 32 tests * 1000 ports without overflow)
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u32)
+            .unwrap_or(0);
+        let pid = std::process::id();
+        // Combine timestamp and pid for uniqueness
+        let combined = now.wrapping_add(pid);
+        // Range from 20000 to 32000 (12 possible starting points)
+        let offset = ((combined % 12) * 1000) as u16;
+        20000 + offset
+    })
+}
 
 /// Port configuration for a test validator
 #[derive(Debug, Clone)]
 pub struct TestPorts {
-    pub slot: u8,
+    pub slot: u16,
     pub rpc_port: u16,
     pub faucet_port: u16,
     pub gossip_port: u16,
@@ -60,69 +75,43 @@ pub struct TestPorts {
 }
 
 impl TestPorts {
-    fn new(slot: u8) -> Self {
-        let base = BASE_PORT + (slot as u16 * PORTS_PER_SLOT);
+    fn new(slot: u16) -> Self {
+        // Ensure we don't overflow: max port is 65535, we need 1000 ports per slot
+        // With base up to 32000, slot can be up to 33 before overflow (32000 + 33*1000 = 65000)
+        let base = get_base_port().saturating_add(slot.saturating_mul(PORTS_PER_SLOT));
+        // If we're close to overflow, wrap around (shouldn't happen with 12 tests, but be safe)
+        let base = if base > 64000 {
+            20000u16.saturating_add((slot % 32).saturating_mul(PORTS_PER_SLOT))
+        } else {
+            base
+        };
         Self {
             slot,
             rpc_port: base,
-            faucet_port: base + 1,
-            gossip_port: base + 2,
+            faucet_port: base.saturating_add(1),
+            gossip_port: base.saturating_add(2),
             // Reserve ports 10-999 in each slot for validator internal services
-            port_range_start: base + 10,
-            port_range_end: base + PORTS_PER_SLOT - 1,
+            port_range_start: base.saturating_add(10),
+            port_range_end: base.saturating_add(PORTS_PER_SLOT - 1),
         }
     }
 }
 
+/// Guard that does nothing on drop - slots are never reused
 pub struct PortSlotGuard {
-    slot: u8,
+    #[allow(dead_code)]
+    slot: u16,
 }
 
-impl Drop for PortSlotGuard {
-    fn drop(&mut self) {
-        let mask = 1u8 << self.slot;
-        SLOT_MASK.fetch_and(!mask, Ordering::SeqCst);
-    }
-}
-
-/// Allocates a unique port slot for a test.
-/// Returns None if all 8 slots are in use.
-fn allocate_slot() -> Option<(TestPorts, PortSlotGuard)> {
-    loop {
-        let current = SLOT_MASK.load(Ordering::SeqCst);
-
-        // Find first free slot
-        let mut slot = None;
-        for i in 0..MAX_SLOTS {
-            if current & (1 << i) == 0 {
-                slot = Some(i);
-                break;
-            }
-        }
-
-        let slot = slot?; // All slots in use
-        let new_mask = current | (1 << slot);
-
-        // Try to claim the slot atomically
-        if SLOT_MASK
-            .compare_exchange(current, new_mask, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
-        {
-            return Some((TestPorts::new(slot), PortSlotGuard { slot }));
-        }
-        // Another thread claimed a slot, retry
-    }
+/// Allocates a unique port slot for a test. Each slot is unique and never reused.
+fn allocate_slot() -> (TestPorts, PortSlotGuard) {
+    let slot = SLOT_COUNTER.fetch_add(1, Ordering::SeqCst);
+    (TestPorts::new(slot), PortSlotGuard { slot })
 }
 
 async fn allocate_slot_with_retry() -> (TestPorts, PortSlotGuard) {
-    let mut delay_ms = 100;
-    loop {
-        if let Some(result) = allocate_slot() {
-            return result;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-        delay_ms = (delay_ms * 2).min(5000);
-    }
+    // No retry needed - we always get a unique slot
+    allocate_slot()
 }
 
 #[cfg(test)]
@@ -242,6 +231,40 @@ pub fn create_mock_gmp_api_for_execute() -> MockGmpApiTrait {
     mock_gmp_api
 }
 
+// Taken from https://github.com/axelarnetwork/axelar-amplifier-solana/blob/7d843884d9e0ada635819c6a207278ec70699ea0/helpers/solana-axelar-gateway-test-fixtures/src/lib.rs#L411
+// as a test util
+#[cfg(test)]
+pub fn create_verifier_info(
+    secret_key: &libsecp256k1::SecretKey,
+    payload_merkle_root: [u8; 32],
+    verifier_leaf: &VerifierSetLeaf,
+    position: usize,
+    verifier_merkle_tree: &MerkleTree,
+    payload_type: solana_axelar_std::PayloadType,
+) -> solana_axelar_std::SigningVerifierSetInfo {
+    let hashed_message = solana_axelar_std::execute_data::prefixed_message_hash_payload_type(
+        payload_type,
+        &payload_merkle_root,
+    );
+
+    let message = libsecp256k1::Message::parse(&hashed_message);
+    let (signature, recovery_id) = libsecp256k1::sign(&message, secret_key);
+    let mut signature_bytes = signature.serialize().to_vec();
+    signature_bytes.push(recovery_id.serialize() + 27);
+    let signature_array: [u8; 65] = signature_bytes.try_into().unwrap();
+    let signature = solana_axelar_std::Signature(signature_array);
+
+    let merkle_proof = verifier_merkle_tree.proof(&[position]);
+    let merkle_proof_bytes = merkle_proof.to_bytes();
+
+    solana_axelar_std::SigningVerifierSetInfo {
+        signature,
+        leaf: *verifier_leaf,
+        merkle_proof: merkle_proof_bytes,
+        payload_type,
+    }
+}
+
 #[cfg(test)]
 pub struct IncluderComponents {
     pub includer_client: IncluderClient,
@@ -266,7 +289,7 @@ pub fn create_includer_components_with_redis(
 
     let gas_calculator = GasCalculator::new(includer_client.clone());
 
-    let keypair = Arc::new(Keypair::from_bytes(&payer.to_bytes()).unwrap());
+    let keypair = Arc::new(payer.insecure_clone());
 
     let mock_redis = mock_redis.unwrap_or_else(create_mock_redis);
 
@@ -557,7 +580,7 @@ impl TestEnvironment {
                 solana_axelar_its::state::UserRoles::find_pda(&its_root_pda, &operator.pubkey());
 
             let user_roles_state = solana_axelar_its::state::UserRoles {
-                roles: solana_axelar_its::state::Roles::OPERATOR,
+                roles: solana_axelar_its::state::roles::OPERATOR,
                 bump: user_roles_bump,
             };
 
@@ -660,9 +683,8 @@ impl TestEnvironment {
 
         // Initialize Gateway
         let gateway_root_pda = solana_axelar_gateway::GatewayConfig::find_pda().0;
-        let program_data = solana_sdk::bpf_loader_upgradeable::get_program_data_address(
-            &solana_axelar_gateway::ID,
-        );
+        let program_data =
+            solana_loader_v3_interface::get_program_data_address(&solana_axelar_gateway::ID);
 
         let (secret_key_1, compressed_pubkey_1) = generate_random_signer();
         let (secret_key_2, compressed_pubkey_2) = generate_random_signer();
@@ -779,8 +801,5 @@ impl TestEnvironment {
 
         // Clean up ledger directory after validator is stopped
         let _ = std::fs::remove_dir_all(&ledger_path);
-
-        // Port slot guard is dropped here, releasing the slot for other tests
-        drop(self.port_slot_guard);
     }
 }

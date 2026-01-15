@@ -16,8 +16,6 @@ use solana::mocks::MockUpdateEvents;
 use solana_sdk::instruction::Instruction;
 use solana_sdk::native_token::LAMPORTS_PER_SOL;
 use solana_sdk::signature::{Keypair, Signer};
-#[allow(deprecated)]
-use solana_sdk::system_instruction;
 use solana_sdk::transaction::Transaction;
 use solana_transaction_parser::gmp_types::{
     Amount, CommonTaskFields, GatewayV2Message, RefundTask, RefundTaskFields,
@@ -105,7 +103,7 @@ async fn test_gas_paid_event_parsing() {
         sender: env.payer.pubkey(),
         treasury,
         event_authority: gas_service_event_authority,
-        system_program: solana_sdk::system_program::ID,
+        system_program: solana_sdk_ids::system_program::ID,
         program: solana_axelar_gas_service::ID,
     }
     .to_account_metas(None);
@@ -279,7 +277,7 @@ async fn test_gas_added_event_parsing() {
         sender: env.payer.pubkey(),
         treasury,
         event_authority: gas_service_event_authority,
-        system_program: solana_sdk::system_program::ID,
+        system_program: solana_sdk_ids::system_program::ID,
         program: solana_axelar_gas_service::ID,
     }
     .to_account_metas(None);
@@ -422,9 +420,11 @@ async fn test_gas_refunded_event_parsing() {
         solana_axelar_gas_service::Treasury::try_find_pda().expect("Failed to derive treasury PDA");
     let treasury_funding_amount = 5 * LAMPORTS_PER_SOL;
 
-    #[allow(deprecated)]
-    let fund_treasury_ix =
-        system_instruction::transfer(&env.payer.pubkey(), &treasury, treasury_funding_amount);
+    let fund_treasury_ix = solana_system_interface::instruction::transfer(
+        &env.payer.pubkey(),
+        &treasury,
+        treasury_funding_amount,
+    );
 
     let recent_blockhash = env
         .rpc_client

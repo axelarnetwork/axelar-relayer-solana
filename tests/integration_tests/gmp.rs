@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use anchor_lang::{InstructionData, ToAccountMetas};
-use relayer_core::gmp_api::gmp_types::{Event, PostEventResult};
+use relayer_core::gmp_api::gmp_types::{Event, MessageExecutionStatus, PostEventResult};
 use relayer_core::gmp_api::{GmpApiTrait, MockGmpApiTrait};
 use relayer_core::includer_worker::IncluderTrait;
 use relayer_core::ingestor::IngestorTrait;
@@ -16,14 +16,11 @@ use solana_axelar_std::PayloadType;
 use solana_sdk::instruction::Instruction;
 use solana_sdk::native_token::LAMPORTS_PER_SOL;
 use solana_sdk::signature::{Keypair, Signer};
-#[allow(deprecated)]
-use solana_sdk::system_instruction;
 use solana_sdk::transaction::Transaction;
 use solana_transaction_parser::parser::TransactionParser;
 use solana_transaction_parser::redis::MockCostCacheTrait;
 
 use solana_axelar_gateway::ID as GATEWAY_PROGRAM_ID;
-use solana_axelar_gateway_test_fixtures::create_verifier_info;
 use solana_axelar_std::{hasher::LeafHash, MerkleTree, PublicKey, VerifierSetLeaf};
 
 use super::common::*;
@@ -248,7 +245,7 @@ async fn test_call_contract_picked_up_and_sent_to_gmp() {
 async fn test_approve_and_execute_memo_message() {
     use base64::prelude::BASE64_STANDARD;
     use base64::Engine;
-    use borsh::BorshSerialize;
+
     use solana_axelar_std::execute_data::{ExecuteData, MerklizedPayload};
     use solana_axelar_std::{CrossChainId, MerklizedMessage, Message, MessageLeaf};
     use solana_transaction_parser::gmp_types::{
@@ -339,7 +336,7 @@ async fn test_approve_and_execute_memo_message() {
         },
     };
 
-    let execute_data_b64 = BASE64_STANDARD.encode(execute_data.try_to_vec().unwrap());
+    let execute_data_b64 = BASE64_STANDARD.encode(borsh::to_vec(&execute_data).unwrap());
 
     let task = GatewayTxTask {
         common: CommonTaskFields {
@@ -501,7 +498,7 @@ async fn test_approve_and_execute_memo_message() {
     let init_accounts = solana_axelar_memo::accounts::Init {
         counter: counter_pda,
         payer: env.payer.pubkey(),
-        system_program: solana_sdk::system_program::ID,
+        system_program: solana_sdk_ids::system_program::ID,
     }
     .to_account_metas(None);
 
@@ -677,6 +674,11 @@ async fn test_approve_and_execute_memo_message() {
                             println!("Cost: {:?}", cost);
 
                             if *event_message_id == message_id {
+                                assert!(
+                                    matches!(status, MessageExecutionStatus::SUCCESSFUL),
+                                    "MessageExecuted status should be SUCCESSFUL for {}",
+                                    event_message_id
+                                );
                                 found_executed_event = true;
                             }
                         }
@@ -732,9 +734,11 @@ async fn test_refund_task_handled_and_found_by_poller() {
         solana_axelar_gas_service::Treasury::try_find_pda().expect("Failed to derive treasury PDA");
     let treasury_funding_amount = 20 * LAMPORTS_PER_SOL; // 20 SOL to ensure enough for refund + fees
 
-    #[allow(deprecated)]
-    let fund_treasury_ix =
-        system_instruction::transfer(&env.payer.pubkey(), &treasury, treasury_funding_amount);
+    let fund_treasury_ix = solana_system_interface::instruction::transfer(
+        &env.payer.pubkey(),
+        &treasury,
+        treasury_funding_amount,
+    );
 
     let recent_blockhash = env
         .rpc_client
@@ -910,9 +914,11 @@ async fn test_refund_task_duplicate_returns_already_processed() {
         solana_axelar_gas_service::Treasury::try_find_pda().expect("Failed to derive treasury PDA");
     let treasury_funding_amount = 20 * LAMPORTS_PER_SOL;
 
-    #[allow(deprecated)]
-    let fund_treasury_ix =
-        system_instruction::transfer(&env.payer.pubkey(), &treasury, treasury_funding_amount);
+    let fund_treasury_ix = solana_system_interface::instruction::transfer(
+        &env.payer.pubkey(),
+        &treasury,
+        treasury_funding_amount,
+    );
 
     let recent_blockhash = env
         .rpc_client
@@ -1010,7 +1016,7 @@ async fn test_refund_task_duplicate_returns_already_processed() {
 async fn test_rotate_signers() {
     use base64::prelude::BASE64_STANDARD;
     use base64::Engine;
-    use borsh::BorshSerialize;
+
     use solana_axelar_std::execute_data::{ExecuteData, MerklizedPayload};
     use solana_transaction_parser::gmp_types::{
         CommonTaskFields, GatewayTxTask, GatewayTxTaskFields,
@@ -1102,7 +1108,7 @@ async fn test_rotate_signers() {
         },
     };
 
-    let execute_data_b64 = BASE64_STANDARD.encode(execute_data.try_to_vec().unwrap());
+    let execute_data_b64 = BASE64_STANDARD.encode(borsh::to_vec(&execute_data).unwrap());
 
     let task = GatewayTxTask {
         common: CommonTaskFields {
