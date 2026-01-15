@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use anchor_lang::{InstructionData, ToAccountMetas};
-use relayer_core::gmp_api::gmp_types::{Event, PostEventResult};
+use relayer_core::gmp_api::gmp_types::{Event, MessageExecutionStatus, PostEventResult};
 use relayer_core::gmp_api::{GmpApiTrait, MockGmpApiTrait};
 use relayer_core::includer_worker::IncluderTrait;
 use relayer_core::ingestor::IngestorTrait;
@@ -674,6 +674,11 @@ async fn test_approve_and_execute_memo_message() {
                             println!("Cost: {:?}", cost);
 
                             if *event_message_id == message_id {
+                                assert!(
+                                    matches!(status, MessageExecutionStatus::SUCCESSFUL),
+                                    "MessageExecuted status should be SUCCESSFUL for {}",
+                                    event_message_id
+                                );
                                 found_executed_event = true;
                             }
                         }

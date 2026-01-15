@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use base64::prelude::BASE64_STANDARD;
 use base64::Engine;
-use relayer_core::gmp_api::gmp_types::Event;
+use relayer_core::gmp_api::gmp_types::{Event, MessageExecutionStatus};
 use relayer_core::includer_worker::IncluderTrait;
 use relayer_core::ingestor::IngestorTrait;
 use relayer_core::queue::{QueueItem, QueueTrait};
@@ -496,6 +496,11 @@ async fn test_approve_and_execute_its_message() {
                                 if *event_message_id == deploy_message_id
                                     || *event_message_id == transfer_message_id
                                 {
+                                    assert!(
+                                        matches!(status, MessageExecutionStatus::SUCCESSFUL),
+                                        "MessageExecuted status should be SUCCESSFUL for {}",
+                                        event_message_id
+                                    );
                                     found_executed_event = true;
                                 }
                             }
