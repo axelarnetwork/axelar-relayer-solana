@@ -145,7 +145,7 @@ mod tests {
         let mut parser = ParserInterchainTransfer::new(
             tx.signature.to_string(),
             compiled_ix,
-            Pubkey::from_str("8YsLGnLV2KoyxdksgiAi3gh1WvhMrznA2toKWqyz91bR").unwrap(),
+            Pubkey::from_str("gtwT4uGVTYSPnTGv6rSpMheyFyczUicxVWKqdtxNGw9").unwrap(),
             tx.account_keys,
             tx.timestamp.unwrap_or_default().to_rfc3339(),
         )
@@ -210,7 +210,7 @@ mod tests {
         let mut parser = ParserInterchainTransfer::new(
             tx.signature.to_string(),
             compiled_ix,
-            Pubkey::from_str("8YsLGnLV2KoyxdksgiAi3gh1WvhMrznA2toKWqyz91bR").unwrap(),
+            Pubkey::from_str("gtwT4uGVTYSPnTGv6rSpMheyFyczUicxVWKqdtxNGw9").unwrap(),
             tx.account_keys,
             tx.timestamp.unwrap_or_default().to_rfc3339(),
         )

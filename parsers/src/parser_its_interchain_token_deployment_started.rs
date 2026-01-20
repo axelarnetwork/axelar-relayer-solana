@@ -144,7 +144,7 @@ mod tests {
         let mut parser = ParserInterchainTokenDeploymentStarted::new(
             tx.signature.to_string(),
             compiled_ix,
-            Pubkey::from_str("8YsLGnLV2KoyxdksgiAi3gh1WvhMrznA2toKWqyz91bR").unwrap(),
+            Pubkey::from_str("gtwT4uGVTYSPnTGv6rSpMheyFyczUicxVWKqdtxNGw9").unwrap(),
             tx.account_keys,
             tx.timestamp.unwrap_or_default().to_rfc3339(),
         )
@@ -167,7 +167,7 @@ mod tests {
                                 .clone()
                                 .unwrap()
                                 .minter
-                                .map(|minter| minter.to_string()),
+                                .map(|minter| hex::encode(minter.to_bytes())),
                             finalized: None,
                             source_context: Some(HashMap::from([(
                                 "token_id".to_owned(),
@@ -204,7 +204,7 @@ mod tests {
         let mut parser = ParserInterchainTokenDeploymentStarted::new(
             tx.signature.to_string(),
             compiled_ix,
-            Pubkey::from_str("8YsLGnLV2KoyxdksgiAi3gh1WvhMrznA2toKWqyz91bR").unwrap(),
+            Pubkey::from_str("gtwT4uGVTYSPnTGv6rSpMheyFyczUicxVWKqdtxNGw9").unwrap(),
             tx.account_keys,
             tx.timestamp.unwrap_or_default().to_rfc3339(),
         )

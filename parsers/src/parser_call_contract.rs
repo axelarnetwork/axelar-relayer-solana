@@ -170,7 +170,7 @@ mod tests {
             tx.account_keys,
             "solana".to_string(),
             InstructionIndex::new(tx.signature.to_string(), 1, 2),
-            Pubkey::from_str("8YsLGnLV2KoyxdksgiAi3gh1WvhMrznA2toKWqyz91bR").unwrap(),
+            Pubkey::from_str("gtwT4uGVTYSPnTGv6rSpMheyFyczUicxVWKqdtxNGw9").unwrap(),
             tx.timestamp.unwrap_or_default().to_rfc3339(),
         )
         .await
@@ -263,7 +263,7 @@ mod tests {
             tx.account_keys,
             "solana".to_string(),
             InstructionIndex::new(tx.signature.to_string(), 1, 2),
-            Pubkey::from_str("8YsLGnLV2KoyxdksgiAi3gh1WvhMrznA2toKWqyz91bR").unwrap(),
+            Pubkey::from_str("gtwT4uGVTYSPnTGv6rSpMheyFyczUicxVWKqdtxNGw9").unwrap(),
             tx.timestamp.unwrap_or_default().to_rfc3339(),
         )
         .await
