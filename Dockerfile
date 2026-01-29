@@ -22,6 +22,7 @@ RUN mkdir -p src/bin/recovery && \
     echo 'fn main() {}' > src/bin/subscriber.rs && \
     echo 'fn main() {}' > src/bin/recovery/subscriber.rs && \
     echo 'fn main() {}' > src/bin/alt_manager.rs && \
+    echo 'fn main() {}' > src/bin/cu_price_calculator.rs && \
     mkdir -p parsers/src && \
     echo 'pub fn dummy() {}' > parsers/src/lib.rs
 
