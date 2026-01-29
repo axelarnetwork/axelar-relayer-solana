@@ -13,6 +13,7 @@ WORKDIR /app
 
 # Copy workspace Cargo files first
 COPY Cargo.toml Cargo.lock ./
+COPY parsers/Cargo.toml ./parsers/
 
 # Create dummy files for each workspace member to cache dependencies
 RUN mkdir -p src/bin/recovery && \
@@ -20,17 +21,24 @@ RUN mkdir -p src/bin/recovery && \
     echo 'fn main() {}' > src/bin/includer.rs && \
     echo 'fn main() {}' > src/bin/subscriber.rs && \
     echo 'fn main() {}' > src/bin/recovery/subscriber.rs && \
-    echo 'fn main() {}' > src/bin/alt_manager.rs
+    echo 'fn main() {}' > src/bin/alt_manager.rs && \
+    echo 'fn main() {}' > src/bin/cu_price_calculator.rs && \
+    mkdir -p parsers/src && \
+    echo 'pub fn dummy() {}' > parsers/src/lib.rs
 
 
 # Build dependencies (this will cache them)
 RUN cargo build --release
 
 # Remove the dummy files
-RUN rm -rf src/
+RUN rm -rf src/ parsers/src/
 
 # Now copy the actual source code
 COPY src/ ./src/
+COPY parsers/src/ ./parsers/src/
+
+# Force rebuild of crates (Cargo may not detect source changes after dummy build)
+RUN touch parsers/src/lib.rs src/lib.rs
 
 # Build the project with actual source code
 RUN cargo build --release --bin ${BINARY_NAME};
