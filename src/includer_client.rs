@@ -5,11 +5,9 @@ use relayer_core::{error::ClientError, utils::ThreadSafe};
 use solana_axelar_gateway::IncomingMessage;
 use solana_axelar_std::execute_data::ExecuteData;
 use solana_client::rpc_response::RpcPrioritizationFee;
+use solana_commitment_config::CommitmentConfig;
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
-use solana_sdk::{
-    account::Account, commitment_config::CommitmentConfig, hash::Hash, pubkey::Pubkey,
-    signature::Signature,
-};
+use solana_sdk::{account::Account, hash::Hash, pubkey::Pubkey, signature::Signature};
 use std::{sync::Arc, time::Duration};
 use tokio::time::sleep;
 use tracing::{error, warn};

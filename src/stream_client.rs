@@ -9,9 +9,9 @@ use solana_client::{
     rpc_config::{RpcTransactionLogsConfig, RpcTransactionLogsFilter},
     rpc_response::RpcLogsResponse,
 };
+use solana_commitment_config::CommitmentConfig;
 use solana_pubsub_client::nonblocking::pubsub_client::PubsubClient;
 use solana_rpc_client_api::response::Response as RpcResponse;
-use solana_sdk::commitment_config::CommitmentConfig;
 
 // Match the nonblocking PubsubClient logs_subscribe return type
 // (BoxStream<'a, RpcResponse<RpcLogsResponse>>, UnsubscribeFn)

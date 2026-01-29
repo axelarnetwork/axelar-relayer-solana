@@ -26,7 +26,8 @@ impl SolanaTransactionType {
             SolanaTransactionType::Legacy(tx) => {
                 let mut micro_price: u64 = 0;
                 for ix in &tx.message.instructions {
-                    if ix.program_id(&tx.message.account_keys) == &solana_sdk::compute_budget::id()
+                    if ix.program_id(&tx.message.account_keys)
+                        == &solana_compute_budget_interface::id()
                     {
                         if let Some(p) = extract_price_from_ix_data(&ix.data) {
                             micro_price = p;
@@ -43,7 +44,7 @@ impl SolanaTransactionType {
                         .static_account_keys()
                         .get(ix.program_id_index as usize)
                     {
-                        if program_id == &solana_sdk::compute_budget::id() {
+                        if program_id == &solana_compute_budget_interface::id() {
                             if let Some(p) = extract_price_from_ix_data(&ix.data) {
                                 micro_price = p;
                             }
@@ -75,7 +76,7 @@ impl SolanaTransactionType {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use solana_sdk::compute_budget::ComputeBudgetInstruction;
+    use solana_compute_budget_interface::ComputeBudgetInstruction;
     use solana_sdk::hash::Hash;
     use solana_sdk::instruction::Instruction;
     use solana_sdk::signer::{keypair::Keypair, Signer};
@@ -104,7 +105,7 @@ mod tests {
         // Create a transaction without compute budget instruction
         let tx = Transaction::new_signed_with_payer(
             &[Instruction::new_with_bytes(
-                solana_sdk::system_program::id(),
+                solana_sdk_ids::system_program::ID,
                 &[],
                 vec![],
             )],
@@ -176,7 +177,7 @@ mod tests {
         let tx = Transaction::new_signed_with_payer(
             &[
                 ComputeBudgetInstruction::set_compute_unit_price(price1),
-                Instruction::new_with_bytes(solana_sdk::system_program::id(), &[], vec![]),
+                Instruction::new_with_bytes(solana_sdk_ids::system_program::ID, &[], vec![]),
                 ComputeBudgetInstruction::set_compute_unit_price(price2),
             ],
             Some(&keypair.pubkey()),

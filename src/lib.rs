@@ -1,3 +1,34 @@
+// Ensure only one network feature is enabled at a time
+ensure_single_feature!("devnet-amplifier", "stagenet", "testnet", "mainnet");
+
+/// Macro to ensure exactly one feature from a list is enabled
+#[macro_export]
+macro_rules! ensure_single_feature {
+    ($($feature:literal),+ $(,)?) => {
+        // Check that at least one feature is enabled
+        #[cfg(not(any($(feature = $feature),+)))]
+        compile_error!("At least one network feature must be enabled: devnet-amplifier, stagenet, testnet, or mainnet");
+
+        // Generate all pair combinations to check mutual exclusivity
+        ensure_single_feature!(@pairs [] $($feature),+);
+    };
+
+    // Helper to generate all pairs
+    (@pairs [$($processed:literal),*] $first:literal $(,$rest:literal)*) => {
+        // Check current element against all processed elements
+        $(
+            #[cfg(all(feature = $first, feature = $processed))]
+            compile_error!(concat!("Features '", $first, "' and '", $processed, "' are mutually exclusive"));
+        )*
+
+        // Continue with the rest
+        ensure_single_feature!(@pairs [$($processed,)* $first] $($rest),*);
+    };
+
+    // Base case: no more elements to process
+    (@pairs [$($processed:literal),*]) => {};
+}
+
 pub mod config;
 pub mod error;
 pub mod gas_calculator;
