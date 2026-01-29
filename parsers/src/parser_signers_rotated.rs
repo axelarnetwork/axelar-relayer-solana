@@ -27,7 +27,7 @@ pub struct ParserSignersRotated {
 }
 
 impl ParserSignersRotated {
-    pub(crate) async fn new(
+    pub(crate) fn new(
         signature: String,
         instruction: UiCompiledInstruction,
         index: InstructionIndex,
@@ -136,68 +136,70 @@ impl Parser for ParserSignersRotated {
 mod tests {
     use std::str::FromStr;
 
-    // use base64::prelude::BASE64_STANDARD;
-    // use base64::Engine as _;
     use solana_transaction_status::UiInstruction;
 
     use super::*;
     use crate::parser_signers_rotated::ParserSignersRotated;
     use crate::test_utils::fixtures::transaction_fixtures;
-    //#[tokio::test]
-    // async fn test_parser() {
-    //     let txs = transaction_fixtures();
 
-    //     let tx = txs[11].clone();
-    //     let compiled_ix: UiCompiledInstruction = match tx.ixs[0].instructions[0].clone() {
-    //         UiInstruction::Compiled(ix) => ix,
-    //         _ => panic!("expected a compiled instruction"),
-    //     };
+    #[tokio::test]
+    async fn test_parser() {
+        let txs = transaction_fixtures();
 
-    //     let mut parser = ParserSignersRotated::new(
-    //         tx.signature.to_string(),
-    //         compiled_ix,
-    //         InstructionIndex::new(tx.signature.to_string(), 1, 2),
-    //         Pubkey::from_str("gtwT4uGVTYSPnTGv6rSpMheyFyczUicxVWKqdtxNGw9").unwrap(),
-    //         tx.account_keys,
-    //         tx.timestamp.unwrap_or_default().to_rfc3339(),
-    //     )
-    //     .await
-    //     .unwrap();
-    //     assert!(parser.parse().await.unwrap());
-    //     let sig = tx.signature.clone().to_string();
-    //     parser.parse().await.unwrap();
-    //     let event = parser.event(None).await.unwrap();
-    //     match event {
-    //         Event::SignersRotated { ref common, .. } => {
-    //             let expected_event = Event::SignersRotated {
-    //                 common: CommonEventFields {
-    //                     r#type: "SIGNERS_ROTATED".to_owned(),
-    //                     event_id: common.event_id.clone(),
-    //                     meta: Some(SignersRotatedEventMetadata {
-    //                         common_meta: EventMetadata {
-    //                             tx_id: Some(sig.to_string()),
-    //                             from_address: None,
-    //                             finalized: None,
-    //                             source_context: None,
-    //                             timestamp: parser.timestamp.clone(),
-    //                         },
-    //                         signers_hash: Some(
-    //                             BASE64_STANDARD
-    //                                 .encode(parser.parsed.as_ref().unwrap().verifier_set_hash),
-    //                         ),
-    //                         epoch: Some(parser.parsed.as_ref().unwrap().epoch.to_u64()),
-    //                     }),
-    //                 },
-    //                 message_id: format!(
-    //                     "{}-{}.{}",
-    //                     sig, parser.index.outer_index, parser.index.inner_index
-    //                 ),
-    //             };
-    //             assert_eq!(event, expected_event);
-    //         }
-    //         _ => panic!("Expected GasRefunded event"),
-    //     }
-    // }
+        let tx = txs[11].clone();
+        let compiled_ix: UiCompiledInstruction = match tx.ixs[0].instructions[0].clone() {
+            UiInstruction::Compiled(ix) => ix,
+            _ => panic!("expected a compiled instruction"),
+        };
+
+        let mut parser = ParserSignersRotated::new(
+            tx.signature.to_string(),
+            compiled_ix,
+            InstructionIndex::new(tx.signature.to_string(), 1, 2),
+            Pubkey::from_str("gtwT4uGVTYSPnTGv6rSpMheyFyczUicxVWKqdtxNGw9").unwrap(),
+            tx.account_keys,
+            tx.timestamp.unwrap_or_default().to_rfc3339(),
+        )
+        .unwrap();
+        assert!(parser.parse().await.unwrap());
+        let sig = tx.signature.clone().to_string();
+        parser.parse().await.unwrap();
+        let event = parser.event(None).await.unwrap();
+        match event {
+            Event::SignersRotated { ref common, .. } => {
+                // Convert U256 epoch to u64 (same logic as in the event() method)
+                let epoch_bytes = parser.parsed.as_ref().unwrap().epoch.to_le_bytes();
+                let epoch = u64::from_le_bytes(epoch_bytes[..8].try_into().unwrap());
+
+                let expected_event = Event::SignersRotated {
+                    common: CommonEventFields {
+                        r#type: "SIGNERS_ROTATED".to_owned(),
+                        event_id: common.event_id.clone(),
+                        meta: Some(SignersRotatedEventMetadata {
+                            common_meta: EventMetadata {
+                                tx_id: Some(sig.to_string()),
+                                from_address: None,
+                                finalized: None,
+                                source_context: None,
+                                timestamp: parser.timestamp.clone(),
+                            },
+                            signers_hash: Some(
+                                BASE64_STANDARD
+                                    .encode(parser.parsed.as_ref().unwrap().verifier_set_hash),
+                            ),
+                            epoch: Some(epoch),
+                        }),
+                    },
+                    message_id: format!(
+                        "{}-{}.{}",
+                        sig, parser.index.outer_index, parser.index.inner_index
+                    ),
+                };
+                assert_eq!(event, expected_event);
+            }
+            _ => panic!("Expected SignersRotated event"),
+        }
+    }
 
     #[tokio::test]
     async fn test_no_match() {
@@ -216,7 +218,6 @@ mod tests {
             tx.account_keys,
             tx.timestamp.unwrap_or_default().to_rfc3339(),
         )
-        .await
         .unwrap();
 
         assert!(parser.parse().await.is_err());

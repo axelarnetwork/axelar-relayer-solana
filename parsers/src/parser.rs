@@ -104,7 +104,7 @@ impl TransactionParserTrait for TransactionParser {
             );
         }
 
-        for cc in call_contract.iter().clone() {
+        for cc in call_contract.iter() {
             let cc_key = cc.key().await?;
             events.push(cc.event(None).await?);
             if let Some(parser) = gas_credit_map.remove(&cc_key) {
@@ -215,8 +215,7 @@ impl TransactionParser {
                                 self.gas_service_address,
                                 transaction.account_keys.clone(),
                                 transaction.timestamp.unwrap_or_default().to_rfc3339(),
-                            )
-                            .await?;
+                            )?;
                             info!(
                                 "ParserNativeGasPaid matched, transaction signature={}",
                                 transaction.signature
@@ -232,8 +231,7 @@ impl TransactionParser {
                                 self.gas_service_address,
                                 transaction.account_keys.clone(),
                                 transaction.timestamp.unwrap_or_default().to_rfc3339(),
-                            )
-                            .await?;
+                            )?;
                             info!(
                                 "ParserNativeGasAdded matched, transaction signature={}",
                                 transaction.signature
@@ -249,8 +247,7 @@ impl TransactionParser {
                                 transaction.cost_units,
                                 transaction.account_keys.clone(),
                                 transaction.timestamp.unwrap_or_default().to_rfc3339(),
-                            )
-                            .await?;
+                            )?;
                             info!(
                                 "ParserNativeGasRefunded matched, transaction signature={}",
                                 transaction.signature
@@ -267,8 +264,7 @@ impl TransactionParser {
                                 index,
                                 self.gateway_address,
                                 transaction.timestamp.unwrap_or_default().to_rfc3339(),
-                            )
-                            .await?;
+                            )?;
                             info!(
                                 "ParserCallContract matched, transaction signature={}",
                                 transaction.signature
@@ -284,8 +280,7 @@ impl TransactionParser {
                                 transaction.account_keys.clone(),
                                 transaction.timestamp.unwrap_or_default().to_rfc3339(),
                                 Arc::clone(&self.cost_cache),
-                            )
-                            .await?;
+                            )?;
                             info!(
                                 "ParserMessageApproved matched, transaction signature={}",
                                 transaction.signature
@@ -301,8 +296,7 @@ impl TransactionParser {
                                 transaction.account_keys.clone(),
                                 transaction.timestamp.unwrap_or_default().to_rfc3339(),
                                 Arc::clone(&self.cost_cache),
-                            )
-                            .await?;
+                            )?;
                             info!(
                                 "ParserMessageExecuted matched, transaction signature={}",
                                 transaction.signature
@@ -318,8 +312,7 @@ impl TransactionParser {
                                 self.gateway_address,
                                 transaction.account_keys.clone(),
                                 transaction.timestamp.unwrap_or_default().to_rfc3339(),
-                            )
-                            .await?;
+                            )?;
                             info!(
                                 "ParserSignersRotated matched, transaction signature={}",
                                 transaction.signature
@@ -334,8 +327,7 @@ impl TransactionParser {
                                 self.its_address,
                                 transaction.account_keys.clone(),
                                 transaction.timestamp.unwrap_or_default().to_rfc3339(),
-                            )
-                            .await?;
+                            )?;
                             info!(
                                 "ParserInterchainTransfer matched, transaction signature={}",
                                 transaction.signature
@@ -350,8 +342,7 @@ impl TransactionParser {
                                 self.its_address,
                                 transaction.account_keys.clone(),
                                 transaction.timestamp.unwrap_or_default().to_rfc3339(),
-                            )
-                            .await?;
+                            )?;
                             info!(
                                     "ParserInterchainTokenDeploymentStarted matched, transaction signature={}",
                                     transaction.signature
@@ -366,8 +357,7 @@ impl TransactionParser {
                                 self.its_address,
                                 transaction.account_keys.clone(),
                                 transaction.timestamp.unwrap_or_default().to_rfc3339(),
-                            )
-                            .await?;
+                            )?;
                             info!(
                                 "ParserLinkTokenStarted matched, transaction signature={}",
                                 transaction.signature
@@ -382,8 +372,7 @@ impl TransactionParser {
                                 self.its_address,
                                 transaction.account_keys.clone(),
                                 transaction.timestamp.unwrap_or_default().to_rfc3339(),
-                            )
-                            .await?;
+                            )?;
                             info!(
                                 "ParserTokenMetadataRegistered matched, transaction signature={}",
                                 transaction.signature

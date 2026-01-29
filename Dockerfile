@@ -74,4 +74,4 @@ ENV BINARY_NAME=${BINARY_NAME}
 COPY --from=builder /app/target/release/${BINARY_NAME} /usr/local/bin/${BINARY_NAME}
 
 # Run the selected binary
-ENTRYPOINT /usr/local/bin/$BINARY_NAME%
+ENTRYPOINT /usr/local/bin/$BINARY_NAME

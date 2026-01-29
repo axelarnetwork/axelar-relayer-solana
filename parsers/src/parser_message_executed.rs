@@ -27,7 +27,7 @@ pub struct ParserMessageExecuted {
 }
 
 impl ParserMessageExecuted {
-    pub(crate) async fn new(
+    pub(crate) fn new(
         signature: String,
         instruction: UiCompiledInstruction,
         expected_contract_address: Pubkey,
@@ -159,7 +159,6 @@ mod tests {
             tx.timestamp.unwrap_or_default().to_rfc3339(),
             Arc::new(mock),
         )
-        .await
         .unwrap();
         assert!(parser.parse().await.unwrap());
         let sig = tx.signature.clone().to_string();
@@ -223,7 +222,6 @@ mod tests {
             tx.timestamp.unwrap_or_default().to_rfc3339(),
             Arc::new(MockCostCacheTrait::new()),
         )
-        .await
         .unwrap();
 
         assert!(parser.parse().await.is_err());

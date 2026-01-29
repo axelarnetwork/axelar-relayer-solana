@@ -27,7 +27,7 @@ pub struct ParserCallContract {
 }
 
 impl ParserCallContract {
-    pub(crate) async fn new(
+    pub(crate) fn new(
         signature: String,
         instruction: UiCompiledInstruction,
         accounts: Vec<String>,
@@ -173,7 +173,6 @@ mod tests {
             Pubkey::from_str("gtwT4uGVTYSPnTGv6rSpMheyFyczUicxVWKqdtxNGw9").unwrap(),
             tx.timestamp.unwrap_or_default().to_rfc3339(),
         )
-        .await
         .unwrap();
         let sig = tx.signature.clone().to_string();
         assert_eq!(
@@ -266,7 +265,6 @@ mod tests {
             Pubkey::from_str("gtwT4uGVTYSPnTGv6rSpMheyFyczUicxVWKqdtxNGw9").unwrap(),
             tx.timestamp.unwrap_or_default().to_rfc3339(),
         )
-        .await
         .unwrap();
 
         assert!(parser.parse().await.is_err());
