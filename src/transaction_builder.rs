@@ -411,8 +411,11 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
                         Pubkey::try_from(transfer.destination_address.as_slice()).map_err(|e| {
                             TransactionBuilderError::PayloadDecodeError(e.to_string())
                         })?;
-                    let (destination_ata, _) =
-                        get_destination_ata_with_program(&destination_address, &token_mint, &token_program);
+                    let (destination_ata, _) = get_destination_ata_with_program(
+                        &destination_address,
+                        &token_mint,
+                        &token_program,
+                    );
                     accounts.extend(execute_interchain_transfer_extra_accounts(
                         destination_address,
                         destination_ata,
@@ -713,11 +716,8 @@ mod tests {
     use std::sync::Arc;
 
     /// Helper function to create mock TokenManager account data for tests
-    fn create_mock_token_manager_data(
-        token_id: [u8; 32],
-        token_address: Pubkey,
-    ) -> Vec<u8> {
-        use solana_axelar_its::{TokenManager, state::FlowState};
+    fn create_mock_token_manager_data(token_id: [u8; 32], token_address: Pubkey) -> Vec<u8> {
+        use solana_axelar_its::{state::FlowState, TokenManager};
 
         let token_manager = TokenManager {
             ty: solana_axelar_its::state::Type::NativeInterchainToken,
@@ -734,7 +734,9 @@ mod tests {
         };
 
         let mut data = Vec::new();
-        token_manager.try_serialize(&mut data).expect("Failed to serialize TokenManager");
+        token_manager
+            .try_serialize(&mut data)
+            .expect("Failed to serialize TokenManager");
         data
     }
 
@@ -954,13 +956,13 @@ mod tests {
         // First compute the token manager PDA
         let (its_root_pda, _) = solana_axelar_its::InterchainTokenService::try_find_pda()
             .expect("Failed to derive ITS root PDA");
-        let (token_manager_pda, _) = solana_axelar_its::TokenManager::try_find_pda(
-            token_id,
-            its_root_pda,
-        ).expect("Failed to derive token manager PDA");
+        let (token_manager_pda, _) =
+            solana_axelar_its::TokenManager::try_find_pda(token_id, its_root_pda)
+                .expect("Failed to derive token manager PDA");
 
         // Create a mock token mint (using derived PDA for native ITS tokens)
-        let (token_mint_pda, _) = solana_axelar_its::TokenManager::find_token_mint(token_id, its_root_pda);
+        let (token_mint_pda, _) =
+            solana_axelar_its::TokenManager::find_token_mint(token_id, its_root_pda);
 
         // Create mock token manager data
         let mock_token_manager_data = create_mock_token_manager_data(token_id, token_mint_pda);
@@ -978,9 +980,7 @@ mod tests {
         mock_client
             .expect_get_account_owner()
             .withf(move |pubkey| *pubkey == token_mint_pda)
-            .returning(move |_| {
-                Box::pin(async move { Ok(spl_token_2022::ID) })
-            });
+            .returning(move |_| Box::pin(async move { Ok(spl_token_2022::ID) }));
 
         let message = Message {
             cc_id: CrossChainId {
@@ -1104,11 +1104,11 @@ mod tests {
         // Compute PDAs for mocking
         let (its_root_pda, _) = solana_axelar_its::InterchainTokenService::try_find_pda()
             .expect("Failed to derive ITS root PDA");
-        let (token_manager_pda, _) = solana_axelar_its::TokenManager::try_find_pda(
-            token_id,
-            its_root_pda,
-        ).expect("Failed to derive token manager PDA");
-        let (token_mint_pda, _) = solana_axelar_its::TokenManager::find_token_mint(token_id, its_root_pda);
+        let (token_manager_pda, _) =
+            solana_axelar_its::TokenManager::try_find_pda(token_id, its_root_pda)
+                .expect("Failed to derive token manager PDA");
+        let (token_mint_pda, _) =
+            solana_axelar_its::TokenManager::find_token_mint(token_id, its_root_pda);
 
         // Create mock token manager data
         let mock_token_manager_data = create_mock_token_manager_data(token_id, token_mint_pda);
@@ -1125,9 +1125,7 @@ mod tests {
         mock_client
             .expect_get_account_owner()
             .withf(move |pubkey| *pubkey == token_mint_pda)
-            .returning(move |_| {
-                Box::pin(async move { Ok(spl_token_2022::ID) })
-            });
+            .returning(move |_| Box::pin(async move { Ok(spl_token_2022::ID) }));
 
         let message = Message {
             cc_id: CrossChainId {
@@ -1225,11 +1223,11 @@ mod tests {
         // Compute PDAs for mocking
         let (its_root_pda, _) = solana_axelar_its::InterchainTokenService::try_find_pda()
             .expect("Failed to derive ITS root PDA");
-        let (token_manager_pda, _) = solana_axelar_its::TokenManager::try_find_pda(
-            token_id,
-            its_root_pda,
-        ).expect("Failed to derive token manager PDA");
-        let (token_mint_pda, _) = solana_axelar_its::TokenManager::find_token_mint(token_id, its_root_pda);
+        let (token_manager_pda, _) =
+            solana_axelar_its::TokenManager::try_find_pda(token_id, its_root_pda)
+                .expect("Failed to derive token manager PDA");
+        let (token_mint_pda, _) =
+            solana_axelar_its::TokenManager::find_token_mint(token_id, its_root_pda);
 
         // Create mock token manager data
         let mock_token_manager_data = create_mock_token_manager_data(token_id, token_mint_pda);
@@ -1246,9 +1244,7 @@ mod tests {
         mock_client
             .expect_get_account_owner()
             .withf(move |pubkey| *pubkey == token_mint_pda)
-            .returning(move |_| {
-                Box::pin(async move { Ok(spl_token_2022::ID) })
-            });
+            .returning(move |_| Box::pin(async move { Ok(spl_token_2022::ID) }));
 
         let message = Message {
             cc_id: CrossChainId {
@@ -1330,11 +1326,11 @@ mod tests {
         // Compute PDAs for mocking
         let (its_root_pda, _) = solana_axelar_its::InterchainTokenService::try_find_pda()
             .expect("Failed to derive ITS root PDA");
-        let (token_manager_pda, _) = solana_axelar_its::TokenManager::try_find_pda(
-            token_id,
-            its_root_pda,
-        ).expect("Failed to derive token manager PDA");
-        let (token_mint_pda, _) = solana_axelar_its::TokenManager::find_token_mint(token_id, its_root_pda);
+        let (token_manager_pda, _) =
+            solana_axelar_its::TokenManager::try_find_pda(token_id, its_root_pda)
+                .expect("Failed to derive token manager PDA");
+        let (token_mint_pda, _) =
+            solana_axelar_its::TokenManager::find_token_mint(token_id, its_root_pda);
 
         // Create mock token manager data
         let mock_token_manager_data = create_mock_token_manager_data(token_id, token_mint_pda);
@@ -1351,9 +1347,7 @@ mod tests {
         mock_client
             .expect_get_account_owner()
             .withf(move |pubkey| *pubkey == token_mint_pda)
-            .returning(move |_| {
-                Box::pin(async move { Ok(spl_token_2022::ID) })
-            });
+            .returning(move |_| Box::pin(async move { Ok(spl_token_2022::ID) }));
 
         let message = Message {
             cc_id: CrossChainId {
@@ -1511,8 +1505,8 @@ mod tests {
     /// This is the key bug fix test - previously the code always used Token-2022 for ATA derivation.
     #[tokio::test]
     async fn test_build_its_instruction_interchain_transfer_with_linked_spl_token() {
-        use anchor_spl::token::spl_token;
         use crate::utils::get_destination_ata_with_program;
+        use anchor_spl::token::spl_token;
 
         let keypair = Arc::new(Keypair::new());
         let mock_gas = MockGasCalculatorTrait::new();
@@ -1524,10 +1518,9 @@ mod tests {
         // Compute PDAs
         let (its_root_pda, _) = solana_axelar_its::InterchainTokenService::try_find_pda()
             .expect("Failed to derive ITS root PDA");
-        let (token_manager_pda, _) = solana_axelar_its::TokenManager::try_find_pda(
-            token_id,
-            its_root_pda,
-        ).expect("Failed to derive token manager PDA");
+        let (token_manager_pda, _) =
+            solana_axelar_its::TokenManager::try_find_pda(token_id, its_root_pda)
+                .expect("Failed to derive token manager PDA");
 
         // For a linked token, the mint is NOT derived from the ITS root PDA.
         // It's an existing SPL token that was linked via LinkToken instruction.
@@ -1551,16 +1544,15 @@ mod tests {
         mock_client
             .expect_get_account_owner()
             .withf(move |pubkey| *pubkey == linked_token_mint)
-            .returning(move |_| {
-                Box::pin(async move { Ok(spl_token::ID) })
-            });
+            .returning(move |_| Box::pin(async move { Ok(spl_token::ID) }));
 
         let message = Message {
             cc_id: CrossChainId {
                 chain: "axelar".to_string(),
                 id: "linked-token-transfer-001".to_string(),
             },
-            source_address: "axelar157hl7gpuknjmhtac2qnphuazv2yerfagva7lsu9vuj2pgn32z22qa26dk4".to_string(),
+            source_address: "axelar157hl7gpuknjmhtac2qnphuazv2yerfagva7lsu9vuj2pgn32z22qa26dk4"
+                .to_string(),
             destination_chain: "solana".to_string(),
             destination_address: "test-destination".to_string(),
             payload_hash: [0u8; 32],
@@ -1612,7 +1604,8 @@ mod tests {
         );
 
         // Find the destination ATA in the instruction accounts
-        let instruction_pubkeys: Vec<Pubkey> = its_instruction.accounts.iter().map(|a| a.pubkey).collect();
+        let instruction_pubkeys: Vec<Pubkey> =
+            its_instruction.accounts.iter().map(|a| a.pubkey).collect();
 
         assert!(
             instruction_pubkeys.contains(&expected_destination_ata),
