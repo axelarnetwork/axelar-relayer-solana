@@ -1,5 +1,4 @@
 use crate::{includer::ALTInfo, transaction_type::SolanaTransactionType, types::SolanaTransaction};
-use anchor_spl::{associated_token::spl_associated_token_account, token_2022::spl_token_2022};
 use anyhow::anyhow;
 use regex::Regex;
 use relayer_core::{
@@ -209,21 +208,6 @@ pub fn get_minter_roles_pda(
 pub fn get_gas_service_event_authority_pda() -> Result<(Pubkey, u8), anyhow::Error> {
     Pubkey::try_find_program_address(&[b"__event_authority"], &solana_axelar_gas_service::ID)
         .ok_or_else(|| anyhow!("Failed to derive gas service event authority PDA"))
-}
-
-pub fn get_destination_ata(
-    destination_pubkey: &Pubkey,
-    token_mint_pda: &Pubkey,
-) -> Result<(Pubkey, u8), anyhow::Error> {
-    Pubkey::try_find_program_address(
-        &[
-            destination_pubkey.as_ref(),
-            spl_token_2022::id().as_ref(),
-            token_mint_pda.as_ref(),
-        ],
-        &spl_associated_token_account::program::id(),
-    )
-    .ok_or_else(|| anyhow!("Failed to derive destination ATA PDA"))
 }
 
 pub fn get_destination_ata_with_program(
