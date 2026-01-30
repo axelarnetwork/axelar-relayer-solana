@@ -4,11 +4,13 @@ use crate::includer_client::IncluderClientTrait;
 use crate::redis::RedisConnectionTrait;
 use crate::utils::{
     calculate_total_cost_lamports, create_transaction, extract_proposal_hash_from_payload,
-    get_destination_ata, get_gateway_event_authority_pda, get_governance_event_authority_pda,
-    get_its_event_authority_pda, get_minter_roles_pda, get_operator_proposal_pda, get_proposal_pda,
-    get_token_manager_ata_with_program, get_token_mint_pda,
+    get_destination_ata_with_program, get_gateway_event_authority_pda,
+    get_governance_event_authority_pda, get_its_event_authority_pda, get_minter_roles_pda,
+    get_operator_proposal_pda, get_proposal_pda, get_token_manager_ata_with_program,
+    get_token_mint_pda,
 };
 use crate::{error::TransactionBuilderError, transaction_type::SolanaTransactionType};
+use anchor_lang::AccountDeserialize;
 use anchor_lang::InstructionData;
 use anchor_lang::ToAccountMetas;
 use anchor_spl::{associated_token::spl_associated_token_account, token_2022::spl_token_2022};
@@ -310,6 +312,7 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
                 message: solana_axelar_its::encoding::Message::LinkToken(ref link),
                 ..
             } => {
+                // For LinkToken, the mint is in the payload
                 let mint_pubkey = Pubkey::try_from(link.destination_token_address.as_slice())
                     .map_err(|e| {
                         TransactionBuilderError::PayloadDecodeError(format!(
@@ -332,7 +335,46 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
 
                 (mint_pubkey, token_program_id)
             }
+            HubMessage::ReceiveFromHub {
+                message: solana_axelar_its::encoding::Message::InterchainTransfer(_),
+                ..
+            } => {
+                // For InterchainTransfer, fetch the token manager to get the actual mint.
+                // This is necessary because linked/canonical tokens have their mint stored
+                // in the token manager, not derived from the ITS root PDA.
+                let token_manager_data = self
+                    .includer_client
+                    .get_account_data(&token_manager_pda)
+                    .await
+                    .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+
+                let token_manager =
+                    solana_axelar_its::TokenManager::try_deserialize(&mut &token_manager_data[..])
+                        .map_err(|e| {
+                            TransactionBuilderError::GenericError(format!(
+                                "Failed to deserialize TokenManager: {}",
+                                e
+                            ))
+                        })?;
+
+                let mint_pubkey = token_manager.token_address;
+
+                let token_program_id =
+                    match self.includer_client.get_account_owner(&mint_pubkey).await {
+                        Ok(owner) => {
+                            if owner == spl_token_2022::ID {
+                                spl_token_2022::ID
+                            } else {
+                                anchor_spl::token::ID
+                            }
+                        }
+                        Err(_) => anchor_spl::token::ID,
+                    };
+
+                (mint_pubkey, token_program_id)
+            }
             _ => (
+                // For DeployInterchainToken and other cases, derive the mint PDA
                 get_token_mint_pda(&its_root_pda, &token_id)
                     .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?
                     .0,
@@ -370,8 +412,7 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
                             TransactionBuilderError::PayloadDecodeError(e.to_string())
                         })?;
                     let (destination_ata, _) =
-                        get_destination_ata(&destination_address, &token_mint)
-                            .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+                        get_destination_ata_with_program(&destination_address, &token_mint, &token_program);
                     accounts.extend(execute_interchain_transfer_extra_accounts(
                         destination_address,
                         destination_ata,
@@ -654,6 +695,7 @@ mod tests {
     use crate::transaction_type::SolanaTransactionType;
     use alloy_sol_types::SolValue;
     use anchor_lang::prelude::AccountMeta;
+    use anchor_lang::AccountSerialize;
 
     use solana_axelar_gateway::executable::ExecutablePayload;
     use solana_axelar_gateway::payload::EncodingScheme;
@@ -669,6 +711,32 @@ mod tests {
     use solana_sdk::signature::Keypair;
     use solana_sdk::signer::Signer;
     use std::sync::Arc;
+
+    /// Helper function to create mock TokenManager account data for tests
+    fn create_mock_token_manager_data(
+        token_id: [u8; 32],
+        token_address: Pubkey,
+    ) -> Vec<u8> {
+        use solana_axelar_its::{TokenManager, state::FlowState};
+
+        let token_manager = TokenManager {
+            ty: solana_axelar_its::state::Type::NativeInterchainToken,
+            token_id,
+            token_address,
+            associated_token_account: Pubkey::new_unique(),
+            flow_slot: FlowState {
+                flow_limit: None,
+                flow_in: 0,
+                flow_out: 0,
+                epoch: 0,
+            },
+            bump: 0,
+        };
+
+        let mut data = Vec::new();
+        token_manager.try_serialize(&mut data).expect("Failed to serialize TokenManager");
+        data
+    }
 
     #[tokio::test]
     async fn test_transaction_builder_build_with_alt_produces_versioned_tx() {
@@ -873,10 +941,46 @@ mod tests {
 
     #[tokio::test]
     async fn test_build_execute_instruction_with_three_addresses() {
+        use anchor_spl::token_2022::spl_token_2022;
+
         let keypair = Arc::new(Keypair::new());
         let mock_gas = MockGasCalculatorTrait::new();
-        let mock_client = MockIncluderClientTrait::new();
+        let mut mock_client = MockIncluderClientTrait::new();
         let mock_redis = MockRedisConnectionTrait::new();
+
+        let token_id = [1u8; 32];
+
+        // For InterchainTransfer, we need to mock the token manager account fetch
+        // First compute the token manager PDA
+        let (its_root_pda, _) = solana_axelar_its::InterchainTokenService::try_find_pda()
+            .expect("Failed to derive ITS root PDA");
+        let (token_manager_pda, _) = solana_axelar_its::TokenManager::try_find_pda(
+            token_id,
+            its_root_pda,
+        ).expect("Failed to derive token manager PDA");
+
+        // Create a mock token mint (using derived PDA for native ITS tokens)
+        let (token_mint_pda, _) = solana_axelar_its::TokenManager::find_token_mint(token_id, its_root_pda);
+
+        // Create mock token manager data
+        let mock_token_manager_data = create_mock_token_manager_data(token_id, token_mint_pda);
+
+        // Set up mock expectations
+        mock_client
+            .expect_get_account_data()
+            .withf(move |pubkey| *pubkey == token_manager_pda)
+            .returning(move |_| {
+                let data = mock_token_manager_data.clone();
+                Box::pin(async move { Ok(data) })
+            });
+
+        // Mock get_account_owner for the token mint (return Token-2022 for native ITS tokens)
+        mock_client
+            .expect_get_account_owner()
+            .withf(move |pubkey| *pubkey == token_mint_pda)
+            .returning(move |_| {
+                Box::pin(async move { Ok(spl_token_2022::ID) })
+            });
 
         let message = Message {
             cc_id: CrossChainId {
@@ -900,7 +1004,6 @@ mod tests {
 
         let destination_pubkey = Pubkey::new_unique();
         let destination_address_bytes = destination_pubkey.to_bytes().to_vec();
-        let token_id = [1u8; 32];
 
         // Create InterchainTransfer message
         let interchain_transfer = InterchainTransfer {
@@ -989,10 +1092,42 @@ mod tests {
 
     #[tokio::test]
     async fn test_build_its_instruction_interchain_transfer_with_executable_payload() {
+        use anchor_spl::token_2022::spl_token_2022;
+
         let keypair = Arc::new(Keypair::new());
         let mock_gas = MockGasCalculatorTrait::new();
-        let mock_client = MockIncluderClientTrait::new();
+        let mut mock_client = MockIncluderClientTrait::new();
         let mock_redis = MockRedisConnectionTrait::new();
+
+        let token_id = [2u8; 32];
+
+        // Compute PDAs for mocking
+        let (its_root_pda, _) = solana_axelar_its::InterchainTokenService::try_find_pda()
+            .expect("Failed to derive ITS root PDA");
+        let (token_manager_pda, _) = solana_axelar_its::TokenManager::try_find_pda(
+            token_id,
+            its_root_pda,
+        ).expect("Failed to derive token manager PDA");
+        let (token_mint_pda, _) = solana_axelar_its::TokenManager::find_token_mint(token_id, its_root_pda);
+
+        // Create mock token manager data
+        let mock_token_manager_data = create_mock_token_manager_data(token_id, token_mint_pda);
+
+        // Set up mock expectations
+        mock_client
+            .expect_get_account_data()
+            .withf(move |pubkey| *pubkey == token_manager_pda)
+            .returning(move |_| {
+                let data = mock_token_manager_data.clone();
+                Box::pin(async move { Ok(data) })
+            });
+
+        mock_client
+            .expect_get_account_owner()
+            .withf(move |pubkey| *pubkey == token_mint_pda)
+            .returning(move |_| {
+                Box::pin(async move { Ok(spl_token_2022::ID) })
+            });
 
         let message = Message {
             cc_id: CrossChainId {
@@ -1015,7 +1150,6 @@ mod tests {
         let its_destination = solana_axelar_its::ID;
         let destination_pubkey = Pubkey::new_unique();
         let destination_address_bytes = destination_pubkey.to_bytes().to_vec();
-        let token_id = [2u8; 32];
 
         let gmp_account1 = Pubkey::new_unique();
         let gmp_account2 = Pubkey::new_unique();
@@ -1079,10 +1213,42 @@ mod tests {
 
     #[tokio::test]
     async fn test_build_its_instruction_interchain_transfer_with_malformed_data() {
+        use anchor_spl::token_2022::spl_token_2022;
+
         let keypair = Arc::new(Keypair::new());
         let mock_gas = MockGasCalculatorTrait::new();
-        let mock_client = MockIncluderClientTrait::new();
+        let mut mock_client = MockIncluderClientTrait::new();
         let mock_redis = MockRedisConnectionTrait::new();
+
+        let token_id = [3u8; 32];
+
+        // Compute PDAs for mocking
+        let (its_root_pda, _) = solana_axelar_its::InterchainTokenService::try_find_pda()
+            .expect("Failed to derive ITS root PDA");
+        let (token_manager_pda, _) = solana_axelar_its::TokenManager::try_find_pda(
+            token_id,
+            its_root_pda,
+        ).expect("Failed to derive token manager PDA");
+        let (token_mint_pda, _) = solana_axelar_its::TokenManager::find_token_mint(token_id, its_root_pda);
+
+        // Create mock token manager data
+        let mock_token_manager_data = create_mock_token_manager_data(token_id, token_mint_pda);
+
+        // Set up mock expectations
+        mock_client
+            .expect_get_account_data()
+            .withf(move |pubkey| *pubkey == token_manager_pda)
+            .returning(move |_| {
+                let data = mock_token_manager_data.clone();
+                Box::pin(async move { Ok(data) })
+            });
+
+        mock_client
+            .expect_get_account_owner()
+            .withf(move |pubkey| *pubkey == token_mint_pda)
+            .returning(move |_| {
+                Box::pin(async move { Ok(spl_token_2022::ID) })
+            });
 
         let message = Message {
             cc_id: CrossChainId {
@@ -1105,7 +1271,6 @@ mod tests {
         let its_destination = solana_axelar_its::ID;
         let destination_pubkey = Pubkey::new_unique();
         let destination_address_bytes = destination_pubkey.to_bytes().to_vec();
-        let token_id = [3u8; 32];
 
         // Create InterchainTransfer with malformed/random bytes in data field
         let malformed_data = vec![0xFF, 0xEE, 0xDD, 0xCC, 0xBB, 0xAA]; // Random bytes that won't decode as ExecutablePayload
@@ -1153,10 +1318,42 @@ mod tests {
 
     #[tokio::test]
     async fn test_build_its_instruction_interchain_transfer_rejects_signer_accounts() {
+        use anchor_spl::token_2022::spl_token_2022;
+
         let keypair = Arc::new(Keypair::new());
         let mock_gas = MockGasCalculatorTrait::new();
-        let mock_client = MockIncluderClientTrait::new();
+        let mut mock_client = MockIncluderClientTrait::new();
         let mock_redis = MockRedisConnectionTrait::new();
+
+        let token_id = [3u8; 32];
+
+        // Compute PDAs for mocking
+        let (its_root_pda, _) = solana_axelar_its::InterchainTokenService::try_find_pda()
+            .expect("Failed to derive ITS root PDA");
+        let (token_manager_pda, _) = solana_axelar_its::TokenManager::try_find_pda(
+            token_id,
+            its_root_pda,
+        ).expect("Failed to derive token manager PDA");
+        let (token_mint_pda, _) = solana_axelar_its::TokenManager::find_token_mint(token_id, its_root_pda);
+
+        // Create mock token manager data
+        let mock_token_manager_data = create_mock_token_manager_data(token_id, token_mint_pda);
+
+        // Set up mock expectations
+        mock_client
+            .expect_get_account_data()
+            .withf(move |pubkey| *pubkey == token_manager_pda)
+            .returning(move |_| {
+                let data = mock_token_manager_data.clone();
+                Box::pin(async move { Ok(data) })
+            });
+
+        mock_client
+            .expect_get_account_owner()
+            .withf(move |pubkey| *pubkey == token_mint_pda)
+            .returning(move |_| {
+                Box::pin(async move { Ok(spl_token_2022::ID) })
+            });
 
         let message = Message {
             cc_id: CrossChainId {
@@ -1179,7 +1376,6 @@ mod tests {
         let its_destination = solana_axelar_its::ID;
         let destination_pubkey = Pubkey::new_unique();
         let destination_address_bytes = destination_pubkey.to_bytes().to_vec();
-        let token_id = [3u8; 32];
 
         // Create an ExecutablePayload with accounts that have is_signer: true
         let gmp_account1 = Pubkey::new_unique();
@@ -1307,6 +1503,140 @@ mod tests {
                 e
             ),
             Ok(_) => panic!("Expected error but got success"),
+        }
+    }
+
+    /// Test that interchain transfer with a linked/canonical token using regular SPL Token
+    /// (not Token-2022) properly derives the destination ATA with the correct token program.
+    /// This is the key bug fix test - previously the code always used Token-2022 for ATA derivation.
+    #[tokio::test]
+    async fn test_build_its_instruction_interchain_transfer_with_linked_spl_token() {
+        use anchor_spl::token::spl_token;
+        use crate::utils::get_destination_ata_with_program;
+
+        let keypair = Arc::new(Keypair::new());
+        let mock_gas = MockGasCalculatorTrait::new();
+        let mut mock_client = MockIncluderClientTrait::new();
+        let mock_redis = MockRedisConnectionTrait::new();
+
+        let token_id = [0xAB; 32]; // Token ID for a linked/canonical token
+
+        // Compute PDAs
+        let (its_root_pda, _) = solana_axelar_its::InterchainTokenService::try_find_pda()
+            .expect("Failed to derive ITS root PDA");
+        let (token_manager_pda, _) = solana_axelar_its::TokenManager::try_find_pda(
+            token_id,
+            its_root_pda,
+        ).expect("Failed to derive token manager PDA");
+
+        // For a linked token, the mint is NOT derived from the ITS root PDA.
+        // It's an existing SPL token that was linked via LinkToken instruction.
+        // Create a unique pubkey to simulate a linked token mint.
+        let linked_token_mint = Pubkey::new_unique();
+
+        // Create mock token manager data with the LINKED token mint (not the derived PDA)
+        let mock_token_manager_data = create_mock_token_manager_data(token_id, linked_token_mint);
+
+        // Set up mock expectations
+        mock_client
+            .expect_get_account_data()
+            .withf(move |pubkey| *pubkey == token_manager_pda)
+            .returning(move |_| {
+                let data = mock_token_manager_data.clone();
+                Box::pin(async move { Ok(data) })
+            });
+
+        // IMPORTANT: Return regular SPL Token program as the owner (not Token-2022)
+        // This simulates a linked canonical token that uses the regular SPL Token program
+        mock_client
+            .expect_get_account_owner()
+            .withf(move |pubkey| *pubkey == linked_token_mint)
+            .returning(move |_| {
+                Box::pin(async move { Ok(spl_token::ID) })
+            });
+
+        let message = Message {
+            cc_id: CrossChainId {
+                chain: "axelar".to_string(),
+                id: "linked-token-transfer-001".to_string(),
+            },
+            source_address: "axelar157hl7gpuknjmhtac2qnphuazv2yerfagva7lsu9vuj2pgn32z22qa26dk4".to_string(),
+            destination_chain: "solana".to_string(),
+            destination_address: "test-destination".to_string(),
+            payload_hash: [0u8; 32],
+        };
+
+        let builder = TransactionBuilder::new(
+            Arc::clone(&keypair),
+            mock_gas,
+            Arc::new(mock_client),
+            mock_redis,
+        );
+
+        let its_destination = solana_axelar_its::ID;
+        let destination_pubkey = Pubkey::new_unique();
+        let destination_address_bytes = destination_pubkey.to_bytes().to_vec();
+
+        // Create InterchainTransfer message
+        let interchain_transfer = InterchainTransfer {
+            token_id,
+            source_address: vec![0xBA; 20], // EVM source address
+            destination_address: destination_address_bytes.clone(),
+            amount: 100_000_000_000u64, // 100 tokens
+            data: None,
+        };
+
+        let its_message = ItsMessage::InterchainTransfer(interchain_transfer);
+
+        let hub_message = HubMessage::ReceiveFromHub {
+            source_chain: "avalanche-fuji".to_string(),
+            message: its_message,
+        };
+
+        let its_payload = borsh::to_vec(&hub_message).expect("Failed to serialize HubMessage");
+
+        let (its_instruction, _its_accounts) = builder
+            .build_execute_instruction(&message, &its_payload, its_destination)
+            .await
+            .expect("ITS build_execute_instruction should succeed for linked SPL token");
+
+        assert_eq!(its_instruction.program_id, solana_axelar_its::ID);
+
+        // Verify that the destination ATA in the instruction accounts is derived using
+        // the regular SPL Token program (not Token-2022).
+        // The destination ATA should be computed with spl_token::ID as the token program.
+        let (expected_destination_ata, _) = get_destination_ata_with_program(
+            &destination_pubkey,
+            &linked_token_mint,
+            &spl_token::ID, // Regular SPL Token program
+        );
+
+        // Find the destination ATA in the instruction accounts
+        let instruction_pubkeys: Vec<Pubkey> = its_instruction.accounts.iter().map(|a| a.pubkey).collect();
+
+        assert!(
+            instruction_pubkeys.contains(&expected_destination_ata),
+            "Instruction should contain the destination ATA derived with regular SPL Token program. \
+             Expected ATA: {}, but instruction accounts: {:?}",
+            expected_destination_ata,
+            instruction_pubkeys
+        );
+
+        // Also verify it does NOT contain an ATA derived with Token-2022
+        use anchor_spl::token_2022::spl_token_2022;
+        let (wrong_destination_ata, _) = get_destination_ata_with_program(
+            &destination_pubkey,
+            &linked_token_mint,
+            &spl_token_2022::ID, // Token-2022 program
+        );
+
+        // If the fix is correct, the wrong ATA should NOT be in the instruction
+        // (unless it happens to match for some reason, which is unlikely with different program IDs)
+        if expected_destination_ata != wrong_destination_ata {
+            assert!(
+                !instruction_pubkeys.contains(&wrong_destination_ata),
+                "Instruction should NOT contain the ATA derived with Token-2022 program for linked SPL tokens"
+            );
         }
     }
 }

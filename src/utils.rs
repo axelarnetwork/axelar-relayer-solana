@@ -226,6 +226,20 @@ pub fn get_destination_ata(
     .ok_or_else(|| anyhow!("Failed to derive destination ATA PDA"))
 }
 
+pub fn get_destination_ata_with_program(
+    destination_pubkey: &Pubkey,
+    token_mint: &Pubkey,
+    token_program: &Pubkey,
+) -> (Pubkey, u8) {
+    let ata = anchor_spl::associated_token::get_associated_token_address_with_program_id(
+        destination_pubkey,
+        token_mint,
+        token_program,
+    );
+    // bump not used by the relayer so set it to 0
+    (ata, 0)
+}
+
 pub fn get_initialize_verification_session_pda(
     payload_merkle_root: &[u8; 32],
     signing_verifier_set_hash: &[u8; 32],
