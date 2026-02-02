@@ -112,6 +112,26 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
             redis_conn,
         }
     }
+
+    /// Determines the token program (SPL Token or Token-2022) for a given mint address
+    /// by checking the account owner on-chain.
+    async fn get_token_program_for_mint(
+        &self,
+        mint: &Pubkey,
+    ) -> Result<Pubkey, TransactionBuilderError> {
+        match self.includer_client.get_account_owner(mint).await {
+            Ok(owner) => {
+                if owner == spl_token_2022::ID {
+                    Ok(spl_token_2022::ID)
+                } else {
+                    Ok(anchor_spl::token::ID)
+                }
+            }
+            Err(_) => Err(TransactionBuilderError::GenericError(
+                "Failed to get token program owner".to_string(),
+            )),
+        }
+    }
 }
 
 #[async_trait]
@@ -321,21 +341,7 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
                         ))
                     })?;
 
-                let token_program_id =
-                    match self.includer_client.get_account_owner(&mint_pubkey).await {
-                        Ok(owner) => {
-                            if owner == spl_token_2022::ID {
-                                spl_token_2022::ID
-                            } else {
-                                anchor_spl::token::ID
-                            }
-                        }
-                        Err(_) => {
-                            return Err(TransactionBuilderError::GenericError(
-                                "Failed to get token program owner".to_string(),
-                            ))
-                        }
-                    };
+                let token_program_id = self.get_token_program_for_mint(&mint_pubkey).await?;
 
                 (mint_pubkey, token_program_id)
             }
@@ -363,21 +369,7 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
 
                 let mint_pubkey = token_manager.token_address;
 
-                let token_program_id =
-                    match self.includer_client.get_account_owner(&mint_pubkey).await {
-                        Ok(owner) => {
-                            if owner == spl_token_2022::ID {
-                                spl_token_2022::ID
-                            } else {
-                                anchor_spl::token::ID
-                            }
-                        }
-                        Err(_) => {
-                            return Err(TransactionBuilderError::GenericError(
-                                "Failed to get token program owner".to_string(),
-                            ))
-                        }
-                    };
+                let token_program_id = self.get_token_program_for_mint(&mint_pubkey).await?;
 
                 (mint_pubkey, token_program_id)
             }
