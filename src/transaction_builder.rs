@@ -4,10 +4,9 @@ use crate::includer_client::IncluderClientTrait;
 use crate::redis::RedisConnectionTrait;
 use crate::utils::{
     calculate_total_cost_lamports, create_transaction, extract_proposal_hash_from_payload,
-    get_destination_ata_with_program, get_gateway_event_authority_pda,
-    get_governance_event_authority_pda, get_its_event_authority_pda, get_minter_roles_pda,
-    get_operator_proposal_pda, get_proposal_pda, get_token_manager_ata_with_program,
-    get_token_mint_pda,
+    get_ata_with_program, get_gateway_event_authority_pda, get_governance_event_authority_pda,
+    get_its_event_authority_pda, get_minter_roles_pda, get_operator_proposal_pda,
+    get_proposal_pda, get_token_mint_pda,
 };
 use crate::{error::TransactionBuilderError, transaction_type::SolanaTransactionType};
 use anchor_lang::AccountDeserialize;
@@ -383,7 +382,7 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
         };
 
         let (token_manager_ata, _) =
-            get_token_manager_ata_with_program(&token_manager_pda, &token_mint, &token_program);
+            get_ata_with_program(&token_manager_pda, &token_mint, &token_program);
 
         let mut accounts = solana_axelar_its::accounts::Execute {
             executable,
@@ -411,7 +410,7 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
                         Pubkey::try_from(transfer.destination_address.as_slice()).map_err(|e| {
                             TransactionBuilderError::PayloadDecodeError(e.to_string())
                         })?;
-                    let (destination_ata, _) = get_destination_ata_with_program(
+                    let (destination_ata, _) = get_ata_with_program(
                         &destination_address,
                         &token_mint,
                         &token_program,
@@ -1505,7 +1504,7 @@ mod tests {
     /// This is the key bug fix test - previously the code always used Token-2022 for ATA derivation.
     #[tokio::test]
     async fn test_build_its_instruction_interchain_transfer_with_linked_spl_token() {
-        use crate::utils::get_destination_ata_with_program;
+        use crate::utils::get_ata_with_program;
         use anchor_spl::token::spl_token;
 
         let keypair = Arc::new(Keypair::new());
@@ -1597,7 +1596,7 @@ mod tests {
         // Verify that the destination ATA in the instruction accounts is derived using
         // the regular SPL Token program (not Token-2022).
         // The destination ATA should be computed with spl_token::ID as the token program.
-        let (expected_destination_ata, _) = get_destination_ata_with_program(
+        let (expected_destination_ata, _) = get_ata_with_program(
             &destination_pubkey,
             &linked_token_mint,
             &spl_token::ID, // Regular SPL Token program
@@ -1617,7 +1616,7 @@ mod tests {
 
         // Also verify it does NOT contain an ATA derived with Token-2022
         use anchor_spl::token_2022::spl_token_2022;
-        let (wrong_destination_ata, _) = get_destination_ata_with_program(
+        let (wrong_destination_ata, _) = get_ata_with_program(
             &destination_pubkey,
             &linked_token_mint,
             &spl_token_2022::ID, // Token-2022 program
