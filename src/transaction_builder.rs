@@ -330,7 +330,11 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
                                 anchor_spl::token::ID
                             }
                         }
-                        Err(_) => anchor_spl::token::ID,
+                        Err(_) => {
+                            return Err(TransactionBuilderError::GenericError(
+                                "Failed to get token program owner".to_string(),
+                            ))
+                        }
                     };
 
                 (mint_pubkey, token_program_id)
@@ -368,7 +372,11 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
                                 anchor_spl::token::ID
                             }
                         }
-                        Err(_) => anchor_spl::token::ID,
+                        Err(_) => {
+                            return Err(TransactionBuilderError::GenericError(
+                                "Failed to get token program owner".to_string(),
+                            ))
+                        }
                     };
 
                 (mint_pubkey, token_program_id)
