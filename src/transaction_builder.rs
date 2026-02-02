@@ -5,8 +5,8 @@ use crate::redis::RedisConnectionTrait;
 use crate::utils::{
     calculate_total_cost_lamports, create_transaction, extract_proposal_hash_from_payload,
     get_ata_with_program, get_gateway_event_authority_pda, get_governance_event_authority_pda,
-    get_its_event_authority_pda, get_minter_roles_pda, get_operator_proposal_pda,
-    get_proposal_pda, get_token_mint_pda,
+    get_its_event_authority_pda, get_minter_roles_pda, get_operator_proposal_pda, get_proposal_pda,
+    get_token_mint_pda,
 };
 use crate::{error::TransactionBuilderError, transaction_type::SolanaTransactionType};
 use anchor_lang::AccountDeserialize;
@@ -410,11 +410,8 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
                         Pubkey::try_from(transfer.destination_address.as_slice()).map_err(|e| {
                             TransactionBuilderError::PayloadDecodeError(e.to_string())
                         })?;
-                    let (destination_ata, _) = get_ata_with_program(
-                        &destination_address,
-                        &token_mint,
-                        &token_program,
-                    );
+                    let (destination_ata, _) =
+                        get_ata_with_program(&destination_address, &token_mint, &token_program);
                     accounts.extend(execute_interchain_transfer_extra_accounts(
                         destination_address,
                         destination_ata,
