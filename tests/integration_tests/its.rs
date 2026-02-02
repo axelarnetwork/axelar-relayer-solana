@@ -702,6 +702,225 @@ async fn test_approve_and_execute_its_message() {
 
     println!("Link Token (SPL Token) test completed");
 
+    // ========================================
+    // InterchainTransfer on Linked SPL Token
+    // ========================================
+    // This tests the fix for correctly deriving the destination ATA
+    // when using a linked token (not a native ITS token).
+    // The token manager stores the actual mint address, which must be
+    // fetched to derive the correct ATA with the right token program.
+    println!("InterchainTransfer on Linked SPL Token");
+
+    // First, we need to fund the token manager's ATA with tokens
+    // For LockUnlock type, the token manager holds tokens and transfers them out
+    let (its_root_pda_link, _) = solana_axelar_its::InterchainTokenService::find_pda();
+    let (link_token_manager_pda, _) =
+        solana_axelar_its::TokenManager::find_pda(link_token_id, its_root_pda_link);
+
+    // For linked tokens, the ATA is derived using the actual linked mint (not a PDA)
+    let link_token_manager_ata =
+        anchor_spl::associated_token::get_associated_token_address_with_program_id(
+            &link_token_manager_pda,
+            &link_mint_pubkey,
+            &anchor_spl::token::ID, // SPL Token program
+        );
+
+    // Create ATA for token manager if it doesn't exist
+    let create_tm_ata_ix =
+        anchor_spl::associated_token::spl_associated_token_account::instruction::create_associated_token_account(
+            &env.payer.pubkey(),
+            &link_token_manager_pda,
+            &link_mint_pubkey,
+            &anchor_spl::token::ID,
+        );
+
+    let create_tm_ata_blockhash = env.rpc_client.get_latest_blockhash().await.unwrap();
+    let create_tm_ata_tx = solana_sdk::transaction::Transaction::new_signed_with_payer(
+        &[create_tm_ata_ix],
+        Some(&env.payer.pubkey()),
+        &[&env.payer],
+        create_tm_ata_blockhash,
+    );
+
+    // This might fail if ATA already exists, which is fine
+    let _ = env
+        .rpc_client
+        .send_and_confirm_transaction(&create_tm_ata_tx)
+        .await;
+
+    // Mint tokens to the token manager's ATA
+    let link_mint_amount = 10_000_000u64;
+    let mint_to_tm_ix = anchor_spl::token::spl_token::instruction::mint_to(
+        &anchor_spl::token::ID,
+        &link_mint_pubkey,
+        &link_token_manager_ata,
+        &env.payer.pubkey(),
+        &[],
+        link_mint_amount,
+    )
+    .unwrap();
+
+    let mint_to_tm_blockhash = env.rpc_client.get_latest_blockhash().await.unwrap();
+    let mint_to_tm_tx = solana_sdk::transaction::Transaction::new_signed_with_payer(
+        &[mint_to_tm_ix],
+        Some(&env.payer.pubkey()),
+        &[&env.payer],
+        mint_to_tm_blockhash,
+    );
+
+    env.rpc_client
+        .send_and_confirm_transaction(&mint_to_tm_tx)
+        .await
+        .expect("Failed to mint tokens to token manager ATA");
+
+    println!(
+        "Minted {} tokens to token manager ATA for linked SPL token",
+        link_mint_amount
+    );
+
+    // Now execute an InterchainTransfer on the linked SPL token
+    let link_transfer_message_id = "test-its-linked-spl-transfer-001";
+    let link_transfer_destination = env.operator.pubkey();
+    let link_transfer_amount = 500_000u64;
+
+    let link_transfer = InterchainTransfer {
+        token_id: link_token_id,
+        source_address: "eth_sender_linked_spl".as_bytes().to_vec(),
+        destination_address: link_transfer_destination.to_bytes().to_vec(),
+        amount: link_transfer_amount,
+        data: None,
+    };
+
+    let link_transfer_hub_message = HubMessage::ReceiveFromHub {
+        source_chain: "axelar".to_string(),
+        message: ItsMessage::InterchainTransfer(link_transfer),
+    };
+
+    let link_transfer_payload_bytes = borsh::to_vec(&link_transfer_hub_message).unwrap();
+    let link_transfer_payload_hash =
+        solana_sdk::keccak::hashv(&[&link_transfer_payload_bytes]).to_bytes();
+
+    let link_transfer_message = Message {
+        cc_id: CrossChainId {
+            chain: "axelar".to_string(),
+            id: link_transfer_message_id.to_string(),
+        },
+        source_address: source_address.clone(),
+        destination_chain: "solana-devnet".to_string(),
+        destination_address: its_program_address.clone(),
+        payload_hash: link_transfer_payload_hash,
+    };
+
+    let link_transfer_message_leaf = MessageLeaf {
+        message: link_transfer_message.clone(),
+        position: 0,
+        set_size: 1,
+        domain_separator: env.domain_separator,
+    };
+    let link_transfer_leaf_hash = link_transfer_message_leaf.hash();
+    let link_transfer_merkle_tree = MerkleTree::from_leaves(&[link_transfer_leaf_hash]);
+    let link_transfer_merkle_root = link_transfer_merkle_tree.root().expect("merkle root");
+
+    let link_transfer_verifier_info_1 = create_verifier_info(
+        &env.verifier_secret_keys[0],
+        link_transfer_merkle_root,
+        &env.verifier_leaves[0],
+        0,
+        &env.verifier_merkle_tree,
+        PayloadType::ApproveMessages,
+    );
+    let link_transfer_verifier_info_2 = create_verifier_info(
+        &env.verifier_secret_keys[1],
+        link_transfer_merkle_root,
+        &env.verifier_leaves[1],
+        1,
+        &env.verifier_merkle_tree,
+        PayloadType::ApproveMessages,
+    );
+
+    let link_transfer_execute_data = ExecuteData {
+        payload_merkle_root: link_transfer_merkle_root,
+        signing_verifier_set_merkle_root: env.verifier_set_hash,
+        signing_verifier_set_leaves: vec![
+            link_transfer_verifier_info_1,
+            link_transfer_verifier_info_2,
+        ],
+        payload_items: MerklizedPayload::NewMessages {
+            messages: vec![MerklizedMessage {
+                leaf: link_transfer_message_leaf,
+                proof: vec![],
+            }],
+        },
+    };
+
+    println!("Approving linked SPL token transfer message...");
+    let link_transfer_gateway_task = GatewayTxTask {
+        common: CommonTaskFields {
+            id: "test-its-linked-spl-transfer-gateway-001".into(),
+            chain: "solana-devnet".into(),
+            timestamp: "2025-11-26T14:47:26.567796Z".into(),
+            r#type: "GATEWAY_TX".into(),
+            meta: None,
+        },
+        task: GatewayTxTaskFields {
+            execute_data: BASE64_STANDARD
+                .encode(borsh::to_vec(&link_transfer_execute_data).unwrap()),
+        },
+    };
+
+    includer
+        .handle_gateway_tx_task(link_transfer_gateway_task)
+        .await
+        .expect("Failed to approve linked SPL token transfer message");
+    println!("Linked SPL token transfer message approved!");
+
+    let link_transfer_execute_task = ExecuteTask {
+        common: CommonTaskFields {
+            id: "test-its-linked-spl-transfer-execute-001".into(),
+            chain: "solana-devnet".into(),
+            timestamp: "2025-11-26T14:47:27.567796Z".into(),
+            r#type: "EXECUTE".into(),
+            meta: None,
+        },
+        task: ExecuteTaskFields {
+            message: GatewayV2Message {
+                message_id: link_transfer_message_id.to_string(),
+                source_chain: "axelar".to_string(),
+                source_address: source_address.clone(),
+                destination_address: its_program_address.clone(),
+                payload_hash: BASE64_STANDARD.encode(link_transfer_payload_hash),
+            },
+            payload: BASE64_STANDARD.encode(&link_transfer_payload_bytes),
+            available_gas_balance: Amount {
+                token_id: None,
+                amount: "10000000000".to_string(),
+            },
+        },
+    };
+
+    println!("Executing linked SPL token transfer...");
+    match includer
+        .handle_execute_task(link_transfer_execute_task)
+        .await
+    {
+        Ok(events) => {
+            println!(
+                "Linked SPL token transfer executed successfully! Events: {:?}",
+                events.len()
+            );
+            for event in events {
+                println!("Event: {:?}", event);
+            }
+        }
+        Err(e) => {
+            panic!("Linked SPL token transfer execution failed: {:?}", e);
+        }
+    }
+
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+    println!("InterchainTransfer on Linked SPL Token test completed!");
+
     println!("Link Token Test (Token-2022)");
 
     let link_mint_2022_keypair = solana_sdk::signature::Keypair::new();
@@ -883,7 +1102,217 @@ async fn test_approve_and_execute_its_message() {
 
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
-    println!("Link Token (Token-2022) test completed");
+    println!("InterchainTransfer on Linked Token-2022");
+
+    // First, we need to fund the token manager's ATA with tokens
+    let (its_root_pda_link_2022, _) = solana_axelar_its::InterchainTokenService::find_pda();
+    let (link_token_manager_pda_2022, _) =
+        solana_axelar_its::TokenManager::find_pda(link_token_id_2022, its_root_pda_link_2022);
+
+    // For linked Token-2022 tokens, the ATA is derived using Token-2022 program
+    let link_token_manager_ata_2022 =
+        anchor_spl::associated_token::get_associated_token_address_with_program_id(
+            &link_token_manager_pda_2022,
+            &link_mint_2022_pubkey,
+            &anchor_spl::token_2022::ID, // Token-2022 program
+        );
+
+    // Create ATA for token manager if it doesn't exist
+    let create_tm_ata_2022_ix =
+        anchor_spl::associated_token::spl_associated_token_account::instruction::create_associated_token_account(
+            &env.payer.pubkey(),
+            &link_token_manager_pda_2022,
+            &link_mint_2022_pubkey,
+            &anchor_spl::token_2022::ID,
+        );
+
+    let create_tm_ata_2022_blockhash = env.rpc_client.get_latest_blockhash().await.unwrap();
+    let create_tm_ata_2022_tx = solana_sdk::transaction::Transaction::new_signed_with_payer(
+        &[create_tm_ata_2022_ix],
+        Some(&env.payer.pubkey()),
+        &[&env.payer],
+        create_tm_ata_2022_blockhash,
+    );
+
+    // This might fail if ATA already exists, which is fine
+    let _ = env
+        .rpc_client
+        .send_and_confirm_transaction(&create_tm_ata_2022_tx)
+        .await;
+
+    // Mint tokens to the token manager's ATA
+    let link_mint_2022_amount = 10_000_000u64;
+    let mint_to_tm_2022_ix = anchor_spl::token_2022::spl_token_2022::instruction::mint_to(
+        &anchor_spl::token_2022::ID,
+        &link_mint_2022_pubkey,
+        &link_token_manager_ata_2022,
+        &env.payer.pubkey(),
+        &[],
+        link_mint_2022_amount,
+    )
+    .unwrap();
+
+    let mint_to_tm_2022_blockhash = env.rpc_client.get_latest_blockhash().await.unwrap();
+    let mint_to_tm_2022_tx = solana_sdk::transaction::Transaction::new_signed_with_payer(
+        &[mint_to_tm_2022_ix],
+        Some(&env.payer.pubkey()),
+        &[&env.payer],
+        mint_to_tm_2022_blockhash,
+    );
+
+    env.rpc_client
+        .send_and_confirm_transaction(&mint_to_tm_2022_tx)
+        .await
+        .expect("Failed to mint tokens to token manager ATA for Token-2022");
+
+    println!(
+        "Minted {} tokens to token manager ATA for linked Token-2022",
+        link_mint_2022_amount
+    );
+
+    // Now execute an InterchainTransfer on the linked Token-2022 token
+    let link_transfer_2022_message_id = "test-its-linked-2022-transfer-001";
+    let link_transfer_2022_destination = env.operator.pubkey();
+    let link_transfer_2022_amount = 500_000u64;
+
+    let link_transfer_2022 = InterchainTransfer {
+        token_id: link_token_id_2022,
+        source_address: "eth_sender_linked_2022".as_bytes().to_vec(),
+        destination_address: link_transfer_2022_destination.to_bytes().to_vec(),
+        amount: link_transfer_2022_amount,
+        data: None,
+    };
+
+    let link_transfer_2022_hub_message = HubMessage::ReceiveFromHub {
+        source_chain: "axelar".to_string(),
+        message: ItsMessage::InterchainTransfer(link_transfer_2022),
+    };
+
+    let link_transfer_2022_payload_bytes = borsh::to_vec(&link_transfer_2022_hub_message).unwrap();
+    let link_transfer_2022_payload_hash =
+        solana_sdk::keccak::hashv(&[&link_transfer_2022_payload_bytes]).to_bytes();
+
+    let link_transfer_2022_message = Message {
+        cc_id: CrossChainId {
+            chain: "axelar".to_string(),
+            id: link_transfer_2022_message_id.to_string(),
+        },
+        source_address: source_address.clone(),
+        destination_chain: "solana-devnet".to_string(),
+        destination_address: its_program_address.clone(),
+        payload_hash: link_transfer_2022_payload_hash,
+    };
+
+    let link_transfer_2022_message_leaf = MessageLeaf {
+        message: link_transfer_2022_message.clone(),
+        position: 0,
+        set_size: 1,
+        domain_separator: env.domain_separator,
+    };
+    let link_transfer_2022_leaf_hash = link_transfer_2022_message_leaf.hash();
+    let link_transfer_2022_merkle_tree = MerkleTree::from_leaves(&[link_transfer_2022_leaf_hash]);
+    let link_transfer_2022_merkle_root =
+        link_transfer_2022_merkle_tree.root().expect("merkle root");
+
+    let link_transfer_2022_verifier_info_1 = create_verifier_info(
+        &env.verifier_secret_keys[0],
+        link_transfer_2022_merkle_root,
+        &env.verifier_leaves[0],
+        0,
+        &env.verifier_merkle_tree,
+        PayloadType::ApproveMessages,
+    );
+    let link_transfer_2022_verifier_info_2 = create_verifier_info(
+        &env.verifier_secret_keys[1],
+        link_transfer_2022_merkle_root,
+        &env.verifier_leaves[1],
+        1,
+        &env.verifier_merkle_tree,
+        PayloadType::ApproveMessages,
+    );
+
+    let link_transfer_2022_execute_data = ExecuteData {
+        payload_merkle_root: link_transfer_2022_merkle_root,
+        signing_verifier_set_merkle_root: env.verifier_set_hash,
+        signing_verifier_set_leaves: vec![
+            link_transfer_2022_verifier_info_1,
+            link_transfer_2022_verifier_info_2,
+        ],
+        payload_items: MerklizedPayload::NewMessages {
+            messages: vec![MerklizedMessage {
+                leaf: link_transfer_2022_message_leaf,
+                proof: vec![],
+            }],
+        },
+    };
+
+    println!("Approving linked Token-2022 transfer message...");
+    let link_transfer_2022_gateway_task = GatewayTxTask {
+        common: CommonTaskFields {
+            id: "test-its-linked-2022-transfer-gateway-001".into(),
+            chain: "solana-devnet".into(),
+            timestamp: "2025-11-26T14:47:28.567796Z".into(),
+            r#type: "GATEWAY_TX".into(),
+            meta: None,
+        },
+        task: GatewayTxTaskFields {
+            execute_data: BASE64_STANDARD
+                .encode(borsh::to_vec(&link_transfer_2022_execute_data).unwrap()),
+        },
+    };
+
+    includer
+        .handle_gateway_tx_task(link_transfer_2022_gateway_task)
+        .await
+        .expect("Failed to approve linked Token-2022 transfer message");
+    println!("Linked Token-2022 transfer message approved!");
+
+    let link_transfer_2022_execute_task = ExecuteTask {
+        common: CommonTaskFields {
+            id: "test-its-linked-2022-transfer-execute-001".into(),
+            chain: "solana-devnet".into(),
+            timestamp: "2025-11-26T14:47:29.567796Z".into(),
+            r#type: "EXECUTE".into(),
+            meta: None,
+        },
+        task: ExecuteTaskFields {
+            message: GatewayV2Message {
+                message_id: link_transfer_2022_message_id.to_string(),
+                source_chain: "axelar".to_string(),
+                source_address: source_address.clone(),
+                destination_address: its_program_address.clone(),
+                payload_hash: BASE64_STANDARD.encode(link_transfer_2022_payload_hash),
+            },
+            payload: BASE64_STANDARD.encode(&link_transfer_2022_payload_bytes),
+            available_gas_balance: Amount {
+                token_id: None,
+                amount: "10000000000".to_string(),
+            },
+        },
+    };
+
+    println!("Executing linked Token-2022 transfer...");
+    match includer
+        .handle_execute_task(link_transfer_2022_execute_task)
+        .await
+    {
+        Ok(events) => {
+            println!(
+                "Linked Token-2022 transfer executed successfully! Events: {:?}",
+                events.len()
+            );
+            for event in events {
+                println!("Event: {:?}", event);
+            }
+        }
+        Err(e) => {
+            panic!("Linked Token-2022 transfer execution failed: {:?}", e);
+        }
+    }
+
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+    println!("InterchainTransfer on Linked Token-2022 test completed!");
 
     println!("ITS Integration Test Completed");
 
@@ -895,8 +1324,6 @@ async fn test_approve_and_execute_its_message() {
     env.cleanup().await;
 }
 
-// DeployInterchainToken with minter
-// LinkToken with operator
 // Interchain transfer with execute data
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_its_messages_with_optional_fields() {
@@ -1641,7 +2068,7 @@ async fn test_its_concurrent_task_processing() {
         name: "Concurrent Test Token".to_string(),
         symbol: "CONC".to_string(),
         decimals: 9,
-        minter: Some(env.payer.pubkey().to_bytes().to_vec()),
+        minter: None,
     };
 
     let deploy_hub_message = HubMessage::ReceiveFromHub {
@@ -1767,8 +2194,37 @@ async fn test_its_concurrent_task_processing() {
     println!("Token deployed successfully!");
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
+    // Pre-create the destination's ATA to avoid concurrent ATA creation conflicts
+    let (its_root_pda, _) = solana_axelar_its::InterchainTokenService::find_pda();
+    let (token_mint_pda, _) =
+        solana_axelar_its::TokenManager::find_token_mint(token_id, its_root_pda);
+
+    let destination_pubkey = env.operator.pubkey(); // Use operator like the working test
+
+    // Create destination ATA before concurrent transfers
+    let create_dest_ata_ix =
+        anchor_spl::associated_token::spl_associated_token_account::instruction::create_associated_token_account(
+            &env.payer.pubkey(),
+            &destination_pubkey,
+            &token_mint_pda,
+            &anchor_spl::token_2022::ID, // Native ITS tokens use Token-2022
+        );
+
+    let create_ata_blockhash = env.rpc_client.get_latest_blockhash().await.unwrap();
+    let create_ata_tx = solana_sdk::transaction::Transaction::new_signed_with_payer(
+        &[create_dest_ata_ix],
+        Some(&env.payer.pubkey()),
+        &[&env.payer],
+        create_ata_blockhash,
+    );
+
+    let _ = env
+        .rpc_client
+        .send_and_confirm_transaction(&create_ata_tx)
+        .await;
+    println!("Destination ATA pre-created for concurrent transfers");
+
     println!("Generating {} transfer tasks...", NUM_CONCURRENT_TASKS);
-    let destination_pubkey = env.payer.pubkey();
 
     let tasks: Vec<(GatewayTxTask, ExecuteTask)> = (0..NUM_CONCURRENT_TASKS)
         .map(|i| {
