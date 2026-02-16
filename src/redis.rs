@@ -5,7 +5,7 @@ use relayer_core::utils::ThreadSafe;
 use serde::{Deserialize, Serialize};
 use solana_sdk::pubkey::Pubkey;
 use solana_transaction_parser::redis::TransactionType;
-use tracing::{debug, error, warn};
+use tracing::{debug, warn};
 
 use redis::aio::ConnectionManager;
 
@@ -158,7 +158,6 @@ impl RedisConnectionTrait for RedisConnection {
                     debug!("Cost for key {} is {}", key, cost);
                     return Ok(cost);
                 } else {
-                    error!("Failed to parse cost for key {}: {}", key, serialized);
                     return Err(RedisInterfaceError::GenericError(format!(
                         "Failed to parse cost for key {}: {}",
                         key, serialized
@@ -166,14 +165,12 @@ impl RedisConnectionTrait for RedisConnection {
                 }
             }
             Ok(None) => {
-                error!("Failed to get cost for key {}: Key not found in Redis", key);
                 return Err(RedisInterfaceError::GenericError(format!(
                     "Failed to get cost for key {}: Key not found in Redis",
                     key
                 )));
             }
             Err(e) => {
-                error!("Failed to get cost for key {}: {}", key, e);
                 return Err(RedisInterfaceError::GenericError(format!(
                     "Failed to get cost for key {}: {}",
                     key, e
