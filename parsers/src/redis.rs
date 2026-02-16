@@ -5,7 +5,7 @@ use std::fmt::{Display, Formatter};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
-use tracing::{debug, error};
+use tracing::debug;
 
 #[derive(Clone)]
 pub struct CostCache {

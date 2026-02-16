@@ -5,7 +5,7 @@ use relayer_core::utils::ThreadSafe;
 use serde::{Deserialize, Serialize};
 use solana_sdk::pubkey::Pubkey;
 use solana_transaction_parser::redis::TransactionType;
-use tracing::{debug, error, warn};
+use tracing::{debug, warn};
 
 use redis::aio::ConnectionManager;
 
