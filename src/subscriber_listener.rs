@@ -215,7 +215,7 @@ impl<STR: SolanaStreamClientTrait, SM: SolanaTransactionModel> SolanaListener<ST
             if should_break || cancellation_token.is_cancelled() {
                 break;
             }
-            warn!("Restarting setup_connection_and_work");
+            debug!("Restarting setup_connection_and_work");
             tokio::time::sleep(Duration::from_secs(5)).await;
         }
     }
@@ -257,7 +257,7 @@ impl<STR: SolanaStreamClientTrait, SM: SolanaTransactionModel> SolanaListener<ST
             }
         };
         loop {
-            info!("Waiting for messages from {}...", stream_name);
+            debug!("Waiting for messages from {}...", stream_name);
             // If the stream has not received any messages in 30 seconds, re-establish the connection to avoid silent failures
             select! {
                 _ = cancellation_token.cancelled() => {

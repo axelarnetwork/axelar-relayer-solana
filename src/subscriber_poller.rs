@@ -69,13 +69,13 @@ impl<RPC: SolanaRpcClientTrait, SC: SubscriberCursor, SM: SolanaTransactionModel
     ) {
         select! {
             _ = self.work(gas_service_account, AccountPollerEnum::GasService, cancellation_token.clone()) => {
-                warn!("Gas service subscriber stream ended");
+                warn!("Gas service subscriber polling ended");
             },
             _ = self.work(gateway_account, AccountPollerEnum::Gateway, cancellation_token.clone()) => {
-                warn!("Gateway subscriber stream ended");
+                warn!("Gateway subscriber polling ended");
             },
             _ = self.work(its_account, AccountPollerEnum::ITS, cancellation_token.clone()) => {
-                warn!("ITS subscriber stream ended");
+                warn!("ITS subscriber polling ended");
             }
         };
     }

@@ -50,7 +50,6 @@ impl CostCacheTrait for CostCache {
                         debug!("Cost for key {} is {}", key, cost);
                         return Ok(cost);
                     } else {
-                        error!("Failed to parse cost for key {}: {}", key, serialized);
                         return Err(anyhow::anyhow!(
                             "Failed to parse cost for key {}: {}",
                             key,
@@ -70,10 +69,6 @@ impl CostCacheTrait for CostCache {
                         sleep(backoff_duration).await;
                         backoff_duration *= 2;
                     } else {
-                        error!(
-                            "Failed to get cost from Redis for key {} after {} attempts: Key not found in Redis",
-                            key, max_retries
-                        );
                         return Err(anyhow::anyhow!(
                             "Failed to get cost for key {} after {} attempts: Key not found in Redis",
                             key,
