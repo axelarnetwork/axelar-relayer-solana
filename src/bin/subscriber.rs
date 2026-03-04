@@ -44,10 +44,10 @@ async fn main() -> anyhow::Result<()> {
     let mut sigterm = signal(SignalKind::terminate())?;
 
     let solana_stream_client =
-        SolanaStreamClient::new(&config.solana_stream_rpc, config.solana_commitment).await?;
+        SolanaStreamClient::new(&config.solana_stream_rpc, config.solana_commitment()).await?;
 
     let solana_rpc_client: SolanaRpcClient =
-        SolanaRpcClient::new(&config.solana_poll_rpc, config.solana_commitment, 3)?;
+        SolanaRpcClient::new(&config.solana_poll_rpc, config.solana_commitment(), 3)?;
 
     let solana_poller = SolanaPoller::new(
         solana_rpc_client,

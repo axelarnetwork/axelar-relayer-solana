@@ -157,7 +157,7 @@ impl<STR: SolanaStreamClientTrait, SM: SolanaTransactionModel> SolanaListener<ST
         loop {
             let solana_stream_client = match SolanaStreamClient::new(
                 &solana_config.solana_stream_rpc,
-                solana_config.solana_commitment,
+                solana_config.solana_commitment(),
             )
             .await
             {
@@ -244,7 +244,7 @@ impl<STR: SolanaStreamClientTrait, SM: SolanaTransactionModel> SolanaListener<ST
         // the underlying HTTP connection pooling, instead of creating a client per request.
         let solana_rpc_client = match SolanaRpcClient::new(
             &solana_config.solana_poll_rpc,
-            solana_config.solana_commitment,
+            solana_config.solana_commitment(),
             3,
         ) {
             Ok(client) => Arc::new(client),

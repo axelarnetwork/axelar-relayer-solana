@@ -118,7 +118,7 @@ impl<
         IncluderError,
     > {
         let solana_rpc = config.solana_poll_rpc.clone();
-        let solana_commitment = config.solana_commitment;
+        let solana_commitment = config.solana_commitment();
 
         let client = Arc::new(
             IncluderClient::new(&solana_rpc, solana_commitment, 3)
