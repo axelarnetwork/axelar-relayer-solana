@@ -26,8 +26,9 @@ async fn main() -> anyhow::Result<()> {
         connection_manager(redis_client.clone(), None, None, None, None).await?;
     let redis_conn = RedisConnection::new(redis_conn_manager.clone());
 
-    let includer_client = IncluderClient::new(&config.solana_poll_rpc, config.solana_commitment, 3)
-        .map_err(|e| anyhow::anyhow!("Failed to create includer client: {}", e))?;
+    let includer_client =
+        IncluderClient::new(&config.solana_poll_rpc, config.solana_commitment(), 3)
+            .map_err(|e| anyhow::anyhow!("Failed to create includer client: {}", e))?;
 
     let fees_client = FeesClient::new(includer_client, 5)
         .map_err(|e| anyhow::anyhow!("Failed to create fees client: {}", e))?;

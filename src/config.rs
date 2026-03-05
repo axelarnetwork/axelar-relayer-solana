@@ -10,11 +10,14 @@ pub struct SolanaConfig {
 
     pub solana_poll_rpc: String,
     pub solana_stream_rpc: String,
-    pub solana_commitment: CommitmentConfig,
     pub solana_keypair: String,
 }
 
 impl SolanaConfig {
+    pub fn solana_commitment(&self) -> CommitmentConfig {
+        CommitmentConfig::finalized()
+    }
+
     pub fn signing_keypair(&self) -> Keypair {
         Keypair::from_base58_string(&self.solana_keypair)
     }
