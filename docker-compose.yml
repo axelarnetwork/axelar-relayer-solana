@@ -4,6 +4,7 @@ services:
       context: .
       args:
         BINARY_NAME: ingestor
+        FEATURES: ${FEATURES}
     env_file:
       - .env
     restart: always
@@ -13,6 +14,7 @@ services:
       context: .
       args:
         BINARY_NAME: includer
+        FEATURES: ${FEATURES}
     env_file:
       - .env
     restart: always
@@ -22,6 +24,7 @@ services:
       context: .
       args:
         BINARY_NAME: subscriber
+        FEATURES: ${FEATURES}
     env_file:
       - .env
     restart: always
@@ -31,6 +34,7 @@ services:
       context: .
       args:
         BINARY_NAME: alt_manager
+        FEATURES: ${FEATURES}
     env_file:
       - .env
     restart: always
@@ -40,6 +44,7 @@ services:
       context: .
       args:
         BINARY_NAME: cu_price_calculator
+        FEATURES: ${FEATURES}
     env_file:
       - .env
     restart: always
