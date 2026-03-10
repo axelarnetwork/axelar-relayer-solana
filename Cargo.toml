@@ -27,9 +27,10 @@ solana-transaction-status = "~3.1"
 solana-transaction-status-client-types = "~3.1"
 
 # Solana Axelar Programs
-solana-axelar-gas-service = { version = "0.1.9", features = ["no-entrypoint"] }
-solana-axelar-gateway = { version = "0.1.9", features = ["no-entrypoint"] }
-solana-axelar-its = { version = "0.1.9", features = ["no-entrypoint"] }
+solana-axelar-gas-service = { version = "0.1.11", default-features = false, features = ["no-entrypoint"] }
+solana-axelar-gateway = { version = "0.1.11", default-features = false, features = ["no-entrypoint"] }
+solana-axelar-its = { version = "0.1.11", default-features = false, features = ["no-entrypoint"] }
+solana-axelar-memo = { version = "0.1.11", default-features = false, features = ["no-entrypoint"] }
 
 # Relayer Core
 relayer-core = { git = "https://github.com/commonprefix/axelar-relayer-core", branch = "main", features = ["mocks"] }
@@ -76,6 +77,7 @@ devnet-amplifier = [
     "solana-axelar-governance/devnet-amplifier",
     "solana-axelar-gas-service/devnet-amplifier",
     "solana-axelar-operators/devnet-amplifier",
+    "solana-axelar-memo/devnet-amplifier",
 ]
 stagenet = [
     "solana-axelar-its/stagenet",
@@ -83,6 +85,7 @@ stagenet = [
     "solana-axelar-governance/stagenet",
     "solana-axelar-gas-service/stagenet",
     "solana-axelar-operators/stagenet",
+    "solana-axelar-memo/stagenet",
 ]
 testnet = [
     "solana-axelar-its/testnet",
@@ -90,6 +93,7 @@ testnet = [
     "solana-axelar-governance/testnet",
     "solana-axelar-gas-service/testnet",
     "solana-axelar-operators/testnet",
+    "solana-axelar-memo/testnet",
 ]
 mainnet = [
     "solana-axelar-its/mainnet",
@@ -97,6 +101,7 @@ mainnet = [
     "solana-axelar-governance/mainnet",
     "solana-axelar-gas-service/mainnet",
     "solana-axelar-operators/mainnet",
+    "solana-axelar-memo/mainnet",
 ]
 
 default = ["test-mocks", "devnet-amplifier"]

@@ -35,6 +35,15 @@ services:
       - .env
     restart: always
 
+  cu_price_calculator:
+    build:
+      context: .
+      args:
+        BINARY_NAME: cu_price_calculator
+    env_file:
+      - .env
+    restart: always
+
 networks:
   axelar-relayer:
     name: axelar-relayer
