@@ -10,6 +10,10 @@ RUN if [ -z "$BINARY_NAME" ]; then \
     echo >&2 "ERROR: you must set BINARY_NAME env"; \
     exit 1; \
     fi
+RUN if [ -z "$FEATURES" ]; then \
+    echo >&2 "ERROR: you must set FEATURES env"; \
+    exit 1; \
+    fi
 
 # Set the working directory
 WORKDIR /app
