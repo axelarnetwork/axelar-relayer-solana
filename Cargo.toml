@@ -172,12 +172,12 @@ solana-axelar-std = { version = "0.1.6" }
 
 solana-axelar-gas-service.workspace = true
 solana-axelar-gateway.workspace = true
-solana-axelar-governance = { version = "0.1.9", features = [
+solana-axelar-governance = { version = "0.1.11", features = [
     "no-entrypoint",
 ] }
 solana-axelar-its.workspace = true
 solana-axelar-memo.workspace = true
-solana-axelar-operators = { version = "0.1.9", features = [
+solana-axelar-operators = { version = "0.1.11", features = [
     "no-entrypoint",
 ] }
 
