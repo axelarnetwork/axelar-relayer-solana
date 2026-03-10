@@ -314,6 +314,14 @@ impl<
             ));
         }
 
+        debug!(
+            "Sending execute transaction - task_id: {}, destination_address: {}, accounts: {:?}, payload (base64): {}",
+            task.common.id,
+            task.task.message.destination_address,
+            instruction.accounts,
+            task.task.payload,
+        );
+
         match self
             .client
             .send_transaction(transaction.clone(), None)
@@ -1071,6 +1079,14 @@ impl<
             accounts,
             data,
         };
+
+        debug!(
+            "Sending refund transaction - task_id: {}, receiver: {}, accounts: {:?}, refund_amount: {}",
+            refund_id,
+            receiver,
+            ix.accounts,
+            refund_amount,
+        );
 
         let (tx, estimated_tx_cost) = self
             .transaction_builder
