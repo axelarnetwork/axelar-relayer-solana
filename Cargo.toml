@@ -176,6 +176,7 @@ solana-axelar-governance = { version = "0.1.9", features = [
     "no-entrypoint",
 ] }
 solana-axelar-its.workspace = true
+solana-axelar-memo.workspace = true
 solana-axelar-operators = { version = "0.1.9", features = [
     "no-entrypoint",
 ] }
@@ -185,7 +186,6 @@ lapin = "2.5"
 libsecp256k1 = "0.6"
 mockall = "0.13.1"
 rand = "0.8"
-solana-axelar-memo = { git = "https://github.com/axelarnetwork/axelar-amplifier-solana", branch = "main", package = "solana-axelar-memo", features = [ "no-entrypoint", "devnet-amplifier" ] }
 solana-loader-v3-interface = "6.1.0"
 solana-rpc = "~3.1"
 solana-sdk-ids = "~3.0"
