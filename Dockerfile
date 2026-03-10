@@ -5,7 +5,7 @@ FROM rust:1.89-bookworm AS builder
 
 # Build argument to decide which binary to include in this image
 ARG BINARY_NAME
-ARG FEATURES=testnet
+ARG FEATURES
 RUN if [ -z "$BINARY_NAME" ]; then \
     echo >&2 "ERROR: you must set BINARY_NAME env"; \
     exit 1; \
