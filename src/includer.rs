@@ -221,7 +221,8 @@ impl<
             // case where we need to create a new ALT
             debug!(
                 "ALT decision for message_id={}: creating new ALT, accounts_count={}",
-                task.task.message.message_id, accounts.len()
+                task.task.message.message_id,
+                accounts.len()
             );
             let recent_slot = self
                 .client
@@ -988,7 +989,8 @@ impl<
         {
             tracing::warn!(
                 "incoming message already executed: message_id={}, task_id={}",
-                task.task.message.message_id, task.common.id
+                task.task.message.message_id,
+                task.common.id
             );
             return Ok(vec![]);
         }
