@@ -1824,7 +1824,7 @@ dependencies = [
 [[package]]
 name = "axelar-core-std"
 version = "1.0.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#3bff3e3dd92b64cdaa7151936dd5f555b76144a9"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#d4ee8f866c7da12f5a4e62cf8c10f666df1795e2"
 dependencies = [
  "axelar-wasm-std",
  "client",
@@ -1840,7 +1840,7 @@ dependencies = [
 [[package]]
 name = "axelar-wasm-std"
 version = "1.0.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#3bff3e3dd92b64cdaa7151936dd5f555b76144a9"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#d4ee8f866c7da12f5a4e62cf8c10f666df1795e2"
 dependencies = [
  "alloy-primitives",
  "axelar-wasm-std-derive",
@@ -1876,7 +1876,7 @@ dependencies = [
 [[package]]
 name = "axelar-wasm-std-derive"
 version = "1.0.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#3bff3e3dd92b64cdaa7151936dd5f555b76144a9"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#d4ee8f866c7da12f5a4e62cf8c10f666df1795e2"
 dependencies = [
  "cosmwasm-std",
  "error-stack 0.4.1",
@@ -1893,7 +1893,7 @@ dependencies = [
 [[package]]
 name = "axelarnet-gateway"
 version = "1.0.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#3bff3e3dd92b64cdaa7151936dd5f555b76144a9"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#d4ee8f866c7da12f5a4e62cf8c10f666df1795e2"
 dependencies = [
  "axelar-core-std",
  "axelar-wasm-std",
@@ -2152,7 +2152,7 @@ dependencies = [
  "bitflags 2.10.0",
  "cexpr",
  "clang-sys",
- "itertools 0.13.0",
+ "itertools 0.12.1",
  "proc-macro2",
  "quote",
  "regex",
@@ -2771,7 +2771,7 @@ dependencies = [
 [[package]]
 name = "client"
 version = "1.0.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#3bff3e3dd92b64cdaa7151936dd5f555b76144a9"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#d4ee8f866c7da12f5a4e62cf8c10f666df1795e2"
 dependencies = [
  "cosmwasm-std",
  "error-stack 0.4.1",
@@ -4011,7 +4011,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5207,7 +5207,7 @@ dependencies = [
  "percent-encoding 2.3.2",
  "pin-project-lite",
  "socket2 0.6.1",
- "system-configuration 0.6.1",
+ "system-configuration",
  "tokio",
  "tower-service",
  "tracing",
@@ -5520,7 +5520,7 @@ dependencies = [
 [[package]]
 name = "interchain-token-service"
 version = "1.3.1"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#3bff3e3dd92b64cdaa7151936dd5f555b76144a9"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#d4ee8f866c7da12f5a4e62cf8c10f666df1795e2"
 dependencies = [
  "axelar-core-std",
  "axelar-wasm-std",
@@ -5550,7 +5550,7 @@ dependencies = [
 [[package]]
 name = "interchain-token-service-std"
 version = "1.0.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#3bff3e3dd92b64cdaa7151936dd5f555b76144a9"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#d4ee8f866c7da12f5a4e62cf8c10f666df1795e2"
 dependencies = [
  "axelar-wasm-std",
  "client",
@@ -5569,7 +5569,7 @@ dependencies = [
 [[package]]
 name = "into-inner-derive"
 version = "1.0.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#3bff3e3dd92b64cdaa7151936dd5f555b76144a9"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#d4ee8f866c7da12f5a4e62cf8c10f666df1795e2"
 dependencies = [
  "error-stack 0.4.1",
  "quote",
@@ -5676,7 +5676,7 @@ checksum = "92ecc6618181def0457392ccd0ee51198e065e016d1d527a7ac1b6dc7c1f09d2"
 [[package]]
 name = "its-msg-translator-api"
 version = "1.0.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#3bff3e3dd92b64cdaa7151936dd5f555b76144a9"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#d4ee8f866c7da12f5a4e62cf8c10f666df1795e2"
 dependencies = [
  "client",
  "cosmwasm-schema",
@@ -6531,7 +6531,7 @@ dependencies = [
 [[package]]
 name = "msgs-derive"
 version = "1.0.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#3bff3e3dd92b64cdaa7151936dd5f555b76144a9"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#d4ee8f866c7da12f5a4e62cf8c10f666df1795e2"
 dependencies = [
  "axelar-wasm-std",
  "cosmwasm-schema",
@@ -6555,7 +6555,7 @@ checksum = "e5ce46fe64a9d73be07dcbe690a38ce1b293be448fd8ce1e6c1b8062c9f72c6a"
 [[package]]
 name = "multisig"
 version = "2.4.2"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#3bff3e3dd92b64cdaa7151936dd5f555b76144a9"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#d4ee8f866c7da12f5a4e62cf8c10f666df1795e2"
 dependencies = [
  "axelar-wasm-std",
  "client",
@@ -6579,7 +6579,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha3",
- "signature-verifier-api",
  "thiserror 1.0.69",
 ]
 
@@ -6693,7 +6692,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -8004,7 +8003,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a56d757972c98b346a9b766e3f02746cde6dd1cd1d1d563472929fdd74bec4d"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.12.1",
  "proc-macro2",
  "quote",
  "syn 2.0.114",
@@ -8143,7 +8142,7 @@ dependencies = [
  "once_cell",
  "socket2 0.6.1",
  "tracing",
- "windows-sys 0.60.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -8507,7 +8506,7 @@ checksum = "7a2d987857b319362043e95f5353c0535c1f58eec5336fdfcf626430af7def58"
 [[package]]
 name = "relayer-core"
 version = "0.1.0"
-source = "git+https://github.com/commonprefix/axelar-relayer-core?branch=main#6221a1c6e6e8df4a771ebda4287bb769ee150de2"
+source = "git+https://github.com/commonprefix/axelar-relayer-core?branch=main#9b01a939d05a5fa09e6d2cd96b694c7dbc9ca84c"
 dependencies = [
  "anyhow",
  "async-std",
@@ -8567,7 +8566,7 @@ dependencies = [
 [[package]]
 name = "report"
 version = "1.0.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#3bff3e3dd92b64cdaa7151936dd5f555b76144a9"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#d4ee8f866c7da12f5a4e62cf8c10f666df1795e2"
 dependencies = [
  "error-stack 0.4.1",
  "eyre",
@@ -8613,7 +8612,7 @@ dependencies = [
  "serde_json",
  "serde_urlencoded",
  "sync_wrapper 0.1.2",
- "system-configuration 0.5.1",
+ "system-configuration",
  "tokio",
  "tokio-native-tls",
  "tokio-rustls 0.24.1",
@@ -8740,7 +8739,7 @@ dependencies = [
 [[package]]
 name = "rewards"
 version = "1.2.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#3bff3e3dd92b64cdaa7151936dd5f555b76144a9"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#d4ee8f866c7da12f5a4e62cf8c10f666df1795e2"
 dependencies = [
  "axelar-wasm-std",
  "client",
@@ -8870,7 +8869,7 @@ dependencies = [
 [[package]]
 name = "router-api"
 version = "1.0.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#3bff3e3dd92b64cdaa7151936dd5f555b76144a9"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#d4ee8f866c7da12f5a4e62cf8c10f666df1795e2"
 dependencies = [
  "axelar-wasm-std",
  "client",
@@ -9087,7 +9086,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.11.0",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -9200,7 +9199,7 @@ dependencies = [
  "security-framework 3.5.1",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -9894,20 +9893,6 @@ checksum = "77549399552de45a898a580c1b41d445bf730df867cc44e6c0233bbc4b8329de"
 dependencies = [
  "digest 0.10.7",
  "rand_core 0.6.4",
-]
-
-[[package]]
-name = "signature-verifier-api"
-version = "1.0.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#3bff3e3dd92b64cdaa7151936dd5f555b76144a9"
-dependencies = [
- "axelar-wasm-std",
- "client",
- "cosmwasm-schema",
- "cosmwasm-std",
- "error-stack 0.4.1",
- "msgs-derive",
- "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -14631,7 +14616,7 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 [[package]]
 name = "starknet-checked-felt"
 version = "1.0.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#3bff3e3dd92b64cdaa7151936dd5f555b76144a9"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#d4ee8f866c7da12f5a4e62cf8c10f666df1795e2"
 dependencies = [
  "alloy-primitives",
  "error-stack 0.4.1",
@@ -14823,7 +14808,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 [[package]]
 name = "sui-types"
 version = "1.0.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#3bff3e3dd92b64cdaa7151936dd5f555b76144a9"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#d4ee8f866c7da12f5a4e62cf8c10f666df1795e2"
 dependencies = [
  "error-stack 0.4.1",
  "hex",
@@ -14940,18 +14925,7 @@ checksum = "ba3a3adc5c275d719af8cb4272ea1c4a6d668a777f37e115f6d11ddbc1c8e0e7"
 dependencies = [
  "bitflags 1.3.2",
  "core-foundation 0.9.4",
- "system-configuration-sys 0.5.0",
-]
-
-[[package]]
-name = "system-configuration"
-version = "0.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3c879d448e9d986b661742763247d3693ed13609438cf3d006f51f5368a5ba6b"
-dependencies = [
- "bitflags 2.10.0",
- "core-foundation 0.9.4",
- "system-configuration-sys 0.6.0",
+ "system-configuration-sys",
 ]
 
 [[package]]
@@ -14959,16 +14933,6 @@ name = "system-configuration-sys"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a75fb188eb626b924683e3b95e3a48e63551fcfb51949de2f06a9d91dbee93c9"
-dependencies = [
- "core-foundation-sys",
- "libc",
-]
-
-[[package]]
-name = "system-configuration-sys"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8e1d1b10ced5ca923a1fcb8d03e96b8d3268065d724548c0211415ff6ac6bac4"
 dependencies = [
  "core-foundation-sys",
  "libc",
@@ -15057,7 +15021,7 @@ dependencies = [
  "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.3",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -16375,7 +16339,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -16875,7 +16839,7 @@ dependencies = [
 [[package]]
 name = "xrpl-types"
 version = "1.0.0"
-source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#3bff3e3dd92b64cdaa7151936dd5f555b76144a9"
+source = "git+https://github.com/axelarnetwork/axelar-amplifier?branch=main#d4ee8f866c7da12f5a4e62cf8c10f666df1795e2"
 dependencies = [
  "axelar-wasm-std",
  "bs58",

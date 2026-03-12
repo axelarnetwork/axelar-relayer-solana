@@ -212,9 +212,17 @@ impl<
 
         let alt_info = if let Some(existing_alt_pubkey) = existing_alt_pubkey {
             // if a key existed already for an ALT, we can reuse it as it will have been created previously
+            debug!(
+                "ALT decision for message_id={}: reusing existing alt={}",
+                task.task.message.message_id, existing_alt_pubkey
+            );
             Some(ALTInfo::new(Some(existing_alt_pubkey)))
         } else if !accounts.is_empty() {
             // case where we need to create a new ALT
+            debug!(
+                "ALT decision for message_id={}: creating new ALT, accounts_count={}",
+                task.task.message.message_id, accounts.len()
+            );
             let recent_slot = self
                 .client
                 .get_slot()
@@ -297,6 +305,10 @@ impl<
             )
         } else {
             // we set accounts to an empty vector when we do not want to create an ALT
+            debug!(
+                "ALT decision for message_id={}: no ALT needed",
+                task.task.message.message_id
+            );
             None
         };
         let (transaction, estimated_tx_cost) = self
@@ -788,10 +800,10 @@ impl<
         while let Some((cc_id, result)) = merkelised_message_futures.next().await {
             match result {
                 Ok((signature, gas_cost)) => {
-                    approved_messages.push((cc_id, gas_cost.unwrap_or(0)));
+                    approved_messages.push((cc_id.clone(), gas_cost.unwrap_or(0)));
                     debug!(
-                        "Message approved successfully, signature: {}, cost: {:?}",
-                        signature, gas_cost
+                        "Message approved successfully: cc_id={}:{}, signature: {}, cost: {:?}",
+                        cc_id.chain, cc_id.id, signature, gas_cost
                     );
                 }
                 Err(e) => match e {
@@ -825,6 +837,7 @@ impl<
         tracing::instrument(skip(self), fields(message_id))
     )]
     async fn handle_gateway_tx_task(&self, task: GatewayTxTask) -> Result<(), IncluderError> {
+        debug!("handle_gateway_tx_task: task_id={}", task.common.id);
         let execute_data_bytes = base64::prelude::BASE64_STANDARD
             .decode(task.task.execute_data)
             .map_err(|e| IncluderError::GenericError(e.to_string()))?;
@@ -906,6 +919,10 @@ impl<
                     let overhead_cost_per_message = overhead_cost
                         .checked_div(messages.len() as u64)
                         .unwrap_or(0);
+                    debug!(
+                        "Distributing overhead: task_id={}, total_overhead={}, per_message={}, num_messages={}",
+                        task.common.id, overhead_cost, overhead_cost_per_message, messages.len()
+                    );
                     for (cc_id, gas_cost) in &approved_messages {
                         self.redis_conn
                             .write_gas_cost_for_message_id(
@@ -932,6 +949,11 @@ impl<
         tracing::instrument(skip(self), fields(message_id))
     )]
     async fn handle_execute_task(&self, task: ExecuteTask) -> Result<Vec<Event>, IncluderError> {
+        debug!(
+            "handle_execute_task: task_id={}, message_id={}, source_chain={}, destination_address={}",
+            task.common.id, task.task.message.message_id,
+            task.task.message.source_chain, task.task.message.destination_address
+        );
         let message = Message {
             cc_id: CrossChainId {
                 chain: task.task.message.source_chain.clone(),
@@ -964,7 +986,10 @@ impl<
             .await
             .map_err(|e| IncluderError::GenericError(e.to_string()))?
         {
-            tracing::warn!("incoming message already executed");
+            tracing::warn!(
+                "incoming message already executed: message_id={}, task_id={}",
+                task.task.message.message_id, task.common.id
+            );
             return Ok(vec![]);
         }
 
@@ -1031,6 +1056,10 @@ impl<
         tracing::instrument(skip(self), fields(refund_id))
     )]
     async fn handle_refund_task(&self, task: RefundTask) -> Result<(), IncluderError> {
+        debug!(
+            "handle_refund_task: refund_id={}, message_id={}",
+            task.common.id, task.task.message.message_id
+        );
         let refund_id = task.common.id.clone();
         if self.refund_already_processed(refund_id.clone()).await? {
             warn!("Refund already processed: {}", refund_id);
