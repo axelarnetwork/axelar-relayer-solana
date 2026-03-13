@@ -149,7 +149,7 @@ impl SolanaRpcClientTrait for SolanaRpcClient {
                 Ok(response) => {
                     // edge case where last page had exactly LIMIT txs and we did one extra request
                     if response.is_empty() {
-                        info!("No more signatures to fetch, empty response");
+                        debug!("No more signatures to fetch, empty response");
                         return Ok(txs);
                     }
 

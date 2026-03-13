@@ -1,10 +1,17 @@
+# Example usage docker build --build-arg BINARY_NAME=cu_price_calculator --build-arg FEATURES=mainnet .
+
 # Builder Stage
 FROM rust:1.89-bookworm AS builder
 
 # Build argument to decide which binary to include in this image
 ARG BINARY_NAME
+ARG FEATURES
 RUN if [ -z "$BINARY_NAME" ]; then \
     echo >&2 "ERROR: you must set BINARY_NAME env"; \
+    exit 1; \
+    fi
+RUN if [ -z "$FEATURES" ]; then \
+    echo >&2 "ERROR: you must set FEATURES env"; \
     exit 1; \
     fi
 
@@ -28,7 +35,7 @@ RUN mkdir -p src/bin/recovery && \
 
 
 # Build dependencies (this will cache them)
-RUN cargo build --release
+RUN cargo build --release --no-default-features --features ${FEATURES}
 
 # Remove the dummy files
 RUN rm -rf src/ parsers/src/
@@ -41,7 +48,7 @@ COPY parsers/src/ ./parsers/src/
 RUN touch parsers/src/lib.rs src/lib.rs
 
 # Build the project with actual source code
-RUN cargo build --release --bin ${BINARY_NAME};
+RUN cargo build --release --no-default-features --features ${FEATURES} --bin ${BINARY_NAME};
 
 # Final Stage: Produce a lean runtime image
 FROM debian:bookworm-slim
