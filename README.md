@@ -207,3 +207,23 @@ Chains are run using separate binaries, so adjust the following commands accordi
     ```bash
     cargo run --bin includer
     ```
+
+### Auxiliary Binaries
+
+- **ALT Manager** – Background service that manages the lifecycle of Solana Address Lookup Tables (ALTs). It periodically deactivates and closes ALTs that are no longer needed, reclaiming rent.
+
+    ```bash
+    cargo run --bin alt_manager
+    ```
+
+- **CU Price Calculator** – Background service that periodically samples recent Solana transaction fees and caches a compute unit price estimate in Redis for use by other components.
+
+    ```bash
+    cargo run --bin cu_price_calculator
+    ```
+
+- **Subscriber Recovery** – One-off utility to manually replay specific transactions that were missed or failed to process.
+
+    ```bash
+    cargo run --bin subscriber_recovery
+    ```
