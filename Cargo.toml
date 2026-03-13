@@ -33,7 +33,7 @@ solana-axelar-its = { version = "0.1.11", default-features = false, features = [
 solana-axelar-memo = { version = "0.1.11", default-features = false, features = ["no-entrypoint"] }
 
 # Relayer Core
-relayer-core = { git = "https://github.com/commonprefix/axelar-relayer-core", branch = "main", features = ["mocks"] }
+relayer-core = { git = "https://github.com/commonprefix/axelar-relayer-core", tag = "1.0.1", features = ["mocks"] }
 
 [package]
 name = "solana"
