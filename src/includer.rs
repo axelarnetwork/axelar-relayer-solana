@@ -247,6 +247,7 @@ impl<
                 .await
                 .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
+            #[cfg(not(feature = "devnet-amplifier"))]
             if estimated_alt_cost as i64 > available_gas_balance {
                 // TODO: should take into account the cost for closing the ALT
                 return Ok(not_enough_gas_event(
@@ -318,6 +319,7 @@ impl<
             .await
             .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
+        #[cfg(not(feature = "devnet-amplifier"))]
         if estimated_tx_cost as i64 > available_gas_balance {
             return Ok(not_enough_gas_event(
                 available_gas_balance,
