@@ -1943,6 +1943,7 @@ mod tests {
         assert_eq!(result.unwrap(), vec![]);
     }
 
+    #[cfg(not(feature = "devnet-amplifier"))]
     #[tokio::test]
     async fn test_handle_execute_task_governance_insufficient_gas() {
         let (
@@ -2145,6 +2146,7 @@ mod tests {
         assert_eq!(result.unwrap(), vec![]);
     }
 
+    #[cfg(not(feature = "devnet-amplifier"))]
     #[tokio::test]
     async fn test_handle_execute_task_executable_insufficient_gas() {
         let (
@@ -2696,6 +2698,7 @@ mod tests {
         assert_eq!(result.unwrap(), vec![]);
     }
 
+    #[cfg(not(feature = "devnet-amplifier"))]
     #[tokio::test]
     async fn handle_execute_its_task_insufficient_gas_due_to_alt() {
         let (
@@ -4880,6 +4883,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(feature = "devnet-amplifier"))]
     #[tokio::test]
     async fn test_handle_execute_task_negative_gas_balance() {
         // Test that when available_gas_balance contains a negative value,
