@@ -6,9 +6,11 @@ use crate::models::refunds::RefundsModel;
 use crate::redis::RedisConnectionTrait;
 use crate::refund_manager::SolanaRefundManager;
 use crate::transaction_builder::{TransactionBuilder, TransactionBuilderTrait};
+#[cfg(not(feature = "devnet-amplifier"))]
+use crate::utils::not_enough_gas_event;
 use crate::utils::{
     get_gas_service_event_authority_pda, get_gateway_event_authority_pda,
-    keypair_from_base58_string, not_enough_gas_event,
+    keypair_from_base58_string,
 };
 use anchor_lang::prelude::AccountMeta;
 use anchor_lang::{InstructionData, ToAccountMetas};
@@ -257,6 +259,8 @@ impl<
                     Arc::clone(&self.gmp_api),
                 ));
             }
+            #[cfg(feature = "devnet-amplifier")]
+            let _ = estimated_alt_cost;
 
             let (signature, actual_alt_cost) = self
                 .client
@@ -328,6 +332,8 @@ impl<
                 Arc::clone(&self.gmp_api),
             ));
         }
+        #[cfg(feature = "devnet-amplifier")]
+        let _ = (available_gas_balance, estimated_tx_cost);
 
         debug!(
             "Sending execute transaction - task_id: {}, destination_address: {}, accounts: {:?}, payload (base64): {}",
