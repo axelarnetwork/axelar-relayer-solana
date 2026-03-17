@@ -6,12 +6,12 @@ use crate::models::refunds::RefundsModel;
 use crate::redis::RedisConnectionTrait;
 use crate::refund_manager::SolanaRefundManager;
 use crate::transaction_builder::{TransactionBuilder, TransactionBuilderTrait};
+#[cfg(not(feature = "devnet-amplifier"))]
+use crate::utils::not_enough_gas_event;
 use crate::utils::{
     get_gas_service_event_authority_pda, get_gateway_event_authority_pda,
     keypair_from_base58_string,
 };
-#[cfg(not(feature = "devnet-amplifier"))]
-use crate::utils::not_enough_gas_event;
 use anchor_lang::prelude::AccountMeta;
 use anchor_lang::{InstructionData, ToAccountMetas};
 use async_trait::async_trait;
