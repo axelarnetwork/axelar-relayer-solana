@@ -8,8 +8,10 @@ use crate::refund_manager::SolanaRefundManager;
 use crate::transaction_builder::{TransactionBuilder, TransactionBuilderTrait};
 use crate::utils::{
     get_gas_service_event_authority_pda, get_gateway_event_authority_pda,
-    keypair_from_base58_string, not_enough_gas_event,
+    keypair_from_base58_string,
 };
+#[cfg(not(feature = "devnet-amplifier"))]
+use crate::utils::not_enough_gas_event;
 use anchor_lang::prelude::AccountMeta;
 use anchor_lang::{InstructionData, ToAccountMetas};
 use async_trait::async_trait;
@@ -247,6 +249,8 @@ impl<
                 .await
                 .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
+            #[cfg(feature = "devnet-amplifier")]
+            let _ = estimated_alt_cost;
             #[cfg(not(feature = "devnet-amplifier"))]
             if estimated_alt_cost as i64 > available_gas_balance {
                 // TODO: should take into account the cost for closing the ALT
@@ -319,6 +323,8 @@ impl<
             .await
             .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
+        #[cfg(feature = "devnet-amplifier")]
+        let _ = (available_gas_balance, estimated_tx_cost);
         #[cfg(not(feature = "devnet-amplifier"))]
         if estimated_tx_cost as i64 > available_gas_balance {
             return Ok(not_enough_gas_event(
