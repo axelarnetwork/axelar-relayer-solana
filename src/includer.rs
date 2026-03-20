@@ -6,9 +6,11 @@ use crate::models::refunds::RefundsModel;
 use crate::redis::RedisConnectionTrait;
 use crate::refund_manager::SolanaRefundManager;
 use crate::transaction_builder::{TransactionBuilder, TransactionBuilderTrait};
+#[cfg(not(feature = "devnet-amplifier"))]
+use crate::utils::not_enough_gas_event;
 use crate::utils::{
     get_gas_service_event_authority_pda, get_gateway_event_authority_pda,
-    keypair_from_base58_string, not_enough_gas_event,
+    keypair_from_base58_string,
 };
 use anchor_lang::prelude::AccountMeta;
 use anchor_lang::{InstructionData, ToAccountMetas};
@@ -247,6 +249,9 @@ impl<
                 .await
                 .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
+            #[cfg(feature = "devnet-amplifier")]
+            let _ = estimated_alt_cost;
+            #[cfg(not(feature = "devnet-amplifier"))]
             if estimated_alt_cost as i64 > available_gas_balance {
                 // TODO: should take into account the cost for closing the ALT
                 return Ok(not_enough_gas_event(
@@ -318,6 +323,9 @@ impl<
             .await
             .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
+        #[cfg(feature = "devnet-amplifier")]
+        let _ = (available_gas_balance, estimated_tx_cost);
+        #[cfg(not(feature = "devnet-amplifier"))]
         if estimated_tx_cost as i64 > available_gas_balance {
             return Ok(not_enough_gas_event(
                 available_gas_balance,
@@ -1941,6 +1949,7 @@ mod tests {
         assert_eq!(result.unwrap(), vec![]);
     }
 
+    #[cfg(not(feature = "devnet-amplifier"))]
     #[tokio::test]
     async fn test_handle_execute_task_governance_insufficient_gas() {
         let (
@@ -2143,6 +2152,7 @@ mod tests {
         assert_eq!(result.unwrap(), vec![]);
     }
 
+    #[cfg(not(feature = "devnet-amplifier"))]
     #[tokio::test]
     async fn test_handle_execute_task_executable_insufficient_gas() {
         let (
@@ -2694,6 +2704,7 @@ mod tests {
         assert_eq!(result.unwrap(), vec![]);
     }
 
+    #[cfg(not(feature = "devnet-amplifier"))]
     #[tokio::test]
     async fn handle_execute_its_task_insufficient_gas_due_to_alt() {
         let (
@@ -4878,6 +4889,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(feature = "devnet-amplifier"))]
     #[tokio::test]
     async fn test_handle_execute_task_negative_gas_balance() {
         // Test that when available_gas_balance contains a negative value,
