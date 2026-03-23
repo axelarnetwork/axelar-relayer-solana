@@ -1669,9 +1669,7 @@ mod tests {
         // The attack: include relayer pubkey as readonly, non-signer
         let executable_payload = ExecutablePayload::new::<AccountMeta>(
             &[10, 20, 30],
-            &[
-                AccountMeta::new_readonly(keypair.pubkey(), false),
-            ],
+            &[AccountMeta::new_readonly(keypair.pubkey(), false)],
             EncodingScheme::Borsh,
         );
         let encoded = executable_payload.encode().unwrap();
@@ -1685,7 +1683,10 @@ mod tests {
             )
             .await;
 
-        assert!(result.is_err(), "Must reject fee payer even as readonly non-signer");
+        assert!(
+            result.is_err(),
+            "Must reject fee payer even as readonly non-signer"
+        );
         match result {
             Err(TransactionBuilderError::PayloadDecodeError(msg)) => {
                 assert!(
@@ -1727,9 +1728,7 @@ mod tests {
         // Include relayer pubkey as writable, non-signer
         let executable_payload = ExecutablePayload::new::<AccountMeta>(
             &[10, 20, 30],
-            &[
-                AccountMeta::new(keypair.pubkey(), false),
-            ],
+            &[AccountMeta::new(keypair.pubkey(), false)],
             EncodingScheme::Borsh,
         );
         let encoded = executable_payload.encode().unwrap();
@@ -1814,9 +1813,7 @@ mod tests {
         // The attack: include relayer pubkey as readonly, non-signer in GMP accounts
         let executable_payload = ExecutablePayload::new::<AccountMeta>(
             &[10, 20, 30],
-            &[
-                AccountMeta::new_readonly(keypair.pubkey(), false),
-            ],
+            &[AccountMeta::new_readonly(keypair.pubkey(), false)],
             EncodingScheme::Borsh,
         );
         let executable_payload_bytes = executable_payload.encode().unwrap();
@@ -1840,7 +1837,10 @@ mod tests {
             .build_execute_instruction(&message, &its_payload, its_destination)
             .await;
 
-        assert!(result.is_err(), "Must reject fee payer even as readonly in ITS path");
+        assert!(
+            result.is_err(),
+            "Must reject fee payer even as readonly in ITS path"
+        );
         match result {
             Err(TransactionBuilderError::PayloadDecodeError(msg)) => {
                 assert!(
@@ -1850,5 +1850,80 @@ mod tests {
             }
             other => panic!("Expected PayloadDecodeError, got: {:?}", other),
         }
+    }
+
+    /// Proves that even though the relayer signs the transaction (as fee payer),
+    /// a malicious destination program cannot access the relayer's account because
+    /// the relayer's pubkey is never included in the CPI instruction's account list.
+    ///
+    /// In Solana's runtime model, a program can ONLY operate on accounts explicitly
+    /// passed to it. No account handle = no access, regardless of who signed the tx.
+    #[tokio::test]
+    async fn test_relayer_pubkey_not_in_executable_instruction_accounts() {
+        let keypair = Arc::new(Keypair::new());
+        let relayer_pubkey = keypair.pubkey();
+        let mock_gas = MockGasCalculatorTrait::new();
+        let mock_client = MockIncluderClientTrait::new();
+        let mock_redis = MockRedisConnectionTrait::new();
+
+        let message = Message {
+            cc_id: CrossChainId {
+                chain: "ethereum".to_string(),
+                id: "test-relayer-not-in-accounts".to_string(),
+            },
+            source_address: "0x1234567890123456789012345678901234567890".to_string(),
+            destination_chain: "solana".to_string(),
+            destination_address: "test-destination".to_string(),
+            payload_hash: [0u8; 32],
+        };
+
+        let builder = TransactionBuilder::new(
+            Arc::clone(&keypair),
+            mock_gas,
+            Arc::new(mock_client),
+            mock_redis,
+        );
+
+        let destination_program = Pubkey::new_unique();
+        let innocent_account = Pubkey::new_unique();
+
+        // Build a valid payload with accounts that do NOT include the relayer
+        let executable_payload = ExecutablePayload::new::<AccountMeta>(
+            &[10, 20, 30],
+            &[
+                AccountMeta::new(innocent_account, false),
+                AccountMeta::new_readonly(Pubkey::new_unique(), false),
+            ],
+            EncodingScheme::Borsh,
+        );
+        let encoded = executable_payload.encode().unwrap();
+
+        let (instruction, _) = builder
+            .build_executable_instruction(
+                &message,
+                &encoded,
+                Pubkey::new_unique(),
+                destination_program,
+            )
+            .await
+            .expect("Should succeed with innocent accounts");
+
+        // The relayer's pubkey must NOT appear anywhere in the instruction's accounts.
+        // This is the critical property: without an AccountInfo handle, the destination
+        // program cannot read, write, or transfer lamports from the relayer — even though
+        // the relayer signed the transaction.
+        let instruction_pubkeys: Vec<Pubkey> =
+            instruction.accounts.iter().map(|a| a.pubkey).collect();
+
+        assert!(
+            !instruction_pubkeys.contains(&relayer_pubkey),
+            "Relayer pubkey {} must NOT appear in the CPI instruction accounts. \
+             If it did, the destination program could access it. Found accounts: {:?}",
+            relayer_pubkey,
+            instruction_pubkeys
+        );
+
+        // Also verify the instruction targets the destination program, not the relayer
+        assert_eq!(instruction.program_id, destination_program);
     }
 }
