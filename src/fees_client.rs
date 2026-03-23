@@ -77,14 +77,7 @@ impl<IC: IncluderClientTrait> FeesClientTrait for FeesClient<IC> {
 
         let percentile_value = data.percentile(percentile as usize).max(0.0);
 
-        let cu_price = percentile_value.ceil() as u64;
-
-        // Apply fallback floor and cap
-        let cu_price = if cu_price == 0 {
-            FALLBACK_CU_PRICE
-        } else {
-            cu_price
-        };
+        let cu_price = (percentile_value.ceil() as u64).max(FALLBACK_CU_PRICE);
 
         if cu_price > MAX_CU_PRICE {
             warn!(
@@ -92,10 +85,9 @@ impl<IC: IncluderClientTrait> FeesClientTrait for FeesClient<IC> {
                 cap = MAX_CU_PRICE,
                 "CU price exceeded cap, clamping"
             );
-            return Ok(MAX_CU_PRICE);
         }
 
-        Ok(cu_price)
+        Ok(cu_price.min(MAX_CU_PRICE))
     }
 }
 
@@ -117,13 +109,13 @@ mod tests {
     async fn test_get_prioritization_fee_percentile_50th() {
         let mut mock_client = MockIncluderClientTrait::new();
 
-        // Fees: [100, 200, 300, 400, 500] - 50th percentile should be 300
+        // Fees: [1000, 2000, 3000, 4000, 5000] - 50th percentile should be 3000
         let fees = vec![
-            create_fee(1, 100),
-            create_fee(2, 200),
-            create_fee(3, 300),
-            create_fee(4, 400),
-            create_fee(5, 500),
+            create_fee(1, 1000),
+            create_fee(2, 2000),
+            create_fee(3, 3000),
+            create_fee(4, 4000),
+            create_fee(5, 5000),
         ];
 
         mock_client
@@ -138,14 +130,18 @@ mod tests {
         let result = fees_client.get_prioritization_fee_percentile(50).await;
 
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), 300);
+        assert_eq!(result.unwrap(), 3000);
     }
 
     #[tokio::test]
     async fn test_get_prioritization_fee_percentile_0th() {
         let mut mock_client = MockIncluderClientTrait::new();
 
-        let fees = vec![create_fee(1, 100), create_fee(2, 200), create_fee(3, 300)];
+        let fees = vec![
+            create_fee(1, 1000),
+            create_fee(2, 2000),
+            create_fee(3, 3000),
+        ];
 
         mock_client
             .expect_get_recent_prioritization_fees()
@@ -160,14 +156,18 @@ mod tests {
 
         assert!(result.is_ok());
         // 0th percentile should be the minimum value
-        assert_eq!(result.unwrap(), 100);
+        assert_eq!(result.unwrap(), 1000);
     }
 
     #[tokio::test]
     async fn test_get_prioritization_fee_percentile_100th() {
         let mut mock_client = MockIncluderClientTrait::new();
 
-        let fees = vec![create_fee(1, 100), create_fee(2, 200), create_fee(3, 300)];
+        let fees = vec![
+            create_fee(1, 1000),
+            create_fee(2, 2000),
+            create_fee(3, 3000),
+        ];
 
         mock_client
             .expect_get_recent_prioritization_fees()
@@ -182,7 +182,7 @@ mod tests {
 
         assert!(result.is_ok());
         // 100th percentile should be the maximum value
-        assert_eq!(result.unwrap(), 300);
+        assert_eq!(result.unwrap(), 3000);
     }
 
     #[tokio::test]
@@ -337,12 +337,12 @@ mod tests {
     async fn test_get_prioritization_fee_percentile_75th() {
         let mut mock_client = MockIncluderClientTrait::new();
 
-        // Fees: [100, 200, 300, 400]
+        // Fees: [1000, 2000, 3000, 4000]
         let fees = vec![
-            create_fee(1, 100),
-            create_fee(2, 200),
-            create_fee(3, 300),
-            create_fee(4, 400),
+            create_fee(1, 1000),
+            create_fee(2, 2000),
+            create_fee(3, 3000),
+            create_fee(4, 4000),
         ];
 
         mock_client
@@ -357,8 +357,8 @@ mod tests {
         let result = fees_client.get_prioritization_fee_percentile(75).await;
 
         assert!(result.is_ok());
-        // 75th percentile of [100, 200, 300, 400] using statrs linear interpolation
-        assert_eq!(result.unwrap(), 359);
+        // 75th percentile of [1000, 2000, 3000, 4000] using statrs linear interpolation
+        assert_eq!(result.unwrap(), 3584);
     }
 
     #[tokio::test]
