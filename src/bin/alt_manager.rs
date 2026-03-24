@@ -12,6 +12,7 @@ use solana::utils::keypair_from_base58_string;
 use solana_address_lookup_table_interface::instruction::{
     close_lookup_table, deactivate_lookup_table,
 };
+use solana_address_lookup_table_interface::program::ID as ALT_PROGRAM_ID;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Keypair;
 use solana_sdk::signer::Signer as _;
@@ -145,19 +146,22 @@ async fn process_active_alts(
                 let semaphore = Arc::clone(semaphore);
                 Some(async move {
                     let _permit = semaphore.acquire().await;
-                    let result =
-                        deactivate_alt(alt_pubkey, includer_client, keypair, &authority_keypair)
-                            .and_then(|_| {
-                                redis_conn
-                                    .set_alt_inactive(message_id.to_string())
-                                    .map_err(|e| {
-                                        anyhow::anyhow!(
-                                            "Failed to set ALT as inactive in Redis: {}",
-                                            e
-                                        )
-                                    })
+                    let result = deactivate_alt(
+                        alt_pubkey,
+                        includer_client,
+                        keypair,
+                        &authority_keypair,
+                        &message_id,
+                        redis_conn,
+                    )
+                    .and_then(|_| {
+                        redis_conn
+                            .set_alt_inactive(message_id.to_string())
+                            .map_err(|e| {
+                                anyhow::anyhow!("Failed to set ALT as inactive in Redis: {}", e)
                             })
-                            .await;
+                    })
+                    .await;
 
                     if let Err(e) = result {
                         if let Err(e) = handle_alt_processing_error(
@@ -300,12 +304,40 @@ async fn handle_alt_processing_error(
     Ok(())
 }
 
+/// Returns `Ok(true)` if the ALT exists on-chain and is owned by the ALT program,
+/// `Ok(false)` if the account is gone or owned by another program (stale Redis entry),
+/// and `Err` if the RPC call itself failed.
+async fn ensure_alt_exists(
+    alt_pubkey: Pubkey,
+    message_id: &str,
+    includer_client: &IncluderClient,
+    redis_conn: &RedisConnection,
+) -> anyhow::Result<bool> {
+    match includer_client.get_account_owner(&alt_pubkey).await {
+        Ok(owner) if owner == ALT_PROGRAM_ID => Ok(true),
+        Ok(_) | Err(_) => {
+            warn!(
+                "ALT {} ({}) no longer exists on-chain, removing from Redis",
+                alt_pubkey, message_id
+            );
+            redis_conn.remove_alt_key(message_id.to_string()).await?;
+            Ok(false)
+        }
+    }
+}
+
 async fn deactivate_alt(
     alt_pubkey: Pubkey,
     includer_client: &IncluderClient,
     keypair: &solana_sdk::signer::keypair::Keypair,
     authority_keypair: &Keypair,
+    message_id: &str,
+    redis_conn: &RedisConnection,
 ) -> anyhow::Result<()> {
+    if !ensure_alt_exists(alt_pubkey, message_id, includer_client, redis_conn).await? {
+        return Ok(());
+    }
+
     debug!("Deactivating ALT: {}", alt_pubkey);
 
     let deactivate_ix = deactivate_lookup_table(alt_pubkey, authority_keypair.pubkey());
@@ -347,6 +379,10 @@ async fn close_alt(
     redis_conn: &RedisConnection,
     close_attempts: u32,
 ) -> anyhow::Result<()> {
+    if !ensure_alt_exists(alt_pubkey, message_id, includer_client, redis_conn).await? {
+        return Ok(());
+    }
+
     debug!("Closing ALT: {}", alt_pubkey);
 
     let recipient_pubkey = authority_keypair.pubkey(); // Close to the authority wallet
