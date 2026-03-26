@@ -133,6 +133,25 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
     }
 }
 
+fn validate_payload_accounts(
+    accounts: &[AccountMeta],
+    fee_payer: &Pubkey,
+) -> Result<(), TransactionBuilderError> {
+    for account in accounts {
+        if account.is_signer {
+            return Err(TransactionBuilderError::PayloadDecodeError(
+                "Signer account cannot be provided".to_string(),
+            ));
+        }
+        if account.pubkey == *fee_payer {
+            return Err(TransactionBuilderError::PayloadDecodeError(
+                "Fee payer account cannot be provided".to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[async_trait]
 impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + Clone>
     TransactionBuilderTrait<IC, R> for TransactionBuilder<GE, IC, R>
@@ -421,19 +440,7 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
                         match ExecutablePayload::decode(data) {
                             Ok(executable_payload) => {
                                 let gmp_accounts = executable_payload.account_meta();
-                                for account in gmp_accounts.clone() {
-                                    // signers are not supported for arbitrary executables
-                                    if account.is_signer {
-                                        return Err(TransactionBuilderError::PayloadDecodeError(
-                                            "Signer account cannot be provided".to_string(),
-                                        ));
-                                    };
-                                    if account.pubkey == self.keypair.pubkey() {
-                                        return Err(TransactionBuilderError::PayloadDecodeError(
-                                            "Fee payer account cannot be provided".to_string(),
-                                        ));
-                                    }
-                                }
+                                validate_payload_accounts(&gmp_accounts, &self.keypair.pubkey())?;
                                 accounts.extend(gmp_accounts);
                             }
                             Err(e) => {
@@ -600,20 +607,8 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
         let decoded_payload = ExecutablePayload::decode(payload)
             .map_err(|e| TransactionBuilderError::PayloadDecodeError(e.to_string()))?; // return custom error to send cannot_execute_message
 
-        // signers are not supported for arbitrary executables
         let user_provided_accounts = decoded_payload.account_meta();
-        for account in user_provided_accounts.clone() {
-            if account.is_signer {
-                return Err(TransactionBuilderError::PayloadDecodeError(
-                    "Signer account cannot be provided".to_string(),
-                ));
-            };
-            if account.pubkey == self.keypair.pubkey() {
-                return Err(TransactionBuilderError::PayloadDecodeError(
-                    "Fee payer account cannot be provided".to_string(),
-                ));
-            }
-        }
+        validate_payload_accounts(&user_provided_accounts, &self.keypair.pubkey())?;
 
         let (signing_pda, _) = solana_axelar_gateway::ValidateMessageSigner::try_find_pda(
             &message.command_id(),
