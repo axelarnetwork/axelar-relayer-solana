@@ -145,7 +145,13 @@ async fn process_active_alts(
 
                 let semaphore = Arc::clone(semaphore);
                 Some(async move {
-                    let _permit = semaphore.acquire().await;
+                    let _permit = match semaphore.acquire().await {
+                        Ok(permit) => permit,
+                        Err(e) => {
+                            error!("Failed to acquire semaphore for ALT {}: {}", alt_pubkey, e);
+                            return;
+                        }
+                    };
                     let result = deactivate_alt(
                         alt_pubkey,
                         includer_client,
@@ -215,7 +221,13 @@ async fn process_deactivated_alts(
 
                 let semaphore = Arc::clone(semaphore);
                 Some(async move {
-                    let _permit = semaphore.acquire().await;
+                    let _permit = match semaphore.acquire().await {
+                        Ok(permit) => permit,
+                        Err(e) => {
+                            error!("Failed to acquire semaphore for ALT {}: {}", alt_pubkey, e);
+                            return;
+                        }
+                    };
                     debug!(
                         "ALT {} is old enough to close (inactive for {} seconds)",
                         alt_pubkey, seconds_since_creation
