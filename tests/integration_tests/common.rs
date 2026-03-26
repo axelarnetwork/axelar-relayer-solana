@@ -6,8 +6,6 @@ use std::sync::Arc;
 
 use anchor_lang::{AnchorSerialize, Discriminator, InstructionData, ToAccountMetas};
 use async_trait::async_trait;
-use relayer_core::gmp_api::MockGmpApiTrait;
-use relayer_core::queue::{QueueItem, QueueTrait};
 use axelar_solana_relayer::gas_calculator::GasCalculator;
 use axelar_solana_relayer::includer_client::IncluderClient;
 use axelar_solana_relayer::mocks::MockRedisConnectionTrait;
@@ -16,6 +14,8 @@ use axelar_solana_relayer::models::solana_transaction::PgSolanaTransactionModel;
 use axelar_solana_relayer::poll_client::SolanaRpcClient;
 use axelar_solana_relayer::subscriber_poller::SolanaPoller;
 use axelar_solana_relayer::transaction_builder::TransactionBuilder;
+use relayer_core::gmp_api::MockGmpApiTrait;
+use relayer_core::queue::{QueueItem, QueueTrait};
 use solana_commitment_config::CommitmentConfig;
 use solana_rpc::rpc::JsonRpcConfig;
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
