@@ -1,6 +1,6 @@
 use dotenv::dotenv;
 use futures::stream::FuturesUnordered;
-use futures::{StreamExt, TryFutureExt};
+use futures::StreamExt;
 use relayer_core::config::config_from_yaml;
 use relayer_core::logging::setup_logging;
 use relayer_core::redis::connection_manager;
@@ -154,13 +154,6 @@ async fn process_active_alts(
                         &message_id,
                         redis_conn,
                     )
-                    .and_then(|_| {
-                        redis_conn
-                            .set_alt_inactive(message_id.to_string())
-                            .map_err(|e| {
-                                anyhow::anyhow!("Failed to set ALT as inactive in Redis: {}", e)
-                            })
-                    })
                     .await;
 
                     if let Err(e) = result {
@@ -304,6 +297,14 @@ async fn handle_alt_processing_error(
     Ok(())
 }
 
+fn is_alt_account_not_found_error(error_message: &str) -> bool {
+    let message = error_message.to_ascii_lowercase();
+    message.contains("accountnotfound")
+        || message.contains("account not found")
+        || message.contains("could not find account")
+        || message.contains("couldn't find account")
+}
+
 /// Returns `Ok(true)` if the ALT exists on-chain and is owned by the ALT program,
 /// `Ok(false)` if the account is gone or owned by another program (stale Redis entry),
 /// and `Err` if the RPC call itself failed.
@@ -315,13 +316,31 @@ async fn ensure_alt_exists(
 ) -> anyhow::Result<bool> {
     match includer_client.get_account_owner(&alt_pubkey).await {
         Ok(owner) if owner == ALT_PROGRAM_ID => Ok(true),
-        Ok(_) | Err(_) => {
+        Ok(owner) => {
             warn!(
-                "ALT {} ({}) no longer exists on-chain, removing from Redis",
-                alt_pubkey, message_id
+                "ALT {} ({}) is owned by {}, not ALT program {}, removing from Redis",
+                alt_pubkey, message_id, owner, ALT_PROGRAM_ID
             );
             redis_conn.remove_alt_key(message_id.to_string()).await?;
             Ok(false)
+        }
+        Err(e) => {
+            let error_message = e.to_string();
+            if is_alt_account_not_found_error(&error_message) {
+                warn!(
+                    "ALT {} ({}) no longer exists on-chain, removing from Redis",
+                    alt_pubkey, message_id
+                );
+                redis_conn.remove_alt_key(message_id.to_string()).await?;
+                Ok(false)
+            } else {
+                Err(anyhow::anyhow!(
+                    "Failed to verify ALT {} ({}): {}",
+                    alt_pubkey,
+                    message_id,
+                    error_message
+                ))
+            }
         }
     }
 }
@@ -360,6 +379,10 @@ async fn deactivate_alt(
     {
         Ok((signature, _)) => {
             info!("Successfully deactivated ALT {}: {}", alt_pubkey, signature);
+            redis_conn
+                .set_alt_inactive(message_id.to_string())
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to set ALT as inactive in Redis: {}", e))?;
             Ok(())
         }
         Err(e) => Err(anyhow::anyhow!(
