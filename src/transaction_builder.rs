@@ -428,10 +428,21 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
                         Pubkey::try_from(transfer.destination_address.as_slice()).map_err(|e| {
                             TransactionBuilderError::PayloadDecodeError(e.to_string())
                         })?;
-                    let (destination_ata, _) =
-                        get_ata_with_program(&destination_address, &token_mint, &token_program);
+                    let destination_token_authority = if transfer.data.is_some() {
+                        solana_axelar_its::instructions::destination_token_authority_pda(
+                            &destination_address,
+                        )
+                    } else {
+                        destination_address
+                    };
+                    let (destination_ata, _) = get_ata_with_program(
+                        &destination_token_authority,
+                        &token_mint,
+                        &token_program,
+                    );
                     accounts.extend(execute_interchain_transfer_extra_accounts(
                         destination_address,
+                        destination_token_authority,
                         destination_ata,
                         Some(transfer.data.is_some()),
                     ));
@@ -568,7 +579,7 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
         let (operator_proposal_pda, _) = get_operator_proposal_pda(&proposal_hash)
             .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
 
-        let accounts = solana_axelar_governance::accounts::ProcessGmp {
+        let accounts = solana_axelar_governance::accounts::Execute {
             executable,
             payer: self.keypair.pubkey(),
             governance_config,
@@ -580,7 +591,7 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
         }
         .to_account_metas(None);
 
-        let data = solana_axelar_governance::instruction::ProcessGmp {
+        let data = solana_axelar_governance::instruction::Execute {
             message: message.clone(),
             payload: payload.to_vec(),
         }

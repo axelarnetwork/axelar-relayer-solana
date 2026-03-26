@@ -1,14 +1,14 @@
+use axelar_solana_relayer::config::SolanaConfig;
+use axelar_solana_relayer::includer::SolanaIncluder;
+use axelar_solana_relayer::includer_client::IncluderClient;
+use axelar_solana_relayer::models::solana_subscriber_cursor::PostgresDB as SolanaPostgresDB;
+use axelar_solana_relayer::redis::RedisConnection;
 use dotenv::dotenv;
 use relayer_core::config::config_from_yaml;
 use relayer_core::logging::setup_logging;
 use relayer_core::redis::connection_manager;
 use relayer_core::utils::setup_heartbeat;
 use relayer_core::{database::PostgresDB, gmp_api, payload_cache::PayloadCache, queue::Queue};
-use solana::config::SolanaConfig;
-use solana::includer::SolanaIncluder;
-use solana::includer_client::IncluderClient;
-use solana::models::solana_subscriber_cursor::PostgresDB as SolanaPostgresDB;
-use solana::redis::RedisConnection;
 use sqlx::PgPool;
 use std::sync::Arc;
 use tokio::signal::unix::{signal, SignalKind};
@@ -58,9 +58,9 @@ async fn main() -> anyhow::Result<()> {
         RedisConnection,
         SolanaPostgresDB,
         IncluderClient,
-        solana::transaction_builder::TransactionBuilder<
-            solana::gas_calculator::GasCalculator<IncluderClient>,
-            solana::includer_client::IncluderClient,
+        axelar_solana_relayer::transaction_builder::TransactionBuilder<
+            axelar_solana_relayer::gas_calculator::GasCalculator<IncluderClient>,
+            axelar_solana_relayer::includer_client::IncluderClient,
             RedisConnection,
         >,
     >::create_includer(

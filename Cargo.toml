@@ -53,7 +53,7 @@ solana-sdk-ids = "~3.1"
 solana-transaction-status = "~3.1"
 solana-transaction-status-client-types = "~3.1"
 solana-loader-v3-interface = "6.1.0"
-# solana-rpc = "3.1.11"
+solana-rpc = "~3.1"
 solana-system-interface = { version = "3.0.0", features = ["bincode"] }
 solana-test-validator = "~3.1"
 
@@ -219,12 +219,15 @@ libsecp256k1.workspace = true
 mockall.workspace = true
 rand.workspace = true
 solana-loader-v3-interface.workspace = true
-# solana-rpc.workspace = true
+solana-rpc.workspace = true
 solana-system-interface.workspace = true
 solana-test-validator.workspace = true
 testcontainers.workspace = true
 testcontainers-modules.workspace = true
 tracing-test.workspace = true
+
+[patch.crates-io]
+solana-gossip = { git = "https://github.com/Deiadara/solana-gossip", branch = "master" }
 
 [lints.clippy]
 uninlined_format_args = "allow"

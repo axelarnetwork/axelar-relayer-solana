@@ -1,14 +1,14 @@
+use axelar_solana_relayer::config::SolanaConfig;
+use axelar_solana_relayer::includer_client::{IncluderClient, IncluderClientTrait};
+use axelar_solana_relayer::redis::{RedisConnection, RedisConnectionTrait};
+use axelar_solana_relayer::transaction_type::SolanaTransactionType;
+use axelar_solana_relayer::utils::keypair_from_base58_string;
 use dotenv::dotenv;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use relayer_core::config::config_from_yaml;
 use relayer_core::logging::setup_logging;
 use relayer_core::redis::connection_manager;
-use solana::config::SolanaConfig;
-use solana::includer_client::{IncluderClient, IncluderClientTrait};
-use solana::redis::{RedisConnection, RedisConnectionTrait};
-use solana::transaction_type::SolanaTransactionType;
-use solana::utils::keypair_from_base58_string;
 use solana_address_lookup_table_interface::instruction::{
     close_lookup_table, deactivate_lookup_table,
 };

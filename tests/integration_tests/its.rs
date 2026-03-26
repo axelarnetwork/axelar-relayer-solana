@@ -8,9 +8,9 @@ use relayer_core::gmp_api::gmp_types::{Event, MessageExecutionStatus};
 use relayer_core::includer_worker::IncluderTrait;
 use relayer_core::ingestor::IngestorTrait;
 use relayer_core::queue::{QueueItem, QueueTrait};
-use solana::includer::SolanaIncluder;
-use solana::ingestor::SolanaIngestor;
-use solana::mocks::{MockRefundsModel, MockUpdateEvents};
+use axelar_solana_relayer::includer::SolanaIncluder;
+use axelar_solana_relayer::ingestor::SolanaIngestor;
+use axelar_solana_relayer::mocks::{MockRefundsModel, MockUpdateEvents};
 use solana_axelar_its::encoding::{
     DeployInterchainToken, HubMessage, InterchainTransfer, LinkToken, Message as ItsMessage,
 };
@@ -493,8 +493,8 @@ async fn test_approve_and_execute_its_message() {
                                 println!("Status: {:?}", status);
                                 println!("Cost: {:?}", cost);
 
-                                if *event_message_id == deploy_message_id
-                                    || *event_message_id == transfer_message_id
+                                if *event_message_id == *deploy_message_id
+                                    || *event_message_id == *transfer_message_id
                                 {
                                     assert!(
                                         matches!(status, MessageExecutionStatus::SUCCESSFUL),

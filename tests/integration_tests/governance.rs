@@ -11,8 +11,8 @@ use base64::Engine;
 use governance_gmp::alloy_primitives::U256;
 use relayer_core::gmp_api::MockGmpApiTrait;
 use relayer_core::includer_worker::IncluderTrait;
-use solana::includer::SolanaIncluder;
-use solana::mocks::MockRefundsModel;
+use axelar_solana_relayer::includer::SolanaIncluder;
+use axelar_solana_relayer::mocks::MockRefundsModel;
 use solana_axelar_governance::SolanaAccountMetadata;
 use solana_axelar_std::execute_data::{ExecuteData, MerklizedPayload};
 use solana_axelar_std::{

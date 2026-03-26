@@ -1,3 +1,6 @@
+use axelar_solana_relayer::config::SolanaConfig;
+use axelar_solana_relayer::ingestor::SolanaIngestor;
+use axelar_solana_relayer::solana_transaction::PgSolanaTransactionModel;
 use dotenv::dotenv;
 use relayer_core::config::config_from_yaml;
 use relayer_core::logging::setup_logging;
@@ -5,9 +8,6 @@ use relayer_core::logging_ctx_cache::RedisLoggingCtxCache;
 use relayer_core::queue::{Queue, QueueTrait};
 use relayer_core::redis::connection_manager;
 use relayer_core::{gmp_api, ingestor};
-use solana::config::SolanaConfig;
-use solana::ingestor::SolanaIngestor;
-use solana::solana_transaction::PgSolanaTransactionModel;
 use solana_axelar_gas_service::ID as GAS_SERVICE_ID;
 use solana_axelar_gateway::ID as GATEWAY_ID;
 use solana_axelar_its::ID as ITS_ID;
