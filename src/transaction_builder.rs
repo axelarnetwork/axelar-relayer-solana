@@ -119,13 +119,11 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
         mint: &Pubkey,
     ) -> Result<Pubkey, TransactionBuilderError> {
         match self.includer_client.get_account_owner(mint).await {
-            Ok(owner) => {
-                if owner == spl_token_2022::ID {
-                    Ok(spl_token_2022::ID)
-                } else {
-                    Ok(anchor_spl::token::ID)
-                }
-            }
+            Ok(Some(owner)) if owner == spl_token_2022::ID => Ok(spl_token_2022::ID),
+            Ok(Some(_)) => Ok(anchor_spl::token::ID),
+            Ok(None) => Err(TransactionBuilderError::GenericError(
+                format!("Token mint account {} not found", mint),
+            )),
             Err(_) => Err(TransactionBuilderError::GenericError(
                 "Failed to get token program owner".to_string(),
             )),
@@ -976,7 +974,7 @@ mod tests {
         mock_client
             .expect_get_account_owner()
             .withf(move |pubkey| *pubkey == token_mint_pda)
-            .returning(move |_| Box::pin(async move { Ok(spl_token_2022::ID) }));
+            .returning(move |_| Box::pin(async move { Ok(Some(spl_token_2022::ID)) }));
 
         let message = Message {
             cc_id: CrossChainId {
@@ -1121,7 +1119,7 @@ mod tests {
         mock_client
             .expect_get_account_owner()
             .withf(move |pubkey| *pubkey == token_mint_pda)
-            .returning(move |_| Box::pin(async move { Ok(spl_token_2022::ID) }));
+            .returning(move |_| Box::pin(async move { Ok(Some(spl_token_2022::ID)) }));
 
         let message = Message {
             cc_id: CrossChainId {
@@ -1240,7 +1238,7 @@ mod tests {
         mock_client
             .expect_get_account_owner()
             .withf(move |pubkey| *pubkey == token_mint_pda)
-            .returning(move |_| Box::pin(async move { Ok(spl_token_2022::ID) }));
+            .returning(move |_| Box::pin(async move { Ok(Some(spl_token_2022::ID)) }));
 
         let message = Message {
             cc_id: CrossChainId {
@@ -1343,7 +1341,7 @@ mod tests {
         mock_client
             .expect_get_account_owner()
             .withf(move |pubkey| *pubkey == token_mint_pda)
-            .returning(move |_| Box::pin(async move { Ok(spl_token_2022::ID) }));
+            .returning(move |_| Box::pin(async move { Ok(Some(spl_token_2022::ID)) }));
 
         let message = Message {
             cc_id: CrossChainId {
@@ -1540,7 +1538,7 @@ mod tests {
         mock_client
             .expect_get_account_owner()
             .withf(move |pubkey| *pubkey == linked_token_mint)
-            .returning(move |_| Box::pin(async move { Ok(spl_token::ID) }));
+            .returning(move |_| Box::pin(async move { Ok(Some(spl_token::ID)) }));
 
         let message = Message {
             cc_id: CrossChainId {

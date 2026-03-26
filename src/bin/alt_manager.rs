@@ -297,14 +297,6 @@ async fn handle_alt_processing_error(
     Ok(())
 }
 
-fn is_alt_account_not_found_error(error_message: &str) -> bool {
-    let message = error_message.to_ascii_lowercase();
-    message.contains("accountnotfound")
-        || message.contains("account not found")
-        || message.contains("could not find account")
-        || message.contains("couldn't find account")
-}
-
 /// Returns `Ok(true)` if the ALT exists on-chain and is owned by the ALT program,
 /// `Ok(false)` if the account is gone or owned by another program (stale Redis entry),
 /// and `Err` if the RPC call itself failed.
@@ -314,9 +306,12 @@ async fn ensure_alt_exists(
     includer_client: &IncluderClient,
     redis_conn: &RedisConnection,
 ) -> anyhow::Result<bool> {
-    match includer_client.get_account_owner(&alt_pubkey).await {
-        Ok(owner) if owner == ALT_PROGRAM_ID => Ok(true),
-        Ok(owner) => {
+    match includer_client
+        .get_account_owner(&alt_pubkey)
+        .await?
+    {
+        Some(owner) if owner == ALT_PROGRAM_ID => Ok(true),
+        Some(owner) => {
             warn!(
                 "ALT {} ({}) is owned by {}, not ALT program {}, removing from Redis",
                 alt_pubkey, message_id, owner, ALT_PROGRAM_ID
@@ -324,23 +319,13 @@ async fn ensure_alt_exists(
             redis_conn.remove_alt_key(message_id.to_string()).await?;
             Ok(false)
         }
-        Err(e) => {
-            let error_message = e.to_string();
-            if is_alt_account_not_found_error(&error_message) {
-                warn!(
-                    "ALT {} ({}) no longer exists on-chain, removing from Redis",
-                    alt_pubkey, message_id
-                );
-                redis_conn.remove_alt_key(message_id.to_string()).await?;
-                Ok(false)
-            } else {
-                Err(anyhow::anyhow!(
-                    "Failed to verify ALT {} ({}): {}",
-                    alt_pubkey,
-                    message_id,
-                    error_message
-                ))
-            }
+        None => {
+            warn!(
+                "ALT {} ({}) no longer exists on-chain, removing from Redis",
+                alt_pubkey, message_id
+            );
+            redis_conn.remove_alt_key(message_id.to_string()).await?;
+            Ok(false)
         }
     }
 }
