@@ -121,9 +121,10 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
         match self.includer_client.get_account_owner(mint).await {
             Ok(Some(owner)) if owner == spl_token_2022::ID => Ok(spl_token_2022::ID),
             Ok(Some(_)) => Ok(anchor_spl::token::ID),
-            Ok(None) => Err(TransactionBuilderError::GenericError(
-                format!("Token mint account {} not found", mint),
-            )),
+            Ok(None) => Err(TransactionBuilderError::GenericError(format!(
+                "Token mint account {} not found",
+                mint
+            ))),
             Err(_) => Err(TransactionBuilderError::GenericError(
                 "Failed to get token program owner".to_string(),
             )),

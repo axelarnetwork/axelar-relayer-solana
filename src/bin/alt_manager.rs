@@ -306,10 +306,7 @@ async fn ensure_alt_exists(
     includer_client: &IncluderClient,
     redis_conn: &RedisConnection,
 ) -> anyhow::Result<bool> {
-    match includer_client
-        .get_account_owner(&alt_pubkey)
-        .await?
-    {
+    match includer_client.get_account_owner(&alt_pubkey).await? {
         Some(owner) if owner == ALT_PROGRAM_ID => Ok(true),
         Some(owner) => {
             warn!(
