@@ -30,8 +30,13 @@ async fn main() -> anyhow::Result<()> {
         IncluderClient::new(&config.solana_poll_rpc, config.solana_commitment(), 3)
             .map_err(|e| anyhow::anyhow!("Failed to create includer client: {}", e))?;
 
-    let fees_client = FeesClient::new(includer_client, 5)
-        .map_err(|e| anyhow::anyhow!("Failed to create fees client: {}", e))?;
+    let fees_client = FeesClient::new(
+        includer_client,
+        5,
+        config.cu_price_lower_limit,
+        config.cu_price_upper_limit,
+    )
+    .map_err(|e| anyhow::anyhow!("Failed to create fees client: {}", e))?;
 
     let mut interval = time::interval(Duration::from_secs(CU_PRICE_CALCULATION_INTERVAL));
     interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
