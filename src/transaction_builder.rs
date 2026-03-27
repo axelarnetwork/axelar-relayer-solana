@@ -132,6 +132,25 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
     }
 }
 
+fn validate_payload_accounts(
+    accounts: &[AccountMeta],
+    fee_payer: &Pubkey,
+) -> Result<(), TransactionBuilderError> {
+    for account in accounts {
+        if account.is_signer {
+            return Err(TransactionBuilderError::PayloadDecodeError(
+                "Signer account cannot be provided".to_string(),
+            ));
+        }
+        if account.pubkey == *fee_payer {
+            return Err(TransactionBuilderError::PayloadDecodeError(
+                "Fee payer account cannot be provided".to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[async_trait]
 impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + Clone>
     TransactionBuilderTrait<IC, R> for TransactionBuilder<GE, IC, R>
@@ -420,14 +439,7 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
                         match ExecutablePayload::decode(data) {
                             Ok(executable_payload) => {
                                 let gmp_accounts = executable_payload.account_meta();
-                                for account in gmp_accounts.clone() {
-                                    // signers are not supported for arbitrary executables
-                                    if account.is_signer {
-                                        return Err(TransactionBuilderError::PayloadDecodeError(
-                                            "Signer account cannot be provided".to_string(),
-                                        ));
-                                    };
-                                }
+                                validate_payload_accounts(&gmp_accounts, &self.keypair.pubkey())?;
                                 accounts.extend(gmp_accounts);
                             }
                             Err(e) => {
@@ -594,15 +606,8 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
         let decoded_payload = ExecutablePayload::decode(payload)
             .map_err(|e| TransactionBuilderError::PayloadDecodeError(e.to_string()))?; // return custom error to send cannot_execute_message
 
-        // signers are not supported for arbitrary executables
         let user_provided_accounts = decoded_payload.account_meta();
-        for account in user_provided_accounts.clone() {
-            if account.is_signer {
-                return Err(TransactionBuilderError::PayloadDecodeError(
-                    "Signer account cannot be provided".to_string(),
-                ));
-            };
-        }
+        validate_payload_accounts(&user_provided_accounts, &self.keypair.pubkey())?;
 
         let (signing_pda, _) = solana_axelar_gateway::ValidateMessageSigner::try_find_pda(
             &message.command_id(),
@@ -1626,5 +1631,293 @@ mod tests {
                 "Instruction should NOT contain the ATA derived with Token-2022 program for linked SPL tokens"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn test_build_executable_instruction_rejects_fee_payer_readonly() {
+        let keypair = Arc::new(Keypair::new());
+        let mock_gas = MockGasCalculatorTrait::new();
+        let mock_client = MockIncluderClientTrait::new();
+        let mock_redis = MockRedisConnectionTrait::new();
+
+        let message = Message {
+            cc_id: CrossChainId {
+                chain: "ethereum".to_string(),
+                id: "test-reject-fee-payer-readonly".to_string(),
+            },
+            source_address: "0x1234567890123456789012345678901234567890".to_string(),
+            destination_chain: "solana".to_string(),
+            destination_address: "test-destination".to_string(),
+            payload_hash: [0u8; 32],
+        };
+
+        let builder = TransactionBuilder::new(
+            Arc::clone(&keypair),
+            mock_gas,
+            Arc::new(mock_client),
+            mock_redis,
+        );
+
+        let destination_program = Pubkey::new_unique();
+
+        // The attack: include relayer pubkey as readonly, non-signer
+        let executable_payload = ExecutablePayload::new::<AccountMeta>(
+            &[10, 20, 30],
+            &[AccountMeta::new_readonly(keypair.pubkey(), false)],
+            EncodingScheme::Borsh,
+        );
+        let encoded = executable_payload.encode().unwrap();
+
+        let result = builder
+            .build_executable_instruction(
+                &message,
+                &encoded,
+                Pubkey::new_unique(),
+                destination_program,
+            )
+            .await;
+
+        assert!(
+            result.is_err(),
+            "Must reject fee payer even as readonly non-signer"
+        );
+        match result {
+            Err(TransactionBuilderError::PayloadDecodeError(msg)) => {
+                assert!(
+                    msg.contains("Fee payer account cannot be provided"),
+                    "Error: {msg}"
+                );
+            }
+            other => panic!("Expected PayloadDecodeError, got: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_build_executable_instruction_rejects_fee_payer_writable() {
+        let keypair = Arc::new(Keypair::new());
+        let mock_gas = MockGasCalculatorTrait::new();
+        let mock_client = MockIncluderClientTrait::new();
+        let mock_redis = MockRedisConnectionTrait::new();
+
+        let message = Message {
+            cc_id: CrossChainId {
+                chain: "ethereum".to_string(),
+                id: "test-reject-fee-payer-writable".to_string(),
+            },
+            source_address: "0x1234567890123456789012345678901234567890".to_string(),
+            destination_chain: "solana".to_string(),
+            destination_address: "test-destination".to_string(),
+            payload_hash: [0u8; 32],
+        };
+
+        let builder = TransactionBuilder::new(
+            Arc::clone(&keypair),
+            mock_gas,
+            Arc::new(mock_client),
+            mock_redis,
+        );
+
+        let destination_program = Pubkey::new_unique();
+
+        // Include relayer pubkey as writable, non-signer
+        let executable_payload = ExecutablePayload::new::<AccountMeta>(
+            &[10, 20, 30],
+            &[AccountMeta::new(keypair.pubkey(), false)],
+            EncodingScheme::Borsh,
+        );
+        let encoded = executable_payload.encode().unwrap();
+
+        let result = builder
+            .build_executable_instruction(
+                &message,
+                &encoded,
+                Pubkey::new_unique(),
+                destination_program,
+            )
+            .await;
+
+        assert!(result.is_err(), "Must reject fee payer as writable");
+        match result {
+            Err(TransactionBuilderError::PayloadDecodeError(msg)) => {
+                assert!(
+                    msg.contains("Fee payer account cannot be provided"),
+                    "Error: {msg}"
+                );
+            }
+            other => panic!("Expected PayloadDecodeError, got: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_build_its_instruction_rejects_fee_payer_readonly() {
+        use anchor_spl::token_2022::spl_token_2022;
+
+        let keypair = Arc::new(Keypair::new());
+        let mock_gas = MockGasCalculatorTrait::new();
+        let mut mock_client = MockIncluderClientTrait::new();
+        let mock_redis = MockRedisConnectionTrait::new();
+
+        let token_id = [7u8; 32];
+
+        let (its_root_pda, _) = solana_axelar_its::InterchainTokenService::try_find_pda()
+            .expect("Failed to derive ITS root PDA");
+        let (token_manager_pda, _) =
+            solana_axelar_its::TokenManager::try_find_pda(token_id, its_root_pda)
+                .expect("Failed to derive token manager PDA");
+        let (token_mint_pda, _) =
+            solana_axelar_its::TokenManager::find_token_mint(token_id, its_root_pda);
+
+        let mock_token_manager_data = create_mock_token_manager_data(token_id, token_mint_pda);
+
+        mock_client
+            .expect_get_account_data()
+            .withf(move |pubkey| *pubkey == token_manager_pda)
+            .returning(move |_| {
+                let data = mock_token_manager_data.clone();
+                Box::pin(async move { Ok(data) })
+            });
+
+        mock_client
+            .expect_get_account_owner()
+            .withf(move |pubkey| *pubkey == token_mint_pda)
+            .returning(move |_| Box::pin(async move { Ok(spl_token_2022::ID) }));
+
+        let message = Message {
+            cc_id: CrossChainId {
+                chain: "ethereum".to_string(),
+                id: "test-its-reject-fee-payer-readonly".to_string(),
+            },
+            source_address: "0x1234567890123456789012345678901234567890".to_string(),
+            destination_chain: "solana".to_string(),
+            destination_address: "test-destination".to_string(),
+            payload_hash: [0u8; 32],
+        };
+
+        let builder = TransactionBuilder::new(
+            Arc::clone(&keypair),
+            mock_gas,
+            Arc::new(mock_client),
+            mock_redis,
+        );
+
+        let its_destination = solana_axelar_its::ID;
+        let destination_pubkey = Pubkey::new_unique();
+        let destination_address_bytes = destination_pubkey.to_bytes().to_vec();
+
+        // The attack: include relayer pubkey as readonly, non-signer in GMP accounts
+        let executable_payload = ExecutablePayload::new::<AccountMeta>(
+            &[10, 20, 30],
+            &[AccountMeta::new_readonly(keypair.pubkey(), false)],
+            EncodingScheme::Borsh,
+        );
+        let executable_payload_bytes = executable_payload.encode().unwrap();
+
+        let interchain_transfer = InterchainTransfer {
+            token_id,
+            source_address: vec![5u8; 20],
+            destination_address: destination_address_bytes,
+            amount: 1000u64,
+            data: Some(executable_payload_bytes),
+        };
+
+        let its_message = ItsMessage::InterchainTransfer(interchain_transfer);
+        let hub_message = HubMessage::ReceiveFromHub {
+            source_chain: "ethereum".to_string(),
+            message: its_message,
+        };
+        let its_payload = borsh::to_vec(&hub_message).expect("Failed to serialize HubMessage");
+
+        let result = builder
+            .build_execute_instruction(&message, &its_payload, its_destination)
+            .await;
+
+        assert!(
+            result.is_err(),
+            "Must reject fee payer even as readonly in ITS path"
+        );
+        match result {
+            Err(TransactionBuilderError::PayloadDecodeError(msg)) => {
+                assert!(
+                    msg.contains("Fee payer account cannot be provided"),
+                    "Error: {msg}"
+                );
+            }
+            other => panic!("Expected PayloadDecodeError, got: {:?}", other),
+        }
+    }
+
+    /// Proves that even though the relayer signs the transaction (as fee payer),
+    /// a malicious destination program cannot access the relayer's account because
+    /// the relayer's pubkey is never included in the CPI instruction's account list.
+    ///
+    /// In Solana's runtime model, a program can ONLY operate on accounts explicitly
+    /// passed to it. No account handle = no access, regardless of who signed the tx.
+    #[tokio::test]
+    async fn test_relayer_pubkey_not_in_executable_instruction_accounts() {
+        let keypair = Arc::new(Keypair::new());
+        let relayer_pubkey = keypair.pubkey();
+        let mock_gas = MockGasCalculatorTrait::new();
+        let mock_client = MockIncluderClientTrait::new();
+        let mock_redis = MockRedisConnectionTrait::new();
+
+        let message = Message {
+            cc_id: CrossChainId {
+                chain: "ethereum".to_string(),
+                id: "test-relayer-not-in-accounts".to_string(),
+            },
+            source_address: "0x1234567890123456789012345678901234567890".to_string(),
+            destination_chain: "solana".to_string(),
+            destination_address: "test-destination".to_string(),
+            payload_hash: [0u8; 32],
+        };
+
+        let builder = TransactionBuilder::new(
+            Arc::clone(&keypair),
+            mock_gas,
+            Arc::new(mock_client),
+            mock_redis,
+        );
+
+        let destination_program = Pubkey::new_unique();
+        let innocent_account = Pubkey::new_unique();
+
+        // Build a valid payload with accounts that do NOT include the relayer
+        let executable_payload = ExecutablePayload::new::<AccountMeta>(
+            &[10, 20, 30],
+            &[
+                AccountMeta::new(innocent_account, false),
+                AccountMeta::new_readonly(Pubkey::new_unique(), false),
+            ],
+            EncodingScheme::Borsh,
+        );
+        let encoded = executable_payload.encode().unwrap();
+
+        let (instruction, _) = builder
+            .build_executable_instruction(
+                &message,
+                &encoded,
+                Pubkey::new_unique(),
+                destination_program,
+            )
+            .await
+            .expect("Should succeed with innocent accounts");
+
+        // The relayer's pubkey must NOT appear anywhere in the instruction's accounts.
+        // This is the critical property: without an AccountInfo handle, the destination
+        // program cannot read, write, or transfer lamports from the relayer — even though
+        // the relayer signed the transaction.
+        let instruction_pubkeys: Vec<Pubkey> =
+            instruction.accounts.iter().map(|a| a.pubkey).collect();
+
+        assert!(
+            !instruction_pubkeys.contains(&relayer_pubkey),
+            "Relayer pubkey {} must NOT appear in the CPI instruction accounts. \
+             If it did, the destination program could access it. Found accounts: {:?}",
+            relayer_pubkey,
+            instruction_pubkeys
+        );
+
+        // Also verify the instruction targets the destination program, not the relayer
+        assert_eq!(instruction.program_id, destination_program);
     }
 }
