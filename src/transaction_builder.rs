@@ -112,6 +112,30 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
         }
     }
 
+    /// Returns the expected `destination_token_authority` for a given destination.
+    ///
+    /// If the destination account is owned by a BPF loader (i.e. it is a deployed
+    /// program), the authority is the PDA `[ITS_TOKEN_AUTHORITY_SEED]` derived from
+    /// the destination program. Otherwise it is the destination address itself.
+    async fn expected_destination_token_authority(
+        &self,
+        destination: &Pubkey,
+    ) -> Pubkey {
+        let is_program = matches!(
+            self.includer_client.get_account_owner(destination).await,
+            Ok(Some(owner)) if owner == solana_sdk_ids::bpf_loader::ID
+                || owner == solana_sdk_ids::bpf_loader_deprecated::ID
+                || owner == solana_sdk_ids::bpf_loader_upgradeable::ID
+                || owner == solana_sdk_ids::loader_v4::ID
+        );
+
+        if is_program {
+            solana_axelar_its::instructions::destination_token_authority_pda(destination)
+        } else {
+            *destination
+        }
+    }
+
     /// Determines the token program (SPL Token or Token-2022) for a given mint address
     /// by checking the account owner on-chain.
     async fn get_token_program_for_mint(
@@ -428,13 +452,9 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
                         Pubkey::try_from(transfer.destination_address.as_slice()).map_err(|e| {
                             TransactionBuilderError::PayloadDecodeError(e.to_string())
                         })?;
-                    let destination_token_authority = if transfer.data.is_some() {
-                        solana_axelar_its::instructions::destination_token_authority_pda(
-                            &destination_address,
-                        )
-                    } else {
-                        destination_address
-                    };
+                    let destination_token_authority = self
+                        .expected_destination_token_authority(&destination_address)
+                        .await;
                     let (destination_ata, _) = get_ata_with_program(
                         &destination_token_authority,
                         &token_mint,
