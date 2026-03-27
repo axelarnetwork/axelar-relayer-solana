@@ -1,7 +1,7 @@
-use axelar_solana_relayer::fees_client::{FeesClient, FeesClientTrait as _};
-use axelar_solana_relayer::includer_client::IncluderClient;
-use axelar_solana_relayer::redis::RedisConnection;
-use axelar_solana_relayer::{config::SolanaConfig, redis::RedisConnectionTrait as _};
+use axelar_relayer_solana::fees_client::{FeesClient, FeesClientTrait as _};
+use axelar_relayer_solana::includer_client::IncluderClient;
+use axelar_relayer_solana::redis::RedisConnection;
+use axelar_relayer_solana::{config::SolanaConfig, redis::RedisConnectionTrait as _};
 use dotenv::dotenv;
 use relayer_core::config::config_from_yaml;
 use relayer_core::logging::setup_logging;

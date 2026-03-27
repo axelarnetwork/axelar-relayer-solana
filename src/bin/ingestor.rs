@@ -1,6 +1,6 @@
-use axelar_solana_relayer::config::SolanaConfig;
-use axelar_solana_relayer::ingestor::SolanaIngestor;
-use axelar_solana_relayer::solana_transaction::PgSolanaTransactionModel;
+use axelar_relayer_solana::config::SolanaConfig;
+use axelar_relayer_solana::ingestor::SolanaIngestor;
+use axelar_relayer_solana::solana_transaction::PgSolanaTransactionModel;
 use dotenv::dotenv;
 use relayer_core::config::config_from_yaml;
 use relayer_core::logging::setup_logging;

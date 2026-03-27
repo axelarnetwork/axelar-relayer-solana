@@ -79,7 +79,7 @@ testcontainers-modules = { version = "0.12.1", features = ["postgres"] }
 tracing-test = "0.2.5"
 
 [package]
-name = "axelar-solana-relayer"
+name = "axelar-relayer-solana"
 version = "0.1.0"
 edition = "2021"
 

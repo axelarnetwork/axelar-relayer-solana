@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use alloy_sol_types::SolValue as _;
 use anchor_lang::{InstructionData, ToAccountMetas};
-use axelar_solana_relayer::includer::SolanaIncluder;
-use axelar_solana_relayer::mocks::MockRefundsModel;
+use axelar_relayer_solana::includer::SolanaIncluder;
+use axelar_relayer_solana::mocks::MockRefundsModel;
 use base64::prelude::BASE64_STANDARD;
 use base64::Engine;
 use governance_gmp::alloy_primitives::U256;

@@ -1879,7 +1879,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "axelar-solana-relayer"
+name = "axelar-relayer-solana"
 version = "0.1.0"
 dependencies = [
  "alloy-sol-types",

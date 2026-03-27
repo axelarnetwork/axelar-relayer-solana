@@ -2,9 +2,9 @@
 
 use std::sync::Arc;
 
-use axelar_solana_relayer::includer::SolanaIncluder;
-use axelar_solana_relayer::ingestor::SolanaIngestor;
-use axelar_solana_relayer::mocks::{MockRefundsModel, MockUpdateEvents};
+use axelar_relayer_solana::includer::SolanaIncluder;
+use axelar_relayer_solana::ingestor::SolanaIngestor;
+use axelar_relayer_solana::mocks::{MockRefundsModel, MockUpdateEvents};
 use base64::prelude::BASE64_STANDARD;
 use base64::Engine;
 use relayer_core::gmp_api::gmp_types::{Event, MessageExecutionStatus};

@@ -1,8 +1,8 @@
-use axelar_solana_relayer::config::SolanaConfig;
-use axelar_solana_relayer::includer_client::{IncluderClient, IncluderClientTrait};
-use axelar_solana_relayer::redis::{RedisConnection, RedisConnectionTrait};
-use axelar_solana_relayer::transaction_type::SolanaTransactionType;
-use axelar_solana_relayer::utils::keypair_from_base58_string;
+use axelar_relayer_solana::config::SolanaConfig;
+use axelar_relayer_solana::includer_client::{IncluderClient, IncluderClientTrait};
+use axelar_relayer_solana::redis::{RedisConnection, RedisConnectionTrait};
+use axelar_relayer_solana::transaction_type::SolanaTransactionType;
+use axelar_relayer_solana::utils::keypair_from_base58_string;
 use dotenv::dotenv;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;

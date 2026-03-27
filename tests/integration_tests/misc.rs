@@ -5,9 +5,9 @@
 use std::sync::Arc;
 
 use anchor_lang::{InstructionData, ToAccountMetas};
-use axelar_solana_relayer::includer::SolanaIncluder;
-use axelar_solana_relayer::ingestor::SolanaIngestor;
-use axelar_solana_relayer::mocks::MockUpdateEvents;
+use axelar_relayer_solana::includer::SolanaIncluder;
+use axelar_relayer_solana::ingestor::SolanaIngestor;
+use axelar_relayer_solana::mocks::MockUpdateEvents;
 use relayer_core::gmp_api::gmp_types::Event;
 use relayer_core::gmp_api::MockGmpApiTrait;
 use relayer_core::includer_worker::IncluderTrait;

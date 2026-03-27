@@ -3,10 +3,10 @@
 use std::sync::Arc;
 
 use anchor_lang::{InstructionData, ToAccountMetas};
-use axelar_solana_relayer::includer::SolanaIncluder;
-use axelar_solana_relayer::ingestor::SolanaIngestor;
-use axelar_solana_relayer::mocks::{MockRefundsModel, MockUpdateEvents};
-use axelar_solana_relayer::models::refunds::RefundsModel;
+use axelar_relayer_solana::includer::SolanaIncluder;
+use axelar_relayer_solana::ingestor::SolanaIngestor;
+use axelar_relayer_solana::mocks::{MockRefundsModel, MockUpdateEvents};
+use axelar_relayer_solana::models::refunds::RefundsModel;
 use relayer_core::gmp_api::gmp_types::{Event, MessageExecutionStatus, PostEventResult};
 use relayer_core::gmp_api::{GmpApiTrait, MockGmpApiTrait};
 use relayer_core::includer_worker::IncluderTrait;

@@ -1,6 +1,6 @@
 use dotenv::dotenv;
 
-use axelar_solana_relayer::{
+use axelar_relayer_solana::{
     config::SolanaConfig,
     models::{solana_subscriber_cursor::PostgresDB, solana_transaction::PgSolanaTransactionModel},
     poll_client::SolanaRpcClient,

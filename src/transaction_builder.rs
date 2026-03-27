@@ -117,10 +117,7 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
     /// If the destination account is owned by a BPF loader (i.e. it is a deployed
     /// program), the authority is the PDA `[ITS_TOKEN_AUTHORITY_SEED]` derived from
     /// the destination program. Otherwise it is the destination address itself.
-    async fn expected_destination_token_authority(
-        &self,
-        destination: &Pubkey,
-    ) -> Pubkey {
+    async fn expected_destination_token_authority(&self, destination: &Pubkey) -> Pubkey {
         let is_program = matches!(
             self.includer_client.get_account_owner(destination).await,
             Ok(Some(owner)) if owner == solana_sdk_ids::bpf_loader::ID
@@ -1811,7 +1808,7 @@ mod tests {
         mock_client
             .expect_get_account_owner()
             .withf(move |pubkey| *pubkey == token_mint_pda)
-            .returning(move |_| Box::pin(async move { Ok(spl_token_2022::ID) }));
+            .returning(move |_| Box::pin(async move { Ok(Some(spl_token_2022::ID)) }));
 
         let message = Message {
             cc_id: CrossChainId {
