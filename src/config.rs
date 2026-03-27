@@ -11,6 +11,19 @@ pub struct SolanaConfig {
     pub solana_poll_rpc: String,
     pub solana_stream_rpc: String,
     pub solana_keypair: String,
+
+    #[serde(default = "default_cu_price_lower_limit")]
+    pub cu_price_lower_limit: u64,
+    #[serde(default = "default_cu_price_upper_limit")]
+    pub cu_price_upper_limit: u64,
+}
+
+fn default_cu_price_lower_limit() -> u64 {
+    1_000
+}
+
+fn default_cu_price_upper_limit() -> u64 {
+    10_000
 }
 
 impl SolanaConfig {

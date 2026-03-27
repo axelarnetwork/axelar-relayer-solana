@@ -43,5 +43,7 @@ refunds_enabled:
 demo_tokens_rate:
 num_workers:
 jaeger_grpc_url:
+cu_price_lower_limit:
+cu_price_upper_limit:
 gas_estimates:
   native_gas_refund:

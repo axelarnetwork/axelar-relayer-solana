@@ -2,6 +2,7 @@ use async_trait::async_trait;
 
 use relayer_core::{error::ClientError, utils::ThreadSafe};
 use statrs::statistics::{Data, OrderStatistics};
+use tracing::warn;
 
 use crate::{error::FeesClientError, includer_client::IncluderClientTrait};
 
@@ -19,13 +20,22 @@ pub trait FeesClientTrait: ThreadSafe {
 pub struct FeesClient<IC: IncluderClientTrait> {
     includer_client: IC,
     last_n_blocks: usize,
+    cu_price_lower_limit: u64,
+    cu_price_upper_limit: u64,
 }
 
 impl<IC: IncluderClientTrait> FeesClient<IC> {
-    pub fn new(includer_client: IC, last_n_blocks: usize) -> Result<Self, ClientError> {
+    pub fn new(
+        includer_client: IC,
+        last_n_blocks: usize,
+        cu_price_lower_limit: u64,
+        cu_price_upper_limit: u64,
+    ) -> Result<Self, ClientError> {
         Ok(Self {
             includer_client,
             last_n_blocks,
+            cu_price_lower_limit,
+            cu_price_upper_limit,
         })
     }
 }
@@ -35,7 +45,7 @@ impl<IC: IncluderClientTrait> FeesClientTrait for FeesClient<IC> {
     async fn get_recent_prioritization_fees(&self, percentile: u64) -> u64 {
         self.get_prioritization_fee_percentile(percentile)
             .await
-            .unwrap_or(0)
+            .unwrap_or(self.cu_price_lower_limit)
     }
 
     async fn get_prioritization_fee_percentile(
@@ -54,9 +64,12 @@ impl<IC: IncluderClientTrait> FeesClientTrait for FeesClient<IC> {
             ));
         }
 
+        let mut recent_fees = recent_fees;
+        recent_fees.sort_by_key(|fee| fee.slot);
+        let len = recent_fees.len();
         let fees_to_consider: Vec<f64> = recent_fees
             .into_iter()
-            .take(self.last_n_blocks)
+            .skip(len.saturating_sub(self.last_n_blocks))
             .map(|fee| fee.prioritization_fee as f64)
             .collect();
 
@@ -70,7 +83,17 @@ impl<IC: IncluderClientTrait> FeesClientTrait for FeesClient<IC> {
 
         let percentile_value = data.percentile(percentile as usize).max(0.0);
 
-        Ok(percentile_value.ceil() as u64)
+        let cu_price = (percentile_value.ceil() as u64).max(self.cu_price_lower_limit);
+
+        if cu_price > self.cu_price_upper_limit {
+            warn!(
+                computed = cu_price,
+                cap = self.cu_price_upper_limit,
+                "CU price exceeded cap, clamping"
+            );
+        }
+
+        Ok(cu_price.min(self.cu_price_upper_limit))
     }
 }
 
@@ -92,13 +115,13 @@ mod tests {
     async fn test_get_prioritization_fee_percentile_50th() {
         let mut mock_client = MockIncluderClientTrait::new();
 
-        // Fees: [100, 200, 300, 400, 500] - 50th percentile should be 300
+        // Fees: [1000, 2000, 3000, 4000, 5000] - 50th percentile should be 3000
         let fees = vec![
-            create_fee(1, 100),
-            create_fee(2, 200),
-            create_fee(3, 300),
-            create_fee(4, 400),
-            create_fee(5, 500),
+            create_fee(1, 1000),
+            create_fee(2, 2000),
+            create_fee(3, 3000),
+            create_fee(4, 4000),
+            create_fee(5, 5000),
         ];
 
         mock_client
@@ -109,18 +132,22 @@ mod tests {
                 Box::pin(async move { Ok(fees_clone) })
             });
 
-        let fees_client = FeesClient::new(mock_client, 10).unwrap();
+        let fees_client = FeesClient::new(mock_client, 10, 1_000, 10_000).unwrap();
         let result = fees_client.get_prioritization_fee_percentile(50).await;
 
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), 300);
+        assert_eq!(result.unwrap(), 3000);
     }
 
     #[tokio::test]
     async fn test_get_prioritization_fee_percentile_0th() {
         let mut mock_client = MockIncluderClientTrait::new();
 
-        let fees = vec![create_fee(1, 100), create_fee(2, 200), create_fee(3, 300)];
+        let fees = vec![
+            create_fee(1, 1000),
+            create_fee(2, 2000),
+            create_fee(3, 3000),
+        ];
 
         mock_client
             .expect_get_recent_prioritization_fees()
@@ -130,19 +157,23 @@ mod tests {
                 Box::pin(async move { Ok(fees_clone) })
             });
 
-        let fees_client = FeesClient::new(mock_client, 10).unwrap();
+        let fees_client = FeesClient::new(mock_client, 10, 1_000, 10_000).unwrap();
         let result = fees_client.get_prioritization_fee_percentile(0).await;
 
         assert!(result.is_ok());
         // 0th percentile should be the minimum value
-        assert_eq!(result.unwrap(), 100);
+        assert_eq!(result.unwrap(), 1000);
     }
 
     #[tokio::test]
     async fn test_get_prioritization_fee_percentile_100th() {
         let mut mock_client = MockIncluderClientTrait::new();
 
-        let fees = vec![create_fee(1, 100), create_fee(2, 200), create_fee(3, 300)];
+        let fees = vec![
+            create_fee(1, 1000),
+            create_fee(2, 2000),
+            create_fee(3, 3000),
+        ];
 
         mock_client
             .expect_get_recent_prioritization_fees()
@@ -152,12 +183,12 @@ mod tests {
                 Box::pin(async move { Ok(fees_clone) })
             });
 
-        let fees_client = FeesClient::new(mock_client, 10).unwrap();
+        let fees_client = FeesClient::new(mock_client, 10, 1_000, 10_000).unwrap();
         let result = fees_client.get_prioritization_fee_percentile(100).await;
 
         assert!(result.is_ok());
         // 100th percentile should be the maximum value
-        assert_eq!(result.unwrap(), 300);
+        assert_eq!(result.unwrap(), 3000);
     }
 
     #[tokio::test]
@@ -169,7 +200,7 @@ mod tests {
             .times(1)
             .returning(|| Box::pin(async { Ok(vec![]) }));
 
-        let fees_client = FeesClient::new(mock_client, 10).unwrap();
+        let fees_client = FeesClient::new(mock_client, 10, 1_000, 10_000).unwrap();
         let result = fees_client.get_prioritization_fee_percentile(50).await;
 
         assert!(result.is_err());
@@ -192,7 +223,7 @@ mod tests {
                 Box::pin(async { Err(IncluderClientError::GenericError("RPC error".to_string())) })
             });
 
-        let fees_client = FeesClient::new(mock_client, 10).unwrap();
+        let fees_client = FeesClient::new(mock_client, 10, 1_000, 10_000).unwrap();
         let result = fees_client.get_prioritization_fee_percentile(50).await;
 
         assert!(result.is_err());
@@ -208,9 +239,6 @@ mod tests {
     async fn test_get_prioritization_fee_percentile_respects_last_n_blocks() {
         let mut mock_client = MockIncluderClientTrait::new();
 
-        // Return 10 fees, but last_n_blocks is 3
-        // Fees: [1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000]
-        // Only first 3 should be used: [1000, 2000, 3000]
         let fees: Vec<RpcPrioritizationFee> = (1..=10).map(|i| create_fee(i, i * 1000)).collect();
 
         mock_client
@@ -221,16 +249,16 @@ mod tests {
                 Box::pin(async move { Ok(fees_clone) })
             });
 
-        let fees_client = FeesClient::new(mock_client, 3).unwrap();
+        let fees_client = FeesClient::new(mock_client, 3, 1_000, 10_000).unwrap();
         let result = fees_client.get_prioritization_fee_percentile(50).await;
 
         assert!(result.is_ok());
-        // 50th percentile of [1000, 2000, 3000] is 2000
-        assert_eq!(result.unwrap(), 2000);
+        // 50th percentile of [8000, 9000, 10000] is 9000
+        assert_eq!(result.unwrap(), 9000);
     }
 
     #[tokio::test]
-    async fn test_get_recent_prioritization_fees_returns_zero_on_error() {
+    async fn test_get_recent_prioritization_fees_returns_fallback_on_error() {
         let mut mock_client = MockIncluderClientTrait::new();
 
         mock_client
@@ -240,15 +268,15 @@ mod tests {
                 Box::pin(async { Err(IncluderClientError::GenericError("RPC error".to_string())) })
             });
 
-        let fees_client = FeesClient::new(mock_client, 10).unwrap();
+        let fees_client = FeesClient::new(mock_client, 10, 1_000, 10_000).unwrap();
         let result = fees_client.get_recent_prioritization_fees(50).await;
 
-        // Should return 0 on error (unwrap_or(0))
-        assert_eq!(result, 0);
+        // Should return 1_000 on error
+        assert_eq!(result, 1_000);
     }
 
     #[tokio::test]
-    async fn test_get_recent_prioritization_fees_returns_zero_on_empty_fees() {
+    async fn test_get_recent_prioritization_fees_returns_fallback_on_empty_fees() {
         let mut mock_client = MockIncluderClientTrait::new();
 
         mock_client
@@ -256,18 +284,18 @@ mod tests {
             .times(1)
             .returning(|| Box::pin(async { Ok(vec![]) }));
 
-        let fees_client = FeesClient::new(mock_client, 10).unwrap();
+        let fees_client = FeesClient::new(mock_client, 10, 1_000, 10_000).unwrap();
         let result = fees_client.get_recent_prioritization_fees(50).await;
 
-        // Should return 0 when no fees found
-        assert_eq!(result, 0);
+        // Should return 1_000 when no fees found
+        assert_eq!(result, 1_000);
     }
 
     #[tokio::test]
-    async fn test_get_prioritization_fee_percentile_with_zero_fees() {
+    async fn test_get_prioritization_fee_percentile_with_zero_fees_returns_fallback() {
         let mut mock_client = MockIncluderClientTrait::new();
 
-        // All zero fees
+        // All zero fees — should return 1_000 instead of 0
         let fees = vec![create_fee(1, 0), create_fee(2, 0), create_fee(3, 0)];
 
         mock_client
@@ -278,18 +306,18 @@ mod tests {
                 Box::pin(async move { Ok(fees_clone) })
             });
 
-        let fees_client = FeesClient::new(mock_client, 10).unwrap();
+        let fees_client = FeesClient::new(mock_client, 10, 1_000, 10_000).unwrap();
         let result = fees_client.get_prioritization_fee_percentile(50).await;
 
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), 0);
+        assert_eq!(result.unwrap(), 1_000);
     }
 
     #[tokio::test]
-    async fn test_get_prioritization_fee_percentile_with_large_fees() {
+    async fn test_get_prioritization_fee_percentile_with_large_fees_capped() {
         let mut mock_client = MockIncluderClientTrait::new();
 
-        // Large fee values
+        // Large fee values — should be capped to 10_000
         let fees = vec![
             create_fee(1, 1_000_000_000),
             create_fee(2, 2_000_000_000),
@@ -304,23 +332,23 @@ mod tests {
                 Box::pin(async move { Ok(fees_clone) })
             });
 
-        let fees_client = FeesClient::new(mock_client, 10).unwrap();
+        let fees_client = FeesClient::new(mock_client, 10, 1_000, 10_000).unwrap();
         let result = fees_client.get_prioritization_fee_percentile(50).await;
 
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), 2_000_000_000);
+        assert_eq!(result.unwrap(), 10_000);
     }
 
     #[tokio::test]
     async fn test_get_prioritization_fee_percentile_75th() {
         let mut mock_client = MockIncluderClientTrait::new();
 
-        // Fees: [100, 200, 300, 400]
+        // Fees: [1000, 2000, 3000, 4000]
         let fees = vec![
-            create_fee(1, 100),
-            create_fee(2, 200),
-            create_fee(3, 300),
-            create_fee(4, 400),
+            create_fee(1, 1000),
+            create_fee(2, 2000),
+            create_fee(3, 3000),
+            create_fee(4, 4000),
         ];
 
         mock_client
@@ -331,11 +359,64 @@ mod tests {
                 Box::pin(async move { Ok(fees_clone) })
             });
 
-        let fees_client = FeesClient::new(mock_client, 10).unwrap();
+        let fees_client = FeesClient::new(mock_client, 10, 1_000, 10_000).unwrap();
         let result = fees_client.get_prioritization_fee_percentile(75).await;
 
         assert!(result.is_ok());
-        // 75th percentile of [100, 200, 300, 400] using statrs linear interpolation
-        assert_eq!(result.unwrap(), 359);
+        // 75th percentile of [1000, 2000, 3000, 4000] using statrs linear interpolation
+        assert_eq!(result.unwrap(), 3584);
+    }
+
+    #[tokio::test]
+    async fn test_get_prioritization_fee_percentile_caps_at_max() {
+        let mut mock_client = MockIncluderClientTrait::new();
+
+        // Fees above the cap — simulates a congestion spike
+        let fees = vec![
+            create_fee(1, 50_000),
+            create_fee(2, 100_000),
+            create_fee(3, 200_000),
+        ];
+
+        mock_client
+            .expect_get_recent_prioritization_fees()
+            .times(1)
+            .returning(move || {
+                let fees_clone = fees.clone();
+                Box::pin(async move { Ok(fees_clone) })
+            });
+
+        let fees_client = FeesClient::new(mock_client, 10, 1_000, 10_000).unwrap();
+        let result = fees_client.get_prioritization_fee_percentile(50).await;
+
+        assert!(result.is_ok());
+        // 50th percentile of [50000, 100000, 200000] = 100000, but capped to 10_000
+        assert_eq!(result.unwrap(), 10_000);
+    }
+
+    #[tokio::test]
+    async fn test_takes_most_recent_blocks_not_oldest() {
+        let mut mock_client = MockIncluderClientTrait::new();
+
+        // Simulate RPC returning 10 slots ascending by slot.
+        // Old slots (1-7) have low fees, recent slots (8-10) have high fees.
+        let mut fees: Vec<RpcPrioritizationFee> = (1..=7).map(|i| create_fee(i, 100)).collect();
+        fees.extend((8..=10).map(|i| create_fee(i, 5000)));
+
+        mock_client
+            .expect_get_recent_prioritization_fees()
+            .times(1)
+            .returning(move || {
+                let fees_clone = fees.clone();
+                Box::pin(async move { Ok(fees_clone) })
+            });
+
+        // last_n_blocks = 3 should take slots 8, 9, 10 (the most recent)
+        let fees_client = FeesClient::new(mock_client, 3, 1_000, 10_000).unwrap();
+        let result = fees_client.get_prioritization_fee_percentile(50).await;
+
+        assert!(result.is_ok());
+        // 50th percentile of [5000, 5000, 5000] = 5000
+        assert_eq!(result.unwrap(), 5000);
     }
 }
