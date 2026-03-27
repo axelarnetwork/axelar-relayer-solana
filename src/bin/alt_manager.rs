@@ -1,5 +1,6 @@
 use dotenv::dotenv;
-use futures::TryFutureExt;
+use futures::stream::FuturesUnordered;
+use futures::StreamExt;
 use relayer_core::config::config_from_yaml;
 use relayer_core::logging::setup_logging;
 use relayer_core::redis::connection_manager;
@@ -11,17 +12,21 @@ use solana::utils::keypair_from_base58_string;
 use solana_address_lookup_table_interface::instruction::{
     close_lookup_table, deactivate_lookup_table,
 };
+use solana_address_lookup_table_interface::program::ID as ALT_PROGRAM_ID;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Keypair;
 use solana_sdk::signer::Signer as _;
 use solana_sdk::transaction::Transaction;
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Semaphore;
 use tokio::time;
 use tracing::{debug, error, info, warn};
 
 const MAX_RETRY_ATTEMPTS: u32 = 3;
 const ALT_MANAGEMENT_INTERVAL_SECS: u64 = 30;
 const ALT_LIFETIME_SECONDS: i64 = 600; // 10 minutes
+const MAX_CONCURRENT_ALT_OPS: usize = 10;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -87,9 +92,24 @@ async fn manage_alts(
         deactivated_alts.len()
     );
 
-    process_active_alts(active_alts, includer_client, keypair, redis_conn).await?;
+    let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_ALT_OPS));
 
-    process_deactivated_alts(deactivated_alts, includer_client, keypair, redis_conn).await?;
+    tokio::try_join!(
+        process_active_alts(
+            active_alts,
+            includer_client,
+            keypair,
+            redis_conn,
+            &semaphore
+        ),
+        process_deactivated_alts(
+            deactivated_alts,
+            includer_client,
+            keypair,
+            redis_conn,
+            &semaphore
+        ),
+    )?;
 
     Ok(())
 }
@@ -99,43 +119,74 @@ async fn process_active_alts(
     includer_client: &IncluderClient,
     keypair: &solana_sdk::signer::keypair::Keypair,
     redis_conn: &RedisConnection,
+    semaphore: &Arc<Semaphore>,
 ) -> anyhow::Result<()> {
     let current_timestamp = chrono::Utc::now().timestamp();
 
-    for (message_id, alt_pubkey, authority_keypair_str, created_at, retry_count, _) in active_alts {
-        let authority_keypair = match keypair_from_base58_string(&authority_keypair_str) {
-            Ok(keypair) => keypair,
-            Err(e) => {
-                error!(
-                    "Failed to parse authority keypair for message id: {}: {}",
-                    message_id, e
-                );
-                continue;
-            }
-        };
+    let mut futures = active_alts
+        .into_iter()
+        .filter_map(
+            |(message_id, alt_pubkey, authority_keypair_str, created_at, retry_count, _)| {
+                let seconds_since_creation = current_timestamp - created_at;
+                if seconds_since_creation < ALT_LIFETIME_SECONDS {
+                    return None;
+                }
 
-        let seconds_since_creation = current_timestamp - created_at;
-        if seconds_since_creation >= ALT_LIFETIME_SECONDS {
-            if let Err(e) = deactivate_alt(alt_pubkey, includer_client, keypair, &authority_keypair)
-                .and_then(|_| {
-                    redis_conn
-                        .set_alt_inactive(message_id.to_string())
-                        .map_err(|e| {
-                            anyhow::anyhow!("Failed to set ALT as inactive in Redis: {}", e)
-                        })
+                let authority_keypair = match keypair_from_base58_string(&authority_keypair_str) {
+                    Ok(keypair) => keypair,
+                    Err(e) => {
+                        error!(
+                            "Failed to parse authority keypair for message id: {}: {}",
+                            message_id, e
+                        );
+                        return None;
+                    }
+                };
+
+                let semaphore = Arc::clone(semaphore);
+                Some(async move {
+                    let _permit = match semaphore.acquire().await {
+                        Ok(permit) => permit,
+                        Err(e) => {
+                            error!("Failed to acquire semaphore for ALT {}: {}", alt_pubkey, e);
+                            return;
+                        }
+                    };
+                    let result = deactivate_alt(
+                        alt_pubkey,
+                        includer_client,
+                        keypair,
+                        &authority_keypair,
+                        &message_id,
+                        redis_conn,
+                    )
+                    .await;
+
+                    if let Err(e) = result {
+                        if let Err(e) = handle_alt_processing_error(
+                            message_id,
+                            alt_pubkey,
+                            retry_count,
+                            e,
+                            redis_conn,
+                        )
+                        .await
+                        {
+                            error!("Failed to handle ALT processing error: {}", e);
+                        }
+                    } else {
+                        debug!(
+                            "ALT {} has been deactivated and marked as inactive in Redis",
+                            alt_pubkey
+                        );
+                    }
                 })
-                .await
-            {
-                handle_alt_processing_error(message_id, alt_pubkey, retry_count, e, redis_conn)
-                    .await?;
-            } else {
-                debug!(
-                    "ALT {} has been deactivated and marked as inactive in Redis",
-                    alt_pubkey
-                );
-            }
-        }
-    }
+            },
+        )
+        .collect::<FuturesUnordered<_>>();
+
+    while futures.next().await.is_some() {}
+
     Ok(())
 }
 
@@ -144,37 +195,76 @@ async fn process_deactivated_alts(
     includer_client: &IncluderClient,
     keypair: &solana_sdk::signer::keypair::Keypair,
     redis_conn: &RedisConnection,
+    semaphore: &Arc<Semaphore>,
 ) -> anyhow::Result<()> {
     let current_timestamp = chrono::Utc::now().timestamp();
 
-    for (message_id, alt_pubkey, authority_keypair_str, deactivated_at, retry_count, _) in
-        deactivated_alts
-    {
-        let authority_keypair = keypair_from_base58_string(&authority_keypair_str)?;
-        let seconds_since_creation = current_timestamp - deactivated_at;
-        if seconds_since_creation >= ALT_LIFETIME_SECONDS {
-            debug!(
-                "ALT {} is old enough to close (inactive for {} seconds)",
-                alt_pubkey, seconds_since_creation
-            );
-            if let Err(e) = close_alt(
-                &message_id,
-                alt_pubkey,
-                includer_client,
-                keypair,
-                &authority_keypair,
-                redis_conn,
-                0,
-            )
-            .await
-            {
-                handle_alt_processing_error(message_id, alt_pubkey, retry_count, e, redis_conn)
-                    .await?;
-            } else {
-                debug!("ALT {} has been closed successfully.", alt_pubkey);
-            }
-        }
-    }
+    let mut futures = deactivated_alts
+        .into_iter()
+        .filter_map(
+            |(message_id, alt_pubkey, authority_keypair_str, deactivated_at, retry_count, _)| {
+                let seconds_since_creation = current_timestamp - deactivated_at;
+                if seconds_since_creation < ALT_LIFETIME_SECONDS {
+                    return None;
+                }
+
+                let authority_keypair = match keypair_from_base58_string(&authority_keypair_str) {
+                    Ok(keypair) => keypair,
+                    Err(e) => {
+                        error!(
+                            "Failed to parse authority keypair for ALT {}: {}",
+                            alt_pubkey, e
+                        );
+                        return None;
+                    }
+                };
+
+                let semaphore = Arc::clone(semaphore);
+                Some(async move {
+                    let _permit = match semaphore.acquire().await {
+                        Ok(permit) => permit,
+                        Err(e) => {
+                            error!("Failed to acquire semaphore for ALT {}: {}", alt_pubkey, e);
+                            return;
+                        }
+                    };
+                    debug!(
+                        "ALT {} is old enough to close (inactive for {} seconds)",
+                        alt_pubkey, seconds_since_creation
+                    );
+                    let result = close_alt(
+                        &message_id,
+                        alt_pubkey,
+                        includer_client,
+                        keypair,
+                        &authority_keypair,
+                        redis_conn,
+                        0,
+                    )
+                    .await;
+
+                    if let Err(e) = result {
+                        if let Err(e) = handle_alt_processing_error(
+                            message_id,
+                            alt_pubkey,
+                            retry_count,
+                            e,
+                            redis_conn,
+                        )
+                        .await
+                        {
+                            error!("Failed to handle ALT processing error: {}", e);
+                        }
+                    } else {
+                        debug!("ALT {} has been closed successfully.", alt_pubkey);
+                    }
+                })
+            },
+        )
+        .collect::<FuturesUnordered<_>>();
+
+    while futures.next().await.is_some() {}
+
     Ok(())
 }
 
@@ -219,12 +309,48 @@ async fn handle_alt_processing_error(
     Ok(())
 }
 
+/// Returns `Ok(true)` if the ALT exists on-chain and is owned by the ALT program,
+/// `Ok(false)` if the account is gone or owned by another program (stale Redis entry),
+/// and `Err` if the RPC call itself failed.
+async fn ensure_alt_exists(
+    alt_pubkey: Pubkey,
+    message_id: &str,
+    includer_client: &IncluderClient,
+    redis_conn: &RedisConnection,
+) -> anyhow::Result<bool> {
+    match includer_client.get_account_owner(&alt_pubkey).await? {
+        Some(owner) if owner == ALT_PROGRAM_ID => Ok(true),
+        Some(owner) => {
+            warn!(
+                "ALT {} ({}) is owned by {}, not ALT program {}, removing from Redis",
+                alt_pubkey, message_id, owner, ALT_PROGRAM_ID
+            );
+            redis_conn.remove_alt_key(message_id.to_string()).await?;
+            Ok(false)
+        }
+        None => {
+            warn!(
+                "ALT {} ({}) no longer exists on-chain, removing from Redis",
+                alt_pubkey, message_id
+            );
+            redis_conn.remove_alt_key(message_id.to_string()).await?;
+            Ok(false)
+        }
+    }
+}
+
 async fn deactivate_alt(
     alt_pubkey: Pubkey,
     includer_client: &IncluderClient,
     keypair: &solana_sdk::signer::keypair::Keypair,
     authority_keypair: &Keypair,
+    message_id: &str,
+    redis_conn: &RedisConnection,
 ) -> anyhow::Result<()> {
+    if !ensure_alt_exists(alt_pubkey, message_id, includer_client, redis_conn).await? {
+        return Ok(());
+    }
+
     debug!("Deactivating ALT: {}", alt_pubkey);
 
     let deactivate_ix = deactivate_lookup_table(alt_pubkey, authority_keypair.pubkey());
@@ -247,6 +373,10 @@ async fn deactivate_alt(
     {
         Ok((signature, _)) => {
             info!("Successfully deactivated ALT {}: {}", alt_pubkey, signature);
+            redis_conn
+                .set_alt_inactive(message_id.to_string())
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to set ALT as inactive in Redis: {}", e))?;
             Ok(())
         }
         Err(e) => Err(anyhow::anyhow!(
@@ -266,6 +396,10 @@ async fn close_alt(
     redis_conn: &RedisConnection,
     close_attempts: u32,
 ) -> anyhow::Result<()> {
+    if !ensure_alt_exists(alt_pubkey, message_id, includer_client, redis_conn).await? {
+        return Ok(());
+    }
+
     debug!("Closing ALT: {}", alt_pubkey);
 
     let recipient_pubkey = authority_keypair.pubkey(); // Close to the authority wallet
