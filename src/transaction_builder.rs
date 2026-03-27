@@ -1004,6 +1004,11 @@ mod tests {
                 Box::pin(async move { Ok(data) })
             });
 
+        // Default: unknown accounts return None (not a program)
+        mock_client
+            .expect_get_account_owner()
+            .returning(move |_| Box::pin(async move { Ok(None) }));
+
         // Mock get_account_owner for the token mint (return Token-2022 for native ITS tokens)
         mock_client
             .expect_get_account_owner()
@@ -1155,6 +1160,10 @@ mod tests {
             .withf(move |pubkey| *pubkey == token_mint_pda)
             .returning(move |_| Box::pin(async move { Ok(Some(spl_token_2022::ID)) }));
 
+        mock_client
+            .expect_get_account_owner()
+            .returning(move |_| Box::pin(async move { Ok(None) }));
+
         let message = Message {
             cc_id: CrossChainId {
                 chain: "ethereum".to_string(),
@@ -1274,6 +1283,10 @@ mod tests {
             .withf(move |pubkey| *pubkey == token_mint_pda)
             .returning(move |_| Box::pin(async move { Ok(Some(spl_token_2022::ID)) }));
 
+        mock_client
+            .expect_get_account_owner()
+            .returning(move |_| Box::pin(async move { Ok(None) }));
+
         let message = Message {
             cc_id: CrossChainId {
                 chain: "ethereum".to_string(),
@@ -1376,6 +1389,10 @@ mod tests {
             .expect_get_account_owner()
             .withf(move |pubkey| *pubkey == token_mint_pda)
             .returning(move |_| Box::pin(async move { Ok(Some(spl_token_2022::ID)) }));
+
+        mock_client
+            .expect_get_account_owner()
+            .returning(move |_| Box::pin(async move { Ok(None) }));
 
         let message = Message {
             cc_id: CrossChainId {
@@ -1566,6 +1583,11 @@ mod tests {
                 let data = mock_token_manager_data.clone();
                 Box::pin(async move { Ok(data) })
             });
+
+        // Default: unknown accounts return None (not a program)
+        mock_client
+            .expect_get_account_owner()
+            .returning(move |_| Box::pin(async move { Ok(None) }));
 
         // IMPORTANT: Return regular SPL Token program as the owner (not Token-2022)
         // This simulates a linked canonical token that uses the regular SPL Token program
@@ -1809,6 +1831,11 @@ mod tests {
             .expect_get_account_owner()
             .withf(move |pubkey| *pubkey == token_mint_pda)
             .returning(move |_| Box::pin(async move { Ok(Some(spl_token_2022::ID)) }));
+
+        // Default: unknown accounts return None (not a program)
+        mock_client
+            .expect_get_account_owner()
+            .returning(move |_| Box::pin(async move { Ok(None) }));
 
         let message = Message {
             cc_id: CrossChainId {
