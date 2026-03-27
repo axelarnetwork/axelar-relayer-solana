@@ -64,6 +64,8 @@ impl<IC: IncluderClientTrait> FeesClientTrait for FeesClient<IC> {
             ));
         }
 
+        let mut recent_fees = recent_fees;
+        recent_fees.sort_by_key(|fee| fee.slot);
         let len = recent_fees.len();
         let fees_to_consider: Vec<f64> = recent_fees
             .into_iter()
