@@ -112,12 +112,34 @@ impl IncluderClientTrait for IncluderClient {
         &self,
         pubkey: &Pubkey,
     ) -> Result<Option<Pubkey>, IncluderClientError> {
-        let response = self
-            .inner()
-            .get_account_with_commitment(pubkey, self.commitment)
-            .await
-            .map_err(|e| IncluderClientError::GenericError(e.to_string()))?;
-        Ok(response.value.map(|account| account.owner))
+        let mut last_error = None;
+        for attempt in 0..self.max_retries {
+            match self
+                .inner()
+                .get_account_with_commitment(pubkey, self.commitment)
+                .await
+            {
+                Ok(response) => return Ok(response.value.map(|account| account.owner)),
+                Err(e) => {
+                    warn!(
+                        "Failed to get account owner for {} (attempt {}/{}): {}",
+                        pubkey,
+                        attempt + 1,
+                        self.max_retries,
+                        e
+                    );
+                    last_error = Some(e);
+                    if attempt < self.max_retries - 1 {
+                        sleep(Duration::from_millis(500)).await;
+                    }
+                }
+            }
+        }
+
+        Err(last_error.map_or_else(
+            || IncluderClientError::GenericError("Failed to get account owner".to_string()),
+            |e| IncluderClientError::GenericError(e.to_string()),
+        ))
     }
 
     async fn get_slot(&self) -> Result<u64, IncluderClientError> {
