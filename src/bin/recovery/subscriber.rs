@@ -1,14 +1,14 @@
 use dotenv::dotenv;
 
-use relayer_core::config::config_from_yaml;
-use relayer_core::logging::setup_logging;
-use relayer_core::queue::Queue;
-use solana::{
+use axelar_relayer_solana::{
     config::SolanaConfig,
     models::{solana_subscriber_cursor::PostgresDB, solana_transaction::PgSolanaTransactionModel},
     poll_client::SolanaRpcClient,
     subscriber_poller::SolanaPoller,
 };
+use relayer_core::config::config_from_yaml;
+use relayer_core::logging::setup_logging;
+use relayer_core::queue::Queue;
 use solana_sdk::signature::Signature;
 use sqlx::PgPool;
 use std::{str::FromStr, sync::Arc};

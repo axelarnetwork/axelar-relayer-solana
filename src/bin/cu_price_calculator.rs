@@ -1,11 +1,11 @@
+use axelar_relayer_solana::fees_client::{FeesClient, FeesClientTrait as _};
+use axelar_relayer_solana::includer_client::IncluderClient;
+use axelar_relayer_solana::redis::RedisConnection;
+use axelar_relayer_solana::{config::SolanaConfig, redis::RedisConnectionTrait as _};
 use dotenv::dotenv;
 use relayer_core::config::config_from_yaml;
 use relayer_core::logging::setup_logging;
 use relayer_core::redis::connection_manager;
-use solana::fees_client::{FeesClient, FeesClientTrait as _};
-use solana::includer_client::IncluderClient;
-use solana::redis::RedisConnection;
-use solana::{config::SolanaConfig, redis::RedisConnectionTrait as _};
 use std::time::Duration;
 use tokio::time;
 use tracing::{debug, error, info};

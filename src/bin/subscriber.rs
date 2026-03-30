@@ -1,10 +1,6 @@
 use dotenv::dotenv;
 
-use relayer_core::config::config_from_yaml;
-use relayer_core::logging::setup_logging;
-use relayer_core::redis::connection_manager;
-use relayer_core::{queue::Queue, utils::setup_heartbeat};
-use solana::{
+use axelar_relayer_solana::{
     config::SolanaConfig,
     models::{solana_subscriber_cursor::PostgresDB, solana_transaction::PgSolanaTransactionModel},
     poll_client::SolanaRpcClient,
@@ -12,6 +8,10 @@ use solana::{
     subscriber_listener::SolanaListener,
     subscriber_poller::SolanaPoller,
 };
+use relayer_core::config::config_from_yaml;
+use relayer_core::logging::setup_logging;
+use relayer_core::redis::connection_manager;
+use relayer_core::{queue::Queue, utils::setup_heartbeat};
 use solana_axelar_gas_service::ID as GAS_SERVICE_ID;
 use solana_axelar_gateway::ID as GATEWAY_ID;
 use solana_axelar_its::ID as ITS_ID;

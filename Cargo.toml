@@ -2,41 +2,84 @@
 members = [".", "parsers"]
 resolver = "2"
 
-# Shared dependencies - use { workspace = true } in member crates
 [workspace.dependencies]
-# Core
-anchor-lang = "1.0.0-rc.1"
+# General
+alloy-sol-types = "0.7"
 anyhow = "1.0.93"
 async-trait = "0.1.88"
 base64 = "0.22.1"
+bincode = "1"
+borsh = "1.6.0"
 bs58 = "0.5"
+bytemuck = "1.24.0"
 chrono = { version = "0.4.40", features = ["serde"] }
+dotenv = "0.15.0"
+ed25519-zebra = "=4.0.3"
+error-stack = "0.5.0"
+futures = "0.3.31"
+futures-util = "0.3.31"
 hex = "0.4.3"
+httpmock = "0.7.0"
 mockall = "0.13.1"
 redis = { version = "0.32.4", features = ["tokio-rustls-comp"] }
+regex = "1.10"
+reqwest = "0.12.24"
 serde = { version = "1.0.215", features = ["derive"] }
 serde_json = "1.0.133"
+sqlx = { version = "0.8.1", features = ["runtime-tokio-rustls", "postgres", "chrono"] }
+statrs = "0.16"
 thiserror = "2.0.3"
 tokio = { version = "1.41.1", features = ["full", "test-util"] }
+tokio-util = "0.7.12"
 tracing = "0.1.40"
 uuid = { version = "1.0", features = ["v4"] }
 
-# Solana Crates
+# Anchor
+anchor-lang = "1.0.0-rc.5"
+anchor-spl = "1.0.0-rc.5"
+
+# Solana
+mpl-token-metadata = "^5.1.2-alpha.2"
+solana-address-lookup-table-interface = "~3.0"
+solana-client = "~3.1"
+solana-commitment-config = "~3.1"
+solana-compute-budget-interface = "~3.0"
+solana-program = "~3.0"
+solana-pubsub-client = "~3.1"
+solana-rpc-client = "~3.1"
+solana-rpc-client-api = "~3.1"
 solana-sdk = "~3.0"
+solana-sdk-ids = "~3.1"
 solana-transaction-status = "~3.1"
 solana-transaction-status-client-types = "~3.1"
+solana-loader-v3-interface = "6.1.0"
+solana-rpc = "~3.1"
+solana-system-interface = { version = "3.0.0", features = ["bincode"] }
+solana-test-validator = "~3.1"
 
-# Solana Axelar Programs
-solana-axelar-gas-service = { version = "0.1.11", default-features = false, features = ["no-entrypoint"] }
-solana-axelar-gateway = { version = "0.1.11", default-features = false, features = ["no-entrypoint"] }
-solana-axelar-its = { version = "0.1.11", default-features = false, features = ["no-entrypoint"] }
-solana-axelar-memo = { version = "0.1.11", default-features = false, features = ["no-entrypoint"] }
+# Solana Axelar
+governance-gmp = "0.1.4"
+solana-axelar-gas-service = { version = "1.0.0", default-features = false, features = ["no-entrypoint"] }
+solana-axelar-gateway = { version = "1.0.0", default-features = false, features = ["no-entrypoint"] }
+solana-axelar-governance = { version = "1.0.0", features = ["no-entrypoint"] }
+solana-axelar-its = { version = "1.0.0", default-features = false, features = ["no-entrypoint"] }
+solana-axelar-memo = { version = "1.0.0", default-features = false, features = ["no-entrypoint"] }
+solana-axelar-operators = { version = "1.0.0", features = ["no-entrypoint"] }
+solana-axelar-std = "1.0.0"
 
-# Relayer Core
+# Relayer
 relayer-core = { git = "https://github.com/commonprefix/axelar-relayer-core", tag = "1.0.1", features = ["mocks"] }
 
+# Dev
+lapin = "2.5"
+libsecp256k1 = "0.6"
+rand = "0.8"
+testcontainers = "0.24.0"
+testcontainers-modules = { version = "0.12.1", features = ["postgres"] }
+tracing-test = "0.2.5"
+
 [package]
-name = "solana"
+name = "axelar-relayer-solana"
 version = "0.1.0"
 edition = "2021"
 
@@ -107,93 +150,84 @@ mainnet = [
 default = ["test-mocks", "devnet-amplifier"]
 
 [dependencies]
-alloy-sol-types = "0.7"
+# General
+alloy-sol-types.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 base64.workspace = true
-bincode = "1"
+bincode.workspace = true
+borsh.workspace = true
 bs58.workspace = true
-bytemuck = "1.24.0"
+bytemuck.workspace = true
 chrono.workspace = true
-dotenv = "0.15.0"
-ed25519-zebra = "=4.0.3"
-error-stack = "0.5.0"
-futures = "0.3.31"
-futures-util = "0.3.31"
+dotenv.workspace = true
+ed25519-zebra.workspace = true
+error-stack.workspace = true
+futures.workspace = true
+futures-util.workspace = true
 hex.workspace = true
-httpmock = "0.7.0"
+httpmock.workspace = true
 mockall.workspace = true
 redis.workspace = true
-regex = "1.10"
-reqwest = "0.12.24"
+regex.workspace = true
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-sqlx = { version = "0.8.1", features = [
-    "runtime-tokio-rustls",
-    "postgres",
-    "chrono",
-] }
-statrs = "0.16"
+sqlx.workspace = true
+statrs.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
-tokio-util = "0.7.12"
+tokio-util.workspace = true
 tracing.workspace = true
 
-# Solana Crates
-
+# Anchor
 anchor-lang.workspace = true
-anchor-spl = "1.0.0-rc.1"
-borsh = { version = "1.6.0" }
-mpl-token-metadata = "^5.1.2-alpha.2"
-solana-address-lookup-table-interface = "~3.0"
-solana-client = "~3.1"
-solana-commitment-config = "~3.1"
-solana-compute-budget-interface = "~3.0"
-solana-program = "~3.0"
-solana-pubsub-client = "~3.1"
-solana-rpc-client = "~3.1"
-solana-rpc-client-api = "~3.1"
+anchor-spl.workspace = true
+
+# Solana
+mpl-token-metadata.workspace = true
+solana-address-lookup-table-interface.workspace = true
+solana-client.workspace = true
+solana-commitment-config.workspace = true
+solana-compute-budget-interface.workspace = true
+solana-program.workspace = true
+solana-pubsub-client.workspace = true
+solana-rpc-client.workspace = true
+solana-rpc-client-api.workspace = true
 solana-sdk.workspace = true
-solana-sdk-ids = "~3.0"
+solana-sdk-ids.workspace = true
 solana-transaction-status.workspace = true
 solana-transaction-status-client-types.workspace = true
 
-# Relayer Crates
-
+# Relayer
 relayer-core.workspace = true
 solana-transaction-parser = { path = "parsers", features = ["mocks"] }
 
-# Solana Axelar Crates
-
-governance-gmp = { version = "0.1.4" }
-solana-axelar-std = { version = "0.1.6" }
-
-# Solana Axelar Programs
-
+# Solana Axelar
+governance-gmp.workspace = true
 solana-axelar-gas-service.workspace = true
 solana-axelar-gateway.workspace = true
-solana-axelar-governance = { version = "0.1.11", features = [
-    "no-entrypoint",
-] }
+solana-axelar-governance.workspace = true
 solana-axelar-its.workspace = true
 solana-axelar-memo.workspace = true
-solana-axelar-operators = { version = "0.1.11", features = [
-    "no-entrypoint",
-] }
+solana-axelar-operators.workspace = true
+solana-axelar-std.workspace = true
 
 [dev-dependencies]
-lapin = "2.5"
-libsecp256k1 = "0.6"
-mockall = "0.13.1"
-rand = "0.8"
-solana-loader-v3-interface = "6.1.0"
-solana-rpc = "~3.1"
-solana-sdk-ids = "~3.0"
-solana-system-interface = { version = "3.0.0", features = ["bincode"] }
-solana-test-validator = "~3.1"
-testcontainers = "0.24.0"
-testcontainers-modules = { version = "0.12.1", features = ["postgres"] }
-tracing-test = "0.2.5"
+lapin.workspace = true
+libsecp256k1.workspace = true
+mockall.workspace = true
+rand.workspace = true
+solana-loader-v3-interface.workspace = true
+solana-rpc.workspace = true
+solana-system-interface.workspace = true
+solana-test-validator.workspace = true
+testcontainers.workspace = true
+testcontainers-modules.workspace = true
+tracing-test.workspace = true
+
+[patch.crates-io]
+solana-gossip = { git = "https://github.com/Deiadara/solana-gossip", branch = "master" }
 
 [lints.clippy]
 uninlined_format_args = "allow"

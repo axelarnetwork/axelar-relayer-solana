@@ -112,6 +112,36 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
         }
     }
 
+    /// Returns the expected `destination_token_authority` for a given destination.
+    ///
+    /// If the destination account is owned by a BPF loader (i.e. it is a deployed
+    /// program), the authority is the PDA `[ITS_TOKEN_AUTHORITY_SEED]` derived from
+    /// the destination program. Otherwise it is the destination address itself.
+    async fn expected_destination_token_authority(
+        &self,
+        destination: &Pubkey,
+    ) -> Result<Pubkey, TransactionBuilderError> {
+        let owner = self
+            .includer_client
+            .get_account_owner(destination)
+            .await
+            .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+
+        let is_program = matches!(
+            owner,
+            Some(o) if o == solana_sdk_ids::bpf_loader::ID
+                || o == solana_sdk_ids::bpf_loader_deprecated::ID
+                || o == solana_sdk_ids::bpf_loader_upgradeable::ID
+                || o == solana_sdk_ids::loader_v4::ID
+        );
+
+        if is_program {
+            Ok(solana_axelar_its::instructions::destination_token_authority_pda(destination))
+        } else {
+            Ok(*destination)
+        }
+    }
+
     /// Determines the token program (SPL Token or Token-2022) for a given mint address
     /// by checking the account owner on-chain.
     async fn get_token_program_for_mint(
@@ -428,10 +458,17 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
                         Pubkey::try_from(transfer.destination_address.as_slice()).map_err(|e| {
                             TransactionBuilderError::PayloadDecodeError(e.to_string())
                         })?;
-                    let (destination_ata, _) =
-                        get_ata_with_program(&destination_address, &token_mint, &token_program);
+                    let destination_token_authority = self
+                        .expected_destination_token_authority(&destination_address)
+                        .await?;
+                    let (destination_ata, _) = get_ata_with_program(
+                        &destination_token_authority,
+                        &token_mint,
+                        &token_program,
+                    );
                     accounts.extend(execute_interchain_transfer_extra_accounts(
                         destination_address,
+                        destination_token_authority,
                         destination_ata,
                         Some(transfer.data.is_some()),
                     ));
@@ -568,7 +605,7 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
         let (operator_proposal_pda, _) = get_operator_proposal_pda(&proposal_hash)
             .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
 
-        let accounts = solana_axelar_governance::accounts::ProcessGmp {
+        let accounts = solana_axelar_governance::accounts::Execute {
             executable,
             payer: self.keypair.pubkey(),
             governance_config,
@@ -580,7 +617,7 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
         }
         .to_account_metas(None);
 
-        let data = solana_axelar_governance::instruction::ProcessGmp {
+        let data = solana_axelar_governance::instruction::Execute {
             message: message.clone(),
             payload: payload.to_vec(),
         }
@@ -982,6 +1019,11 @@ mod tests {
             .withf(move |pubkey| *pubkey == token_mint_pda)
             .returning(move |_| Box::pin(async move { Ok(Some(spl_token_2022::ID)) }));
 
+        // Default: unknown accounts return None (not a program)
+        mock_client
+            .expect_get_account_owner()
+            .returning(move |_| Box::pin(async move { Ok(None) }));
+
         let message = Message {
             cc_id: CrossChainId {
                 chain: "ethereum".to_string(),
@@ -1127,6 +1169,10 @@ mod tests {
             .withf(move |pubkey| *pubkey == token_mint_pda)
             .returning(move |_| Box::pin(async move { Ok(Some(spl_token_2022::ID)) }));
 
+        mock_client
+            .expect_get_account_owner()
+            .returning(move |_| Box::pin(async move { Ok(None) }));
+
         let message = Message {
             cc_id: CrossChainId {
                 chain: "ethereum".to_string(),
@@ -1246,6 +1292,10 @@ mod tests {
             .withf(move |pubkey| *pubkey == token_mint_pda)
             .returning(move |_| Box::pin(async move { Ok(Some(spl_token_2022::ID)) }));
 
+        mock_client
+            .expect_get_account_owner()
+            .returning(move |_| Box::pin(async move { Ok(None) }));
+
         let message = Message {
             cc_id: CrossChainId {
                 chain: "ethereum".to_string(),
@@ -1348,6 +1398,10 @@ mod tests {
             .expect_get_account_owner()
             .withf(move |pubkey| *pubkey == token_mint_pda)
             .returning(move |_| Box::pin(async move { Ok(Some(spl_token_2022::ID)) }));
+
+        mock_client
+            .expect_get_account_owner()
+            .returning(move |_| Box::pin(async move { Ok(None) }));
 
         let message = Message {
             cc_id: CrossChainId {
@@ -1545,6 +1599,11 @@ mod tests {
             .expect_get_account_owner()
             .withf(move |pubkey| *pubkey == linked_token_mint)
             .returning(move |_| Box::pin(async move { Ok(Some(spl_token::ID)) }));
+
+        // Default: unknown accounts return None (not a program)
+        mock_client
+            .expect_get_account_owner()
+            .returning(move |_| Box::pin(async move { Ok(None) }));
 
         let message = Message {
             cc_id: CrossChainId {
@@ -1780,7 +1839,12 @@ mod tests {
         mock_client
             .expect_get_account_owner()
             .withf(move |pubkey| *pubkey == token_mint_pda)
-            .returning(move |_| Box::pin(async move { Ok(spl_token_2022::ID) }));
+            .returning(move |_| Box::pin(async move { Ok(Some(spl_token_2022::ID)) }));
+
+        // Default: unknown accounts return None (not a program)
+        mock_client
+            .expect_get_account_owner()
+            .returning(move |_| Box::pin(async move { Ok(None) }));
 
         let message = Message {
             cc_id: CrossChainId {
@@ -1919,5 +1983,140 @@ mod tests {
 
         // Also verify the instruction targets the destination program, not the relayer
         assert_eq!(instruction.program_id, destination_program);
+    }
+
+    #[tokio::test]
+    async fn test_expected_destination_token_authority_returns_pda_for_program() {
+        let keypair = Arc::new(Keypair::new());
+        let mock_gas = MockGasCalculatorTrait::new();
+        let mut mock_client = MockIncluderClientTrait::new();
+        let mock_redis = MockRedisConnectionTrait::new();
+
+        let destination = Pubkey::new_unique();
+
+        mock_client
+            .expect_get_account_owner()
+            .withf(move |pubkey| *pubkey == destination)
+            .returning(move |_| {
+                Box::pin(async move { Ok(Some(solana_sdk_ids::bpf_loader_upgradeable::ID)) })
+            });
+
+        let builder = TransactionBuilder::new(
+            Arc::clone(&keypair),
+            mock_gas,
+            Arc::new(mock_client),
+            mock_redis,
+        );
+
+        let result = builder
+            .expected_destination_token_authority(&destination)
+            .await
+            .expect("should succeed");
+
+        let expected_pda =
+            solana_axelar_its::instructions::destination_token_authority_pda(&destination);
+        assert_eq!(result, expected_pda);
+    }
+
+    #[tokio::test]
+    async fn test_expected_destination_token_authority_returns_destination_for_wallet() {
+        let keypair = Arc::new(Keypair::new());
+        let mock_gas = MockGasCalculatorTrait::new();
+        let mut mock_client = MockIncluderClientTrait::new();
+        let mock_redis = MockRedisConnectionTrait::new();
+
+        let destination = Pubkey::new_unique();
+
+        // Account exists but is not owned by a loader (e.g. system program)
+        mock_client
+            .expect_get_account_owner()
+            .withf(move |pubkey| *pubkey == destination)
+            .returning(move |_| {
+                Box::pin(async move { Ok(Some(solana_sdk_ids::system_program::ID)) })
+            });
+
+        let builder = TransactionBuilder::new(
+            Arc::clone(&keypair),
+            mock_gas,
+            Arc::new(mock_client),
+            mock_redis,
+        );
+
+        let result = builder
+            .expected_destination_token_authority(&destination)
+            .await
+            .expect("should succeed");
+
+        assert_eq!(result, destination);
+    }
+
+    #[tokio::test]
+    async fn test_expected_destination_token_authority_returns_destination_when_account_not_found()
+    {
+        let keypair = Arc::new(Keypair::new());
+        let mock_gas = MockGasCalculatorTrait::new();
+        let mut mock_client = MockIncluderClientTrait::new();
+        let mock_redis = MockRedisConnectionTrait::new();
+
+        let destination = Pubkey::new_unique();
+
+        mock_client
+            .expect_get_account_owner()
+            .withf(move |pubkey| *pubkey == destination)
+            .returning(move |_| Box::pin(async move { Ok(None) }));
+
+        let builder = TransactionBuilder::new(
+            Arc::clone(&keypair),
+            mock_gas,
+            Arc::new(mock_client),
+            mock_redis,
+        );
+
+        let result = builder
+            .expected_destination_token_authority(&destination)
+            .await
+            .expect("should succeed");
+
+        assert_eq!(result, destination);
+    }
+
+    #[tokio::test]
+    async fn test_expected_destination_token_authority_propagates_rpc_error() {
+        use crate::error::IncluderClientError;
+
+        let keypair = Arc::new(Keypair::new());
+        let mock_gas = MockGasCalculatorTrait::new();
+        let mut mock_client = MockIncluderClientTrait::new();
+        let mock_redis = MockRedisConnectionTrait::new();
+
+        let destination = Pubkey::new_unique();
+
+        mock_client
+            .expect_get_account_owner()
+            .withf(move |pubkey| *pubkey == destination)
+            .returning(move |_| {
+                Box::pin(async move {
+                    Err(IncluderClientError::GenericError("RPC timeout".to_string()))
+                })
+            });
+
+        let builder = TransactionBuilder::new(
+            Arc::clone(&keypair),
+            mock_gas,
+            Arc::new(mock_client),
+            mock_redis,
+        );
+
+        let result = builder
+            .expected_destination_token_authority(&destination)
+            .await;
+
+        assert!(result.is_err());
+        match result {
+            Err(TransactionBuilderError::GenericError(msg)) => {
+                assert!(msg.contains("RPC timeout"));
+            }
+            other => panic!("Expected GenericError, got: {:?}", other),
+        }
     }
 }
