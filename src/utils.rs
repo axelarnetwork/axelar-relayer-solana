@@ -6,13 +6,12 @@ use relayer_core::{
     queue::{QueueItem, QueueTrait},
 };
 use serde_json::json;
-use solana_axelar_std::execute_data::{ExecuteData, MerklizedPayload};
+use solana_axelar_std::execute_data::{ExecuteData, MerklizedPayload, PayloadType};
 use solana_compute_budget_interface::ComputeBudgetInstruction;
 use solana_transaction_parser::gmp_types::{CannotExecuteMessageReason, Event};
 use std::str::FromStr;
 use tracing::{debug, error};
 
-use solana_axelar_gateway::seed_prefixes;
 use solana_commitment_config::{CommitmentConfig, CommitmentLevel};
 use solana_rpc_client_api::response::RpcConfirmedTransactionStatusWithSignature;
 use solana_sdk::{
@@ -213,15 +212,13 @@ pub fn get_gas_service_event_authority_pda() -> Result<(Pubkey, u8), anyhow::Err
 
 pub fn get_initialize_verification_session_pda(
     payload_merkle_root: &[u8; 32],
+    payload_type: PayloadType,
     signing_verifier_set_hash: &[u8; 32],
 ) -> Result<(Pubkey, u8), anyhow::Error> {
-    Pubkey::try_find_program_address(
-        &[
-            seed_prefixes::SIGNATURE_VERIFICATION_SEED,
-            payload_merkle_root,
-            signing_verifier_set_hash,
-        ],
-        &solana_axelar_gateway::ID,
+    solana_axelar_gateway::SignatureVerificationSessionData::try_find_pda(
+        payload_merkle_root,
+        payload_type,
+        signing_verifier_set_hash,
     )
     .ok_or_else(|| anyhow!("Failed to derive verification session PDA"))
 }
@@ -376,8 +373,13 @@ pub fn check_if_error_includes_an_expected_account(
     error_message: &str,
     execute_data: &ExecuteData,
 ) -> Result<bool, anyhow::Error> {
+    let payload_type = match &execute_data.payload_items {
+        MerklizedPayload::NewMessages { .. } => PayloadType::ApproveMessages,
+        MerklizedPayload::VerifierSetRotation { .. } => PayloadType::RotateSigners,
+    };
     let (initialize_verification_session_pda, _) = get_initialize_verification_session_pda(
         &execute_data.payload_merkle_root,
+        payload_type,
         &execute_data.signing_verifier_set_merkle_root,
     )?;
     if is_addr_in_use(
@@ -635,6 +637,7 @@ mod tests {
 
         let (init_pda, _) = get_initialize_verification_session_pda(
             &payload_merkle_root,
+            PayloadType::ApproveMessages,
             &signing_verifier_set_merkle_root,
         )
         .unwrap();
@@ -823,6 +826,7 @@ mod tests {
 
         let (init_pda, _) = get_initialize_verification_session_pda(
             &payload_merkle_root,
+            PayloadType::RotateSigners,
             &signing_verifier_set_merkle_root,
         )
         .unwrap();
