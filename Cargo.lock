@@ -2262,7 +2262,7 @@ dependencies = [
  "bitflags 2.11.0",
  "cexpr",
  "clang-sys",
- "itertools 0.12.1",
+ "itertools 0.13.0",
  "proc-macro2",
  "quote",
  "regex",
@@ -4165,7 +4165,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6864,7 +6864,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -8200,7 +8200,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a56d757972c98b346a9b766e3f02746cde6dd1cd1d1d563472929fdd74bec4d"
 dependencies = [
  "anyhow",
- "itertools 0.12.1",
+ "itertools 0.14.0",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
@@ -9318,7 +9318,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -9431,7 +9431,7 @@ dependencies = [
  "security-framework 3.7.0",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -10477,9 +10477,9 @@ dependencies = [
 
 [[package]]
 name = "solana-axelar-gas-service"
-version = "1.0.0"
+version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d928f915b62a59b16893b6ba13f596c66d40e17c3e91e464d07bea81d05926eb"
+checksum = "3639857caaed945749905eed96934f22b58a6f2d0c2f16c6001f22d4a61f8ce7"
 dependencies = [
  "anchor-lang",
  "bytemuck",
@@ -10489,9 +10489,9 @@ dependencies = [
 
 [[package]]
 name = "solana-axelar-gateway"
-version = "1.0.0"
+version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d99ca0054740903450969fb1e6f2116b7fa4226494157fb6ccac6bbe2a20ca9d"
+checksum = "2a58d6320c7cf865fc64225d93e48234d17a07bdecb1ec49db95dd6bec7e7be0"
 dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
@@ -10509,9 +10509,9 @@ dependencies = [
 
 [[package]]
 name = "solana-axelar-governance"
-version = "1.0.0"
+version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fff41a0facb8108f69aa87dc8a6e197c0b94e0bee438804f99c6c4160561d7a2"
+checksum = "2b22c7e79ad046b6ac746c207253cd086b03ce9bc07cadc3bc4129fa5de33b8c"
 dependencies = [
  "alloy-sol-types",
  "anchor-lang",
@@ -10524,9 +10524,9 @@ dependencies = [
 
 [[package]]
 name = "solana-axelar-its"
-version = "1.0.0"
+version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b2831a1f0e4e22f3c0edfe4632a19782215ca4f70d649715b004afbd7313a2fe"
+checksum = "31fd5ea6e5b218e1c2bbddfa0e81bb8c258fdfadabdcf8544ab4506a2481697e"
 dependencies = [
  "anchor-lang",
  "anchor-spl",
@@ -10543,9 +10543,9 @@ dependencies = [
 
 [[package]]
 name = "solana-axelar-memo"
-version = "1.0.0"
+version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d710fe46ba7cc4308ac18280c273130cf25e9ed63b70e3c70f70dfd777f080c9"
+checksum = "35d60b6108a3f2e6982867c6fb16ab7d240df1d10e0587c44fa28c5919b28679"
 dependencies = [
  "anchor-lang",
  "anchor-spl",
@@ -10556,9 +10556,9 @@ dependencies = [
 
 [[package]]
 name = "solana-axelar-operators"
-version = "1.0.0"
+version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba0e4164a6954870a615441c471c0d802cdcdf01c75a36fe7bd14b4a980327fb"
+checksum = "d4f0e04133d9366b6dee2b4a53a1ffe138799c60f931b566298b830f69d5112b"
 dependencies = [
  "anchor-lang",
  "solana-axelar-std",
@@ -15226,7 +15226,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -16588,7 +16588,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
