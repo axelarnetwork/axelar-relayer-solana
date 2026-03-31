@@ -10,7 +10,7 @@ use solana_rpc_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{account::Account, hash::Hash, pubkey::Pubkey, signature::Signature};
 use std::{sync::Arc, time::Duration};
 use tokio::time::sleep;
-use tracing::{error, warn};
+use tracing::{debug, error, warn};
 
 use crate::{
     error::IncluderClientError,
@@ -223,6 +223,10 @@ impl IncluderClientTrait for IncluderClient {
                         return Ok((expected_signature, cost));
                     }
                     if let Some(execute_data) = execute_data {
+                        debug!(
+                            "ClientError string for account-in-use detection: {}",
+                            e.to_string()
+                        );
                         if check_if_error_includes_an_expected_account(&e.to_string(), execute_data)
                             .map_err(|e| IncluderClientError::GenericError(e.to_string()))?
                         {
@@ -474,6 +478,7 @@ mod tests {
 
         let (init_pda, _) = get_initialize_verification_session_pda(
             &payload_merkle_root,
+            PayloadType::ApproveMessages,
             &signing_verifier_set_merkle_root,
         )
         .unwrap();
@@ -565,6 +570,7 @@ mod tests {
 
         let (init_pda, _) = get_initialize_verification_session_pda(
             &payload_merkle_root,
+            PayloadType::ApproveMessages,
             &signing_verifier_set_merkle_root,
         )
         .unwrap();
@@ -616,6 +622,7 @@ mod tests {
 
         let (expected_pda, _) = get_initialize_verification_session_pda(
             &payload_merkle_root,
+            PayloadType::ApproveMessages,
             &signing_verifier_set_merkle_root,
         )
         .unwrap();
@@ -635,6 +642,7 @@ mod tests {
 
         let (expected_pda, _) = get_initialize_verification_session_pda(
             &payload_merkle_root,
+            PayloadType::ApproveMessages,
             &signing_verifier_set_merkle_root,
         )
         .unwrap();

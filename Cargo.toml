@@ -61,10 +61,10 @@ solana-test-validator = "~3.1"
 governance-gmp = "0.1.4"
 solana-axelar-gas-service = { version = "1.0.0", default-features = false, features = ["no-entrypoint"] }
 solana-axelar-gateway = { version = "1.0.0", default-features = false, features = ["no-entrypoint"] }
-solana-axelar-governance = { version = "1.0.0", features = ["no-entrypoint"] }
+solana-axelar-governance = { version = "1.0.0", default-features = false, features = ["no-entrypoint"] }
 solana-axelar-its = { version = "1.0.0", default-features = false, features = ["no-entrypoint"] }
 solana-axelar-memo = { version = "1.0.0", default-features = false, features = ["no-entrypoint"] }
-solana-axelar-operators = { version = "1.0.0", features = ["no-entrypoint"] }
+solana-axelar-operators = { version = "1.0.0", default-features = false, features = ["no-entrypoint"] }
 solana-axelar-std = "1.0.0"
 
 # Relayer
