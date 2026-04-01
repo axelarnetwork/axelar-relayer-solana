@@ -122,7 +122,7 @@ impl Parser for ParserCallContract {
                 event_id: format!("{}-call", Uuid::new_v4()),
                 meta: Some(EventMetadata {
                     tx_id: Some(self.signature.clone()),
-                    from_address: None,
+                    from_address: Some(parsed.sender.to_string()),
                     finalized: None,
                     source_context: Some(source_context),
                     timestamp: self.timestamp.clone(),
