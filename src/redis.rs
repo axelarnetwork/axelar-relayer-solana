@@ -73,6 +73,7 @@ pub trait RedisConnectionTrait: ThreadSafe {
         &self,
         message_id: String,
         alt_pubkey: Pubkey,
+        authority_keypair_str: String,
     ) -> Result<(), RedisInterfaceError>;
     async fn get_cu_price(&self) -> Result<Option<u64>, RedisInterfaceError>;
     async fn set_cu_price(&self, cu_price: u64) -> Result<(), RedisInterfaceError>;
@@ -488,26 +489,36 @@ impl RedisConnectionTrait for RedisConnection {
         &self,
         message_id: String,
         alt_pubkey: Pubkey,
+        authority_keypair_str: String,
     ) -> Result<(), RedisInterfaceError> {
         let mut redis_conn = self.conn.clone();
         let alt_key = self.create_alt_key(message_id.clone());
         let failed_key = self.create_failed_alt_key(message_id.clone());
 
-        let pubkey_str = alt_pubkey.to_string();
-
-        // Set as failed first
-        redis::AsyncCommands::set::<_, _, ()>(
-            &mut redis_conn,
-            failed_key.clone(),
-            pubkey_str.clone(),
-        )
-        .await
-        .map_err(|e| {
+        // Store the full AltEntry so the authority keypair is preserved for retries
+        let entry = AltEntry {
+            pubkey: alt_pubkey.to_string(),
+            authority_keypair_str,
+            created_at: chrono::Utc::now().timestamp(),
+            retry_count: 0,
+            active: false,
+        };
+        let entry_json = serde_json::to_string(&entry).map_err(|e| {
             RedisInterfaceError::SetAltFailedError(format!(
-                "Failed to set failed ALT in Redis: {}",
+                "Failed to serialize failed ALT entry: {}",
                 e
             ))
         })?;
+
+        // Set as failed first
+        redis::AsyncCommands::set::<_, _, ()>(&mut redis_conn, failed_key.clone(), entry_json)
+            .await
+            .map_err(|e| {
+                RedisInterfaceError::SetAltFailedError(format!(
+                    "Failed to set failed ALT in Redis: {}",
+                    e
+                ))
+            })?;
 
         // Then remove from ALT keys
         redis::AsyncCommands::del::<_, ()>(&mut redis_conn, alt_key.clone())
@@ -521,7 +532,7 @@ impl RedisConnectionTrait for RedisConnection {
 
         debug!(
             "Set failed ALT and removed from Redis: {} -> {} (removed key: {})",
-            failed_key, pubkey_str, alt_key
+            failed_key, alt_pubkey, alt_key
         );
         Ok(())
     }
@@ -1175,7 +1186,11 @@ mod tests {
 
         // First create an ALT entry
         redis_conn
-            .write_alt_entry(message_id.clone(), alt_pubkey, authority_keypair_str)
+            .write_alt_entry(
+                message_id.clone(),
+                alt_pubkey,
+                authority_keypair_str.clone(),
+            )
             .await
             .unwrap();
 
@@ -1185,15 +1200,21 @@ mod tests {
 
         // Now remove and set as failed
         redis_conn
-            .remove_and_set_failed_alt_key(message_id.clone(), alt_pubkey)
+            .remove_and_set_failed_alt_key(
+                message_id.clone(),
+                alt_pubkey,
+                authority_keypair_str.clone(),
+            )
             .await
             .unwrap();
 
-        // Verify it's in FAILED:ALT
+        // Verify it's in FAILED:ALT with full AltEntry JSON (preserving authority keypair)
         let mut conn = redis_conn.inner().clone();
         let key = redis_conn.create_failed_alt_key(message_id.clone());
         let value: String = redis::AsyncCommands::get(&mut conn, &key).await.unwrap();
-        assert_eq!(value, alt_pubkey.to_string());
+        let entry: AltEntry = serde_json::from_str(&value).unwrap();
+        assert_eq!(entry.pubkey, alt_pubkey.to_string());
+        assert_eq!(entry.authority_keypair_str, authority_keypair_str);
 
         // Verify it's removed from ALT keys
         let all_keys = redis_conn.get_all_alt_keys().await.unwrap();
@@ -1218,20 +1239,36 @@ mod tests {
 
         // Create ALT entries first
         redis_conn
-            .write_alt_entry(message_id_1.clone(), alt_pubkey_1, authority_keypair_str_1)
+            .write_alt_entry(
+                message_id_1.clone(),
+                alt_pubkey_1,
+                authority_keypair_str_1.clone(),
+            )
             .await
             .unwrap();
         redis_conn
-            .write_alt_entry(message_id_2.clone(), alt_pubkey_2, authority_keypair_str_2)
+            .write_alt_entry(
+                message_id_2.clone(),
+                alt_pubkey_2,
+                authority_keypair_str_2.clone(),
+            )
             .await
             .unwrap();
 
         redis_conn
-            .remove_and_set_failed_alt_key(message_id_1.clone(), alt_pubkey_1)
+            .remove_and_set_failed_alt_key(
+                message_id_1.clone(),
+                alt_pubkey_1,
+                authority_keypair_str_1,
+            )
             .await
             .unwrap();
         redis_conn
-            .remove_and_set_failed_alt_key(message_id_2.clone(), alt_pubkey_2)
+            .remove_and_set_failed_alt_key(
+                message_id_2.clone(),
+                alt_pubkey_2,
+                authority_keypair_str_2,
+            )
             .await
             .unwrap();
 
@@ -1242,8 +1279,10 @@ mod tests {
         let value_1: String = redis::AsyncCommands::get(&mut conn, &key_1).await.unwrap();
         let value_2: String = redis::AsyncCommands::get(&mut conn, &key_2).await.unwrap();
 
-        assert_eq!(value_1, alt_pubkey_1.to_string());
-        assert_eq!(value_2, alt_pubkey_2.to_string());
+        let entry_1: AltEntry = serde_json::from_str(&value_1).unwrap();
+        let entry_2: AltEntry = serde_json::from_str(&value_2).unwrap();
+        assert_eq!(entry_1.pubkey, alt_pubkey_1.to_string());
+        assert_eq!(entry_2.pubkey, alt_pubkey_2.to_string());
     }
 
     #[tokio::test]

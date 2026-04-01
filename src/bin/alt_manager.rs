@@ -169,6 +169,7 @@ async fn process_active_alts(
                             retry_count,
                             e,
                             redis_conn,
+                            authority_keypair_str,
                         )
                         .await
                         {
@@ -250,6 +251,7 @@ async fn process_deactivated_alts(
                             retry_count,
                             e,
                             redis_conn,
+                            authority_keypair_str,
                         )
                         .await
                         {
@@ -274,6 +276,7 @@ async fn handle_alt_processing_error(
     retry_count: u32,
     error: anyhow::Error,
     redis_conn: &RedisConnection,
+    authority_keypair_str: String,
 ) -> anyhow::Result<()> {
     let new_retry_count = retry_count + 1;
     if new_retry_count >= MAX_RETRY_ATTEMPTS {
@@ -282,9 +285,9 @@ async fn handle_alt_processing_error(
             alt_pubkey, message_id, error, retry_count
         );
 
-        // Set ALT as failed and remove from Redis
+        // Set ALT as failed and remove from Redis (preserving authority keypair for retries)
         if let Err(redis_err) = redis_conn
-            .remove_and_set_failed_alt_key(message_id.clone(), alt_pubkey)
+            .remove_and_set_failed_alt_key(message_id.clone(), alt_pubkey, authority_keypair_str)
             .await
         {
             error!(
@@ -434,7 +437,11 @@ async fn close_alt(
                 error!("Failed to close ALT {} ({}): {}", alt_pubkey, message_id, e);
 
                 if let Err(redis_err) = redis_conn
-                    .remove_and_set_failed_alt_key(message_id.to_string(), alt_pubkey)
+                    .remove_and_set_failed_alt_key(
+                        message_id.to_string(),
+                        alt_pubkey,
+                        authority_keypair.to_base58_string(),
+                    )
                     .await
                 {
                     error!(
