@@ -189,30 +189,32 @@ mod tests {
                         event_id: common.event_id.clone(),
                         meta: Some(EventMetadata {
                             tx_id: Some(sig.to_string()),
-                            from_address: None,
+                            from_address: parser.parsed.as_ref().map(|p| p.sender.to_string()),
                             finalized: None,
                             source_context: Some(HashMap::from([
                                 (
                                     "source_address".to_owned(),
-                                    parser.parsed.as_ref().unwrap().sender.to_string(),
+                                    parser
+                                        .parsed
+                                        .as_ref()
+                                        .map(|p| p.sender.to_string())
+                                        .unwrap_or_default(),
                                 ),
                                 (
                                     "destination_address".to_owned(),
                                     parser
                                         .parsed
                                         .as_ref()
-                                        .unwrap()
-                                        .destination_contract_address
-                                        .to_string(),
+                                        .map(|p| p.destination_contract_address.to_string())
+                                        .unwrap_or_default(),
                                 ),
                                 (
                                     "destination_chain".to_owned(),
                                     parser
                                         .parsed
                                         .as_ref()
-                                        .unwrap()
-                                        .destination_chain
-                                        .to_string(),
+                                        .map(|p| p.destination_chain.to_string())
+                                        .unwrap_or_default(),
                                 ),
                             ])),
                             timestamp: parser.timestamp.clone(),
@@ -221,24 +223,32 @@ mod tests {
                     message: GatewayV2Message {
                         message_id: format!("{}-1.2", sig),
                         source_chain: "solana".to_string(),
-                        source_address: parser.parsed.as_ref().unwrap().sender.to_string(),
+                        source_address: parser
+                            .parsed
+                            .as_ref()
+                            .map(|p| p.sender.to_string())
+                            .unwrap_or_default(),
                         destination_address: parser
                             .parsed
                             .as_ref()
-                            .unwrap()
-                            .destination_contract_address
-                            .to_string(),
-                        payload_hash: BASE64_STANDARD
-                            .encode(parser.parsed.as_ref().unwrap().payload_hash),
+                            .map(|p| p.destination_contract_address.to_string())
+                            .unwrap_or_default(),
+                        payload_hash: parser
+                            .parsed
+                            .as_ref()
+                            .map(|p| BASE64_STANDARD.encode(p.payload_hash))
+                            .unwrap_or_default(),
                     },
                     destination_chain: parser
                         .parsed
                         .as_ref()
-                        .unwrap()
-                        .destination_chain
-                        .to_string(),
-                    payload: BASE64_STANDARD
-                        .encode(parser.parsed.as_ref().unwrap().payload.clone()),
+                        .map(|p| p.destination_chain.to_string())
+                        .unwrap_or_default(),
+                    payload: parser
+                        .parsed
+                        .as_ref()
+                        .map(|p| BASE64_STANDARD.encode(p.payload.clone()))
+                        .unwrap_or_default(),
                 };
                 assert_eq!(event, expected_event);
             }
