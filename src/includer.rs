@@ -1041,6 +1041,13 @@ impl<
             Ok((instruction, accounts)) => (instruction, accounts),
             Err(e) => match e {
                 TransactionBuilderError::PayloadDecodeError(e) => {
+                    error!(
+                        task_id = %task.common.id,
+                        message_id = %task.task.message.message_id,
+                        source_chain = %task.task.message.source_chain,
+                        error = %e,
+                        "Failed to decode payload: cannot execute message"
+                    );
                     let event = self.gmp_api.cannot_execute_message(
                         task.common.id.clone(),
                         task.task.message.message_id.clone(),
