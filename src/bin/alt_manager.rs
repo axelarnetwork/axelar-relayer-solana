@@ -405,7 +405,7 @@ async fn close_alt(
 
     debug!("Closing ALT: {}", alt_pubkey);
 
-    let recipient_pubkey = authority_keypair.pubkey(); // Close to the authority wallet
+    let recipient_pubkey = keypair.pubkey();
     let close_ix = close_lookup_table(alt_pubkey, authority_keypair.pubkey(), recipient_pubkey);
 
     let recent_blockhash = includer_client
