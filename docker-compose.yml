@@ -1,3 +1,5 @@
+name: ${NETWORK}-axelar-relayer-solana
+
 services:
   ingestor:
     build:
@@ -51,4 +53,4 @@ services:
 
 networks:
   axelar-relayer:
-    name: axelar-relayer
+    name: ${NETWORK}-axelar-relayer-solana

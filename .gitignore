@@ -1,5 +1,6 @@
 .env
 config.devnet.yaml
+config.stagenet.yaml
 config.testnet.yaml
 config.mainnet.yaml
 target

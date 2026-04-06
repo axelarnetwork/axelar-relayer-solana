@@ -57,7 +57,7 @@ async fn main() -> anyhow::Result<()> {
 
         match manage_alts(&redis_conn, &includer_client, &keypair).await {
             Ok(_) => {
-                info!("ALT management cycle completed successfully");
+                debug!("ALT management cycle completed successfully");
             }
             Err(e) => {
                 error!("Error during ALT management cycle: {}", e);
