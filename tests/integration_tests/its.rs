@@ -28,6 +28,15 @@ use solana_transaction_parser::gmp_types::{
 use solana_transaction_parser::parser::TransactionParser;
 use solana_transaction_parser::redis::MockCostCacheTrait;
 
+use axelar_relayer_solana::utils::{get_gateway_event_authority_pda, get_its_event_authority_pda};
+use solana_address_lookup_table_interface::instruction::{
+    create_lookup_table, extend_lookup_table,
+};
+use solana_commitment_config::CommitmentConfig;
+use solana_rpc_client::nonblocking::rpc_client::RpcClient;
+use solana_sdk::pubkey::Pubkey;
+use solana_sdk::transaction::Transaction;
+
 use super::common::*;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -50,6 +59,7 @@ async fn test_approve_and_execute_its_message() {
         Arc::new(mock_gmp_api),
         mock_redis,
         Arc::new(mock_refunds_model),
+        None,
     );
 
     let deploy_message_id = "test-its-deploy-token-001";
@@ -1345,6 +1355,7 @@ async fn test_its_messages_with_optional_fields() {
         Arc::new(mock_gmp_api),
         mock_redis,
         Arc::new(mock_refunds_model),
+        None,
     );
 
     println!("DeployInterchainToken with Minter");
@@ -2142,6 +2153,7 @@ async fn test_its_concurrent_task_processing() {
         Arc::new(mock_gmp_api),
         mock_redis,
         Arc::new(mock_refunds_model),
+        None,
     ));
 
     let deploy_gateway_task = GatewayTxTask {
@@ -2303,5 +2315,228 @@ async fn test_its_concurrent_task_processing() {
     );
 
     println!("Concurrent ITS task processing test completed successfully!");
+    env.cleanup().await;
+}
+
+/// Integration test that deploys a global ALT with static ITS accounts on the test validator,
+/// then runs a DeployInterchainToken execute through the includer with the global ALT configured.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_its_execute_with_global_alt() {
+    let env = TestEnvironment::new().await;
+
+    let its_hub_address = env.its_hub_address.clone();
+    let its_program_address = solana_axelar_its::ID.to_string();
+
+    // ---------- Deploy a global ALT with the 9 static ITS accounts ----------
+    let rpc = RpcClient::new_with_commitment(env.rpc_url.clone(), CommitmentConfig::confirmed());
+
+    let (gateway_root_pda, _) =
+        solana_axelar_gateway::GatewayConfig::try_find_pda().expect("gateway root PDA");
+    let (gateway_event_authority, _) =
+        get_gateway_event_authority_pda().expect("gateway event authority PDA");
+    let (its_root_pda, _) =
+        solana_axelar_its::InterchainTokenService::try_find_pda().expect("ITS root PDA");
+    let (its_event_authority, _) = get_its_event_authority_pda().expect("ITS event authority PDA");
+
+    let global_alt_addresses: Vec<Pubkey> = vec![
+        gateway_root_pda,
+        gateway_event_authority,
+        solana_axelar_gateway::ID,
+        its_root_pda,
+        anchor_spl::associated_token::ID,
+        solana_sdk_ids::system_program::ID,
+        its_event_authority,
+        anchor_spl::token::ID,
+        anchor_spl::token_2022::spl_token_2022::ID,
+    ];
+
+    let recent_slot = rpc
+        .get_slot_with_commitment(CommitmentConfig::finalized())
+        .await
+        .expect("get slot");
+
+    let (create_alt_ix, global_alt_pubkey) =
+        create_lookup_table(env.payer.pubkey(), env.payer.pubkey(), recent_slot);
+    let extend_alt_ix = extend_lookup_table(
+        global_alt_pubkey,
+        env.payer.pubkey(),
+        Some(env.payer.pubkey()),
+        global_alt_addresses.clone(),
+    );
+
+    let blockhash = rpc.get_latest_blockhash().await.expect("blockhash");
+    let alt_tx = Transaction::new_signed_with_payer(
+        &[create_alt_ix, extend_alt_ix],
+        Some(&env.payer.pubkey()),
+        &[&env.payer],
+        blockhash,
+    );
+    rpc.send_and_confirm_transaction(&alt_tx)
+        .await
+        .expect("Failed to create global ALT");
+
+    // Wait for ALT to activate
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+    println!(
+        "Global ALT deployed: {} with {} addresses",
+        global_alt_pubkey,
+        global_alt_addresses.len()
+    );
+
+    // ---------- Create includer with global ALT ----------
+    let components = create_includer_components(&env.rpc_url, &env.payer);
+    let mock_redis = create_mock_redis();
+    let mock_gmp_api = create_mock_gmp_api_for_execute();
+    let mock_refunds_model = MockRefundsModel::new();
+
+    let includer = SolanaIncluder::new(
+        Arc::new(components.includer_client),
+        components.keypair,
+        "solana-devnet".to_string(),
+        components.transaction_builder,
+        Arc::new(mock_gmp_api),
+        mock_redis,
+        Arc::new(mock_refunds_model),
+        Some(global_alt_pubkey),
+    );
+
+    // ---------- DeployInterchainToken flow ----------
+    let deploy_message_id = "test-its-global-alt-deploy-001";
+    let source_address = its_hub_address.clone();
+
+    let salt = [99u8; 32];
+    let token_id = interchain_token_id(&env.payer.pubkey(), &salt);
+
+    let deploy_token = DeployInterchainToken {
+        token_id,
+        name: "Global ALT Token".to_string(),
+        symbol: "GALT".to_string(),
+        decimals: 9,
+        minter: None,
+    };
+
+    let hub_message = HubMessage::ReceiveFromHub {
+        source_chain: "axelar".to_string(),
+        message: ItsMessage::DeployInterchainToken(deploy_token),
+    };
+
+    let deploy_payload_bytes = borsh::to_vec(&hub_message).unwrap();
+    let deploy_payload_hash = solana_sdk::keccak::hashv(&[&deploy_payload_bytes]).to_bytes();
+
+    let deploy_message = Message {
+        cc_id: CrossChainId {
+            chain: "axelar".to_string(),
+            id: deploy_message_id.to_string(),
+        },
+        source_address: source_address.clone(),
+        destination_chain: "solana-devnet".to_string(),
+        destination_address: its_program_address.clone(),
+        payload_hash: deploy_payload_hash,
+    };
+
+    let deploy_message_leaf = MessageLeaf {
+        message: deploy_message.clone(),
+        position: 0,
+        set_size: 1,
+        domain_separator: env.domain_separator,
+    };
+    let deploy_leaf_hash = deploy_message_leaf.hash();
+    let deploy_merkle_tree = MerkleTree::from_leaves(&[deploy_leaf_hash]);
+    let deploy_merkle_root = deploy_merkle_tree.root().expect("merkle root");
+
+    let deploy_verifier_info_1 = create_verifier_info(
+        &env.verifier_secret_keys[0],
+        deploy_merkle_root,
+        &env.verifier_leaves[0],
+        0,
+        &env.verifier_merkle_tree,
+        PayloadType::ApproveMessages,
+    );
+    let deploy_verifier_info_2 = create_verifier_info(
+        &env.verifier_secret_keys[1],
+        deploy_merkle_root,
+        &env.verifier_leaves[1],
+        1,
+        &env.verifier_merkle_tree,
+        PayloadType::ApproveMessages,
+    );
+
+    let deploy_execute_data = ExecuteData {
+        payload_merkle_root: deploy_merkle_root,
+        signing_verifier_set_merkle_root: env.verifier_set_hash,
+        signing_verifier_set_leaves: vec![deploy_verifier_info_1, deploy_verifier_info_2],
+        payload_items: MerklizedPayload::NewMessages {
+            messages: vec![MerklizedMessage {
+                leaf: deploy_message_leaf,
+                proof: vec![],
+            }],
+        },
+    };
+
+    // Approve message via gateway
+    let deploy_gateway_task = GatewayTxTask {
+        common: CommonTaskFields {
+            id: "test-its-global-alt-gateway-001".into(),
+            chain: "solana-devnet".into(),
+            timestamp: "2025-11-26T14:47:18.567796Z".into(),
+            r#type: "GATEWAY_TX".into(),
+            meta: None,
+        },
+        task: GatewayTxTaskFields {
+            execute_data: BASE64_STANDARD.encode(borsh::to_vec(&deploy_execute_data).unwrap()),
+        },
+    };
+
+    includer
+        .handle_gateway_tx_task(deploy_gateway_task)
+        .await
+        .expect("Failed to approve deploy message via gateway");
+    println!("Deploy message approved via gateway!");
+
+    // Execute the deploy — this should use the global ALT (v0 transaction)
+    let deploy_execute_task = ExecuteTask {
+        common: CommonTaskFields {
+            id: "test-its-global-alt-execute-001".into(),
+            chain: "solana-devnet".into(),
+            timestamp: "2025-11-26T14:47:19.567796Z".into(),
+            r#type: "EXECUTE".into(),
+            meta: None,
+        },
+        task: ExecuteTaskFields {
+            message: GatewayV2Message {
+                message_id: deploy_message_id.to_string(),
+                source_chain: "axelar".to_string(),
+                source_address: source_address.clone(),
+                destination_address: its_program_address.clone(),
+                payload_hash: BASE64_STANDARD.encode(deploy_payload_hash),
+            },
+            payload: BASE64_STANDARD.encode(&deploy_payload_bytes),
+            available_gas_balance: Amount {
+                token_id: None,
+                amount: "10000000000".to_string(),
+            },
+        },
+    };
+
+    let deploy_result = includer.handle_execute_task(deploy_execute_task).await;
+    match &deploy_result {
+        Ok(events) => {
+            println!(
+                "Deploy with global ALT executed successfully! Events: {:?}",
+                events.len()
+            );
+        }
+        Err(e) => {
+            panic!("Deploy with global ALT failed: {:?}", e);
+        }
+    }
+
+    assert!(
+        deploy_result.is_ok(),
+        "ITS execute with global ALT should succeed"
+    );
+
+    println!("SUCCESS: ITS DeployInterchainToken executed with global ALT!");
     env.cleanup().await;
 }

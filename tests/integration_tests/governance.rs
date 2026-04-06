@@ -222,6 +222,7 @@ async fn test_governance_schedule_timelock_proposal() {
         Arc::new(mock_gmp_api),
         mock_redis_for_includer,
         Arc::new(mock_refunds_model),
+        None,
     );
 
     let approve_result = includer.handle_gateway_tx_task(gateway_task).await;
@@ -276,6 +277,7 @@ async fn test_governance_schedule_timelock_proposal() {
         Arc::new(mock_gmp_api_exec),
         mock_redis_exec_for_includer,
         Arc::new(mock_refunds_model_exec),
+        None,
     );
 
     let execute_result = includer_exec.handle_execute_task(execute_task).await;

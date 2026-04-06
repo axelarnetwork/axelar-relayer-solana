@@ -414,6 +414,7 @@ async fn test_gas_refunded_event_parsing() {
         Arc::new(mock_gmp_api),
         mock_redis,
         refunds_model,
+        None,
     );
 
     let (treasury, _) =

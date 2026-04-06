@@ -363,6 +363,7 @@ async fn test_approve_and_execute_memo_message() {
         Arc::new(mock_gmp_api),
         mock_redis,
         Arc::new(mock_refunds_model),
+        None,
     );
 
     let result = includer.handle_gateway_tx_task(task).await;
@@ -728,6 +729,7 @@ async fn test_refund_task_handled_and_found_by_poller() {
         Arc::new(mock_gmp_api),
         mock_redis,
         refunds_model,
+        None,
     );
 
     let (treasury, _) =
@@ -908,6 +910,7 @@ async fn test_refund_task_duplicate_returns_already_processed() {
         Arc::new(mock_gmp_api),
         mock_redis,
         Arc::clone(&refunds_model),
+        None,
     );
 
     let (treasury, _) =
@@ -1037,6 +1040,7 @@ async fn test_rotate_signers() {
         Arc::new(mock_gmp_api),
         mock_redis,
         Arc::new(mock_refunds_model),
+        None,
     );
 
     let signing_verifier_set_merkle_root = env.verifier_set_hash;

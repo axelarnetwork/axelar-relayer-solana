@@ -1,5 +1,6 @@
-use crate::{includer::ALTInfo, transaction_type::SolanaTransactionType, types::SolanaTransaction};
+use crate::{transaction_type::SolanaTransactionType, types::SolanaTransaction};
 use anyhow::anyhow;
+use bincode;
 use regex::Regex;
 use relayer_core::{
     gmp_api::{gmp_types::ExecuteTask, GmpApiTrait},
@@ -254,11 +255,41 @@ pub fn calculate_total_cost_lamports(
     Ok(base_fee.saturating_add(priority_lamports))
 }
 
+/// Maximum Solana transaction size (1280 - 40 - 8 = 1232 bytes).
+pub const MAX_TX_SIZE: usize = 1232;
+
+/// Estimate the serialized size of a v0 transaction with the given instructions and ALTs.
+/// Includes 2 compute budget instructions (set_compute_unit_price + set_compute_unit_limit)
+/// and one signature (64 bytes for the payer).
+pub fn estimate_v0_tx_size(
+    instructions: &[Instruction],
+    address_lookup_tables: &[AddressLookupTableAccount],
+    payer: &Pubkey,
+) -> Result<usize, anyhow::Error> {
+    let cu_price_ix = ComputeBudgetInstruction::set_compute_unit_price(1);
+    let cu_limit_ix = ComputeBudgetInstruction::set_compute_unit_limit(200_000);
+    let mut all_ixs = vec![cu_price_ix, cu_limit_ix];
+    all_ixs.extend_from_slice(instructions);
+
+    // Use a dummy blockhash — it doesn't affect size
+    let dummy_hash = solana_sdk::hash::Hash::default();
+    let v0_msg = v0::Message::try_compile(payer, &all_ixs, address_lookup_tables, dummy_hash)
+        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+
+    let message = VersionedMessage::V0(v0_msg);
+    let serialized_msg =
+        bincode::serialize(&message).map_err(|e| anyhow::anyhow!(e.to_string()))?;
+
+    // Total size = signatures (1 byte length prefix + 64 bytes per signer) + message
+    let num_signers = message.header().num_required_signatures as usize;
+    let total = 1 + (num_signers * 64) + serialized_msg.len();
+    Ok(total)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn create_transaction(
     mut instructions: Vec<Instruction>,
-    alt_info: Option<ALTInfo>,
-    alt_addresses: Vec<Pubkey>,
+    address_lookup_tables: Vec<AddressLookupTableAccount>,
     unit_price: u64,
     compute_budget: u64,
     payer: &Keypair,
@@ -274,32 +305,27 @@ pub async fn create_transaction(
 
     instructions.splice(0..0, [set_compute_unit_price_ix, set_compute_budget_ix]);
 
-    match alt_info {
-        Some(alt_info) => {
-            let alt_pubkey = alt_info
-                .alt_pubkey
-                .ok_or_else(|| anyhow::anyhow!("ALTInfo provided without pubkey"))?;
-
-            let alt_ref = AddressLookupTableAccount {
-                key: alt_pubkey,
-                addresses: alt_addresses,
-            };
-            let v0_msg =
-                v0::Message::try_compile(&payer.pubkey(), &instructions, &[alt_ref], recent_hash)
-                    .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-            let message = VersionedMessage::V0(v0_msg);
-            let versioned_tx = VersionedTransaction::try_new(message, &signing_keypairs)
-                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-            Ok(SolanaTransactionType::Versioned(versioned_tx))
-        }
-        None => Ok(SolanaTransactionType::Legacy(
+    if address_lookup_tables.is_empty() {
+        Ok(SolanaTransactionType::Legacy(
             Transaction::new_signed_with_payer(
                 &instructions,
                 Some(&payer.pubkey()),
                 &signing_keypairs,
                 recent_hash,
             ),
-        )),
+        ))
+    } else {
+        let v0_msg = v0::Message::try_compile(
+            &payer.pubkey(),
+            &instructions,
+            &address_lookup_tables,
+            recent_hash,
+        )
+        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        let message = VersionedMessage::V0(v0_msg);
+        let versioned_tx = VersionedTransaction::try_new(message, &signing_keypairs)
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        Ok(SolanaTransactionType::Versioned(versioned_tx))
     }
 }
 
@@ -464,6 +490,7 @@ mod tests {
     use solana_axelar_std::{
         CrossChainId, MerklizedMessage, Message, PublicKey, Signature as AxelarSignature,
     };
+    use solana_sdk::instruction::AccountMeta;
     use solana_sdk::signature::Keypair;
 
     fn create_test_execute_data_single_message(
@@ -1168,5 +1195,193 @@ mod tests {
 2025-11-26T16:50:25.618165Z DEBUG solana_rpc_client::nonblocking::rpc_client:
 2025-11-26T16:50:25.618307Z ERROR relayer_core::includer: Failed to consume delivery: GatewayTxTaskError("Generic error: TransactionError: Error processing Instruction 2: custom program error: 0x1776")"#;
         assert!(is_slot_already_verified(full_message));
+    }
+
+    #[test]
+    fn test_estimate_v0_tx_size_with_no_alts() {
+        let payer = Keypair::new();
+        let program = Pubkey::new_unique();
+        let ix = Instruction::new_with_bytes(program, &[1, 2, 3], vec![]);
+        let result = estimate_v0_tx_size(&[ix], &[], &payer.pubkey());
+        assert!(result.is_ok());
+        let size = result.unwrap();
+        // Should be well under 1232 for a simple instruction
+        assert!(size > 0 && size < MAX_TX_SIZE);
+    }
+
+    #[test]
+    fn test_estimate_v0_tx_size_with_alt() {
+        let payer = Keypair::new();
+        let program = Pubkey::new_unique();
+        let alt_account = Pubkey::new_unique();
+        let ix = Instruction::new_with_bytes(
+            program,
+            &[1, 2, 3],
+            vec![AccountMeta::new_readonly(alt_account, false)],
+        );
+        let alt = AddressLookupTableAccount {
+            key: Pubkey::new_unique(),
+            addresses: vec![alt_account],
+        };
+        let size_with_alt =
+            estimate_v0_tx_size(std::slice::from_ref(&ix), &[alt], &payer.pubkey()).unwrap();
+        let size_without_alt =
+            estimate_v0_tx_size(std::slice::from_ref(&ix), &[], &payer.pubkey()).unwrap();
+        // Both sizes should be valid; with only 1 ALT account the overhead may not save space
+        assert!(size_with_alt > 0);
+        assert!(size_without_alt > 0);
+    }
+
+    #[test]
+    fn test_estimate_v0_tx_size_with_multiple_alts() {
+        let payer = Keypair::new();
+        let program = Pubkey::new_unique();
+        let alt1_account = Pubkey::new_unique();
+        let alt2_account = Pubkey::new_unique();
+        let ix = Instruction::new_with_bytes(
+            program,
+            &[1],
+            vec![
+                AccountMeta::new_readonly(alt1_account, false),
+                AccountMeta::new_readonly(alt2_account, false),
+            ],
+        );
+        let alt1 = AddressLookupTableAccount {
+            key: Pubkey::new_unique(),
+            addresses: vec![alt1_account],
+        };
+        let alt2 = AddressLookupTableAccount {
+            key: Pubkey::new_unique(),
+            addresses: vec![alt2_account],
+        };
+        let result = estimate_v0_tx_size(&[ix], &[alt1, alt2], &payer.pubkey());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_estimate_v0_tx_size_large_instruction_overflows() {
+        let payer = Keypair::new();
+        let program = Pubkey::new_unique();
+        // Create a large payload that should push the tx over 1232 bytes
+        let large_data = vec![0u8; 1100];
+        let ix = Instruction::new_with_bytes(program, &large_data, vec![]);
+        let result = estimate_v0_tx_size(&[ix], &[], &payer.pubkey());
+        assert!(result.is_ok());
+        let size = result.unwrap();
+        assert!(size > MAX_TX_SIZE);
+    }
+
+    #[tokio::test]
+    async fn test_create_transaction_with_empty_alts_produces_legacy() {
+        let payer = Keypair::new();
+        let program = Pubkey::new_unique();
+        let ix = Instruction::new_with_bytes(
+            program,
+            &[1, 2, 3],
+            vec![AccountMeta::new(payer.pubkey(), true)],
+        );
+        let hash = solana_sdk::hash::Hash::new_unique();
+        let tx = create_transaction(vec![ix], vec![], 100, 200_000, &payer, vec![&payer], hash)
+            .await
+            .unwrap();
+        assert!(
+            matches!(tx, SolanaTransactionType::Legacy(_)),
+            "empty ALTs should produce Legacy tx"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_create_transaction_with_alts_produces_versioned() {
+        let payer = Keypair::new();
+        let program = Pubkey::new_unique();
+        let alt_account = Pubkey::new_unique();
+        let ix = Instruction::new_with_bytes(
+            program,
+            &[1, 2, 3],
+            vec![
+                AccountMeta::new(payer.pubkey(), true),
+                AccountMeta::new_readonly(alt_account, false),
+            ],
+        );
+        let alt = AddressLookupTableAccount {
+            key: Pubkey::new_unique(),
+            addresses: vec![alt_account],
+        };
+        let hash = solana_sdk::hash::Hash::new_unique();
+        let tx = create_transaction(
+            vec![ix],
+            vec![alt],
+            100,
+            200_000,
+            &payer,
+            vec![&payer],
+            hash,
+        )
+        .await
+        .unwrap();
+        match tx {
+            SolanaTransactionType::Versioned(versioned_tx) => match versioned_tx.message {
+                VersionedMessage::V0(msg) => {
+                    assert_eq!(msg.address_table_lookups.len(), 1);
+                }
+                _ => panic!("expected v0 message"),
+            },
+            _ => panic!("expected Versioned tx with ALTs"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_create_transaction_with_two_alts_references_both() {
+        let payer = Keypair::new();
+        let program = Pubkey::new_unique();
+        let alt1_account = Pubkey::new_unique();
+        let alt2_account = Pubkey::new_unique();
+        let alt1_pubkey = Pubkey::new_unique();
+        let alt2_pubkey = Pubkey::new_unique();
+        let ix = Instruction::new_with_bytes(
+            program,
+            &[1],
+            vec![
+                AccountMeta::new(payer.pubkey(), true),
+                AccountMeta::new_readonly(alt1_account, false),
+                AccountMeta::new_readonly(alt2_account, false),
+            ],
+        );
+        let alt1 = AddressLookupTableAccount {
+            key: alt1_pubkey,
+            addresses: vec![alt1_account],
+        };
+        let alt2 = AddressLookupTableAccount {
+            key: alt2_pubkey,
+            addresses: vec![alt2_account],
+        };
+        let hash = solana_sdk::hash::Hash::new_unique();
+        let tx = create_transaction(
+            vec![ix],
+            vec![alt1, alt2],
+            100,
+            200_000,
+            &payer,
+            vec![&payer],
+            hash,
+        )
+        .await
+        .unwrap();
+        match tx {
+            SolanaTransactionType::Versioned(versioned_tx) => match versioned_tx.message {
+                VersionedMessage::V0(msg) => {
+                    assert_eq!(msg.address_table_lookups.len(), 2);
+                    let keys: Vec<Pubkey> = msg
+                        .address_table_lookups
+                        .iter()
+                        .map(|l| l.account_key)
+                        .collect();
+                    assert!(keys.contains(&alt1_pubkey));
+                    assert!(keys.contains(&alt2_pubkey));
+                }
+                _ => panic!("expected v0 message"),
+            },
+            _ => panic!("expected Versioned tx with multiple ALTs"),
+        }
     }
 }
