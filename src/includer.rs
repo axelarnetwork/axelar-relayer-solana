@@ -9,8 +9,8 @@ use crate::transaction_builder::{TransactionBuilder, TransactionBuilderTrait};
 #[cfg(not(feature = "devnet-amplifier"))]
 use crate::utils::not_enough_gas_event;
 use crate::utils::{
-    get_gas_service_event_authority_pda, get_gateway_event_authority_pda,
-    keypair_from_base58_string,
+    estimate_v0_tx_size, get_gas_service_event_authority_pda, get_gateway_event_authority_pda,
+    keypair_from_base58_string, MAX_TX_SIZE,
 };
 use anchor_lang::prelude::AccountMeta;
 use anchor_lang::{InstructionData, ToAccountMetas};
@@ -46,6 +46,7 @@ use solana_transaction_parser::gmp_types::{
     RefundTask,
 };
 use solana_transaction_parser::redis::TransactionType;
+use std::slice::from_ref;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -53,6 +54,31 @@ use tokio::time::sleep;
 use tracing::{debug, error, info, warn};
 
 const SOLANA_EXPIRATION_TIME: u64 = 90;
+
+/// Verifies that the relayer keypair is registered as an operator in the gas service.
+async fn ensure_relayer_is_operator(
+    client: &IncluderClient,
+    keypair: &Keypair,
+) -> Result<(), IncluderError> {
+    let (operator_pda, _) = solana_axelar_operators::OperatorAccount::try_find_pda(
+        &keypair.pubkey(),
+    )
+    .ok_or_else(|| IncluderError::GenericError("Failed to derive operator PDA".to_string()))?;
+
+    client.get_account_data(&operator_pda).await.map_err(|_| {
+        IncluderError::GenericError(format!(
+            "Relayer key {} is not registered as a gas service operator (PDA {} not found on-chain)",
+            keypair.pubkey(),
+            operator_pda
+        ))
+    })?;
+
+    info!(
+        "Relayer {} verified as gas service operator",
+        keypair.pubkey()
+    );
+    Ok(())
+}
 
 /// Ensures a global ITS ALT exists on-chain with the expected accounts.
 /// If `alt_pubkey` is provided (from config), fetches it and verifies accounts match.
@@ -92,9 +118,7 @@ async fn ensure_its_alt_exists(
             addresses: on_chain_addresses,
         })
     } else {
-        // No ALT in config — create one.
-        // Unlike ephemeral ALTs (which use a random authority for concurrency),
-        // the persistent ALT uses the relayer keypair as authority.
+        // We need to create a new global ALT and then add it to the config
         let recent_slot = client
             .get_slot()
             .await
@@ -246,6 +270,10 @@ impl<
             redis_conn.clone(),
         );
 
+        ensure_relayer_is_operator(&client, &keypair)
+            .await
+            .map_err(|e| error_stack::report!(e))?;
+
         let its_global_alt =
             ensure_its_alt_exists(config.its_global_alt_pubkey(), &client, &keypair)
                 .await
@@ -341,19 +369,17 @@ impl<
         let needs_ephemeral_alt = if !extra_alt_accounts.is_empty() && existing_alt_pubkey.is_none()
         {
             // Estimate tx size with only the global ALT to decide if ephemeral ALT is needed
-            match crate::utils::estimate_v0_tx_size(
-                std::slice::from_ref(&instruction),
+            match estimate_v0_tx_size(
+                from_ref(&instruction),
                 &address_lookup_tables,
                 &self.keypair.pubkey(),
             ) {
                 Ok(size) => {
                     debug!(
                         "Estimated tx size for message_id={}: {} bytes (max {})",
-                        task.task.message.message_id,
-                        size,
-                        crate::utils::MAX_TX_SIZE
+                        task.task.message.message_id, size, MAX_TX_SIZE
                     );
-                    size > crate::utils::MAX_TX_SIZE
+                    size > MAX_TX_SIZE
                 }
                 Err(e) => {
                     // If we can't estimate, assume we need the ephemeral ALT
@@ -370,8 +396,8 @@ impl<
 
         if let Some(existing_alt_pubkey) = existing_alt_pubkey {
             debug!(
-                "ALT decision for message_id={}: reusing existing ephemeral alt={}",
-                task.task.message.message_id, existing_alt_pubkey
+                "Reusing existing ephemeral alt={} for message_id={}",
+                existing_alt_pubkey, task.task.message.message_id
             );
             let alt_account_data = self
                 .client
@@ -386,7 +412,7 @@ impl<
             });
         } else if needs_ephemeral_alt {
             debug!(
-                "ALT decision for message_id={}: creating new ephemeral ALT, accounts_count={}",
+                "Creating new ephemeral ALT for message_id={}, accounts_count={}",
                 task.task.message.message_id,
                 extra_alt_accounts.len()
             );

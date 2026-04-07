@@ -255,7 +255,7 @@ pub fn calculate_total_cost_lamports(
     Ok(base_fee.saturating_add(priority_lamports))
 }
 
-/// Maximum Solana transaction size (1280 - 40 - 8 = 1232 bytes).
+/// Maximum Solana transaction size
 pub const MAX_TX_SIZE: usize = 1232;
 
 /// Estimate the serialized size of a v0 transaction with the given instructions and ALTs.
@@ -277,13 +277,16 @@ pub fn estimate_v0_tx_size(
         .map_err(|e| anyhow::anyhow!(e.to_string()))?;
 
     let message = VersionedMessage::V0(v0_msg);
-    let serialized_msg =
-        bincode::serialize(&message).map_err(|e| anyhow::anyhow!(e.to_string()))?;
-
-    // Total size = signatures (1 byte length prefix + 64 bytes per signer) + message
     let num_signers = message.header().num_required_signatures as usize;
-    let total = 1 + (num_signers * 64) + serialized_msg.len();
-    Ok(total)
+
+    // Build a complete transaction with dummy signatures to get the exact serialized size
+    let dummy_signatures = vec![Signature::default(); num_signers];
+    let tx = VersionedTransaction {
+        signatures: dummy_signatures,
+        message,
+    };
+    let serialized = bincode::serialize(&tx).map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    Ok(serialized.len())
 }
 
 #[allow(clippy::too_many_arguments)]

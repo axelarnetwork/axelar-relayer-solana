@@ -5,6 +5,7 @@ use solana_commitment_config::CommitmentConfig;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Keypair;
 use std::str::FromStr;
+use tracing::error;
 
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct SolanaConfig {
@@ -44,7 +45,7 @@ impl SolanaConfig {
         self.its_global_alt.as_ref().and_then(|s| {
             Pubkey::from_str(s)
                 .map_err(|e| {
-                    tracing::error!("Invalid its_global_alt pubkey '{}': {}", s, e);
+                    error!("Invalid its_global_alt pubkey '{}': {}", s, e);
                     e
                 })
                 .ok()
