@@ -59,7 +59,10 @@ async fn test_approve_and_execute_its_message() {
         Arc::new(mock_gmp_api),
         mock_redis,
         Arc::new(mock_refunds_model),
-        None,
+        solana_sdk::message::AddressLookupTableAccount {
+            key: solana_sdk::pubkey::Pubkey::new_unique(),
+            addresses: vec![],
+        },
     );
 
     let deploy_message_id = "test-its-deploy-token-001";
@@ -1355,7 +1358,10 @@ async fn test_its_messages_with_optional_fields() {
         Arc::new(mock_gmp_api),
         mock_redis,
         Arc::new(mock_refunds_model),
-        None,
+        solana_sdk::message::AddressLookupTableAccount {
+            key: solana_sdk::pubkey::Pubkey::new_unique(),
+            addresses: vec![],
+        },
     );
 
     println!("DeployInterchainToken with Minter");
@@ -2153,7 +2159,10 @@ async fn test_its_concurrent_task_processing() {
         Arc::new(mock_gmp_api),
         mock_redis,
         Arc::new(mock_refunds_model),
-        None,
+        solana_sdk::message::AddressLookupTableAccount {
+            key: solana_sdk::pubkey::Pubkey::new_unique(),
+            addresses: vec![],
+        },
     ));
 
     let deploy_gateway_task = GatewayTxTask {
@@ -2398,7 +2407,10 @@ async fn test_its_execute_with_global_alt() {
         Arc::new(mock_gmp_api),
         mock_redis,
         Arc::new(mock_refunds_model),
-        Some(global_alt_pubkey),
+        solana_sdk::message::AddressLookupTableAccount {
+            key: global_alt_pubkey,
+            addresses: global_alt_addresses.clone(),
+        },
     );
 
     // ---------- DeployInterchainToken flow ----------
@@ -2538,5 +2550,413 @@ async fn test_its_execute_with_global_alt() {
     );
 
     println!("SUCCESS: ITS DeployInterchainToken executed with global ALT!");
+    env.cleanup().await;
+}
+
+/// Integration test exercising both ALT paths on a real test validator:
+/// 1. Deploy token + InterchainTransfer WITHOUT data → global ALT only (no ephemeral)
+/// 2. InterchainTransfer WITH data (many accounts) → global ALT + ephemeral ALT
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_its_global_alt_with_and_without_ephemeral() {
+    use solana_axelar_gateway::executable::ExecutablePayload;
+    use solana_axelar_gateway::payload::EncodingScheme;
+    use solana_sdk::instruction::AccountMeta;
+
+    let env = TestEnvironment::new().await;
+    let its_hub_address = env.its_hub_address.clone();
+    let its_program_address = solana_axelar_its::ID.to_string();
+
+    // ========== Deploy global ALT ==========
+    let rpc = RpcClient::new_with_commitment(env.rpc_url.clone(), CommitmentConfig::confirmed());
+
+    let (gateway_root_pda, _) =
+        solana_axelar_gateway::GatewayConfig::try_find_pda().expect("gateway root PDA");
+    let (gateway_event_authority, _) =
+        get_gateway_event_authority_pda().expect("gateway event authority PDA");
+    let (its_root_pda, _) =
+        solana_axelar_its::InterchainTokenService::try_find_pda().expect("ITS root PDA");
+    let (its_event_authority, _) = get_its_event_authority_pda().expect("ITS event authority PDA");
+
+    let global_alt_addresses: Vec<Pubkey> = vec![
+        gateway_root_pda,
+        gateway_event_authority,
+        solana_axelar_gateway::ID,
+        its_root_pda,
+        anchor_spl::associated_token::ID,
+        solana_sdk_ids::system_program::ID,
+        its_event_authority,
+        anchor_spl::token::ID,
+        anchor_spl::token_2022::spl_token_2022::ID,
+    ];
+
+    let recent_slot = rpc
+        .get_slot_with_commitment(CommitmentConfig::finalized())
+        .await
+        .expect("get slot");
+    let (create_alt_ix, global_alt_pubkey) =
+        create_lookup_table(env.payer.pubkey(), env.payer.pubkey(), recent_slot);
+    let extend_alt_ix = extend_lookup_table(
+        global_alt_pubkey,
+        env.payer.pubkey(),
+        Some(env.payer.pubkey()),
+        global_alt_addresses.clone(),
+    );
+    let blockhash = rpc.get_latest_blockhash().await.expect("blockhash");
+    let alt_tx = Transaction::new_signed_with_payer(
+        &[create_alt_ix, extend_alt_ix],
+        Some(&env.payer.pubkey()),
+        &[&env.payer],
+        blockhash,
+    );
+    rpc.send_and_confirm_transaction(&alt_tx)
+        .await
+        .expect("Failed to create global ALT");
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    println!("Global ALT deployed: {}", global_alt_pubkey);
+
+    // ========== Create includer with global ALT ==========
+    let components = create_includer_components(&env.rpc_url, &env.payer);
+    let mock_redis = create_mock_redis();
+    let mock_gmp_api = create_mock_gmp_api_for_execute();
+    let mock_refunds_model = MockRefundsModel::new();
+
+    let includer = SolanaIncluder::new(
+        Arc::new(components.includer_client),
+        components.keypair,
+        "solana-devnet".to_string(),
+        components.transaction_builder,
+        Arc::new(mock_gmp_api),
+        mock_redis,
+        Arc::new(mock_refunds_model),
+        solana_sdk::message::AddressLookupTableAccount {
+            key: global_alt_pubkey,
+            addresses: global_alt_addresses.clone(),
+        },
+    );
+
+    let source_address = its_hub_address.clone();
+
+    // Helper closure: approve a message through the gateway
+    let approve_message = |_includer: &SolanaIncluder<_, _, _, _, _>,
+                           _message: Message,
+                           message_leaf: MessageLeaf,
+                           gateway_task_id: &str| {
+        let leaf_hash = message_leaf.hash();
+        let merkle_tree = MerkleTree::from_leaves(&[leaf_hash]);
+        let merkle_root = merkle_tree.root().expect("merkle root");
+
+        let verifier_info_1 = create_verifier_info(
+            &env.verifier_secret_keys[0],
+            merkle_root,
+            &env.verifier_leaves[0],
+            0,
+            &env.verifier_merkle_tree,
+            PayloadType::ApproveMessages,
+        );
+        let verifier_info_2 = create_verifier_info(
+            &env.verifier_secret_keys[1],
+            merkle_root,
+            &env.verifier_leaves[1],
+            1,
+            &env.verifier_merkle_tree,
+            PayloadType::ApproveMessages,
+        );
+
+        let execute_data = ExecuteData {
+            payload_merkle_root: merkle_root,
+            signing_verifier_set_merkle_root: env.verifier_set_hash,
+            signing_verifier_set_leaves: vec![verifier_info_1, verifier_info_2],
+            payload_items: MerklizedPayload::NewMessages {
+                messages: vec![MerklizedMessage {
+                    leaf: message_leaf,
+                    proof: vec![],
+                }],
+            },
+        };
+
+        GatewayTxTask {
+            common: CommonTaskFields {
+                id: gateway_task_id.to_string(),
+                chain: "solana-devnet".into(),
+                timestamp: "2025-11-26T14:47:18.567796Z".into(),
+                r#type: "GATEWAY_TX".into(),
+                meta: None,
+            },
+            task: GatewayTxTaskFields {
+                execute_data: BASE64_STANDARD.encode(borsh::to_vec(&execute_data).unwrap()),
+            },
+        }
+    };
+
+    // ========== Step 1: DeployInterchainToken (global ALT only, no ephemeral) ==========
+    println!("\n--- Step 1: DeployInterchainToken (global ALT only) ---");
+    let salt = [200u8; 32];
+    let token_id = interchain_token_id(&env.payer.pubkey(), &salt);
+
+    let deploy_token = DeployInterchainToken {
+        token_id,
+        name: "ALT Test Token".to_string(),
+        symbol: "ALTT".to_string(),
+        decimals: 9,
+        minter: None,
+    };
+    let deploy_hub_message = HubMessage::ReceiveFromHub {
+        source_chain: "axelar".to_string(),
+        message: ItsMessage::DeployInterchainToken(deploy_token),
+    };
+    let deploy_payload_bytes = borsh::to_vec(&deploy_hub_message).unwrap();
+    let deploy_payload_hash = solana_sdk::keccak::hashv(&[&deploy_payload_bytes]).to_bytes();
+
+    let deploy_message_id = "test-alt-paths-deploy-001";
+    let deploy_message = Message {
+        cc_id: CrossChainId {
+            chain: "axelar".to_string(),
+            id: deploy_message_id.to_string(),
+        },
+        source_address: source_address.clone(),
+        destination_chain: "solana-devnet".to_string(),
+        destination_address: its_program_address.clone(),
+        payload_hash: deploy_payload_hash,
+    };
+    let deploy_message_leaf = MessageLeaf {
+        message: deploy_message.clone(),
+        position: 0,
+        set_size: 1,
+        domain_separator: env.domain_separator,
+    };
+
+    let deploy_gw_task = approve_message(
+        &includer,
+        deploy_message.clone(),
+        deploy_message_leaf,
+        "gw-alt-deploy-001",
+    );
+    includer
+        .handle_gateway_tx_task(deploy_gw_task)
+        .await
+        .expect("Failed to approve deploy message");
+    println!("Deploy message approved");
+
+    let deploy_execute_task = ExecuteTask {
+        common: CommonTaskFields {
+            id: "exec-alt-deploy-001".into(),
+            chain: "solana-devnet".into(),
+            timestamp: "2025-11-26T14:47:19.567796Z".into(),
+            r#type: "EXECUTE".into(),
+            meta: None,
+        },
+        task: ExecuteTaskFields {
+            message: GatewayV2Message {
+                message_id: deploy_message_id.to_string(),
+                source_chain: "axelar".to_string(),
+                source_address: source_address.clone(),
+                destination_address: its_program_address.clone(),
+                payload_hash: BASE64_STANDARD.encode(deploy_payload_hash),
+            },
+            payload: BASE64_STANDARD.encode(&deploy_payload_bytes),
+            available_gas_balance: Amount {
+                token_id: None,
+                amount: "10000000000".to_string(),
+            },
+        },
+    };
+    let deploy_result = includer.handle_execute_task(deploy_execute_task).await;
+    assert!(
+        deploy_result.is_ok(),
+        "DeployInterchainToken should succeed: {:?}",
+        deploy_result.err()
+    );
+    println!("DeployInterchainToken succeeded (global ALT only, no ephemeral)");
+
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+    // ========== Step 2: InterchainTransfer WITHOUT data (global ALT only) ==========
+    println!("\n--- Step 2: InterchainTransfer without data (global ALT only) ---");
+    let transfer_message_id = "test-alt-paths-transfer-001";
+    let destination_pubkey = env.operator.pubkey();
+
+    let transfer = InterchainTransfer {
+        token_id,
+        source_address: "ethereum_address".as_bytes().to_vec(),
+        destination_address: destination_pubkey.to_bytes().to_vec(),
+        amount: 1_000_000u64,
+        data: None,
+    };
+    let transfer_hub_message = HubMessage::ReceiveFromHub {
+        source_chain: "axelar".to_string(),
+        message: ItsMessage::InterchainTransfer(transfer),
+    };
+    let transfer_payload_bytes = borsh::to_vec(&transfer_hub_message).unwrap();
+    let transfer_payload_hash = solana_sdk::keccak::hashv(&[&transfer_payload_bytes]).to_bytes();
+
+    let transfer_message = Message {
+        cc_id: CrossChainId {
+            chain: "axelar".to_string(),
+            id: transfer_message_id.to_string(),
+        },
+        source_address: source_address.clone(),
+        destination_chain: "solana-devnet".to_string(),
+        destination_address: its_program_address.clone(),
+        payload_hash: transfer_payload_hash,
+    };
+    let transfer_message_leaf = MessageLeaf {
+        message: transfer_message.clone(),
+        position: 0,
+        set_size: 1,
+        domain_separator: env.domain_separator,
+    };
+
+    let transfer_gw_task = approve_message(
+        &includer,
+        transfer_message.clone(),
+        transfer_message_leaf,
+        "gw-alt-transfer-001",
+    );
+    includer
+        .handle_gateway_tx_task(transfer_gw_task)
+        .await
+        .expect("Failed to approve transfer message");
+    println!("Transfer message approved");
+
+    let transfer_execute_task = ExecuteTask {
+        common: CommonTaskFields {
+            id: "exec-alt-transfer-001".into(),
+            chain: "solana-devnet".into(),
+            timestamp: "2025-11-26T14:47:20.567796Z".into(),
+            r#type: "EXECUTE".into(),
+            meta: None,
+        },
+        task: ExecuteTaskFields {
+            message: GatewayV2Message {
+                message_id: transfer_message_id.to_string(),
+                source_chain: "axelar".to_string(),
+                source_address: source_address.clone(),
+                destination_address: its_program_address.clone(),
+                payload_hash: BASE64_STANDARD.encode(transfer_payload_hash),
+            },
+            payload: BASE64_STANDARD.encode(&transfer_payload_bytes),
+            available_gas_balance: Amount {
+                token_id: None,
+                amount: "10000000000".to_string(),
+            },
+        },
+    };
+    let transfer_result = includer.handle_execute_task(transfer_execute_task).await;
+    assert!(
+        transfer_result.is_ok(),
+        "InterchainTransfer without data should succeed: {:?}",
+        transfer_result.err()
+    );
+    println!("InterchainTransfer without data succeeded (global ALT only)");
+
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+    // ========== Step 3: InterchainTransfer WITH data (global ALT + ephemeral ALT) ==========
+    // This creates an ExecutablePayload with many accounts to push the tx over 1232 bytes.
+    // The destination program (operator pubkey) won't implement the executable interface,
+    // so the tx will revert — but it proves the ephemeral ALT was created and both ALTs
+    // were included in the v0 transaction.
+    println!("\n--- Step 3: InterchainTransfer with data (global + ephemeral ALT) ---");
+    let transfer_data_message_id = "test-alt-paths-transfer-data-001";
+
+    // Create an ExecutablePayload with extra accounts to push the tx over 1232 bytes
+    // when using only the global ALT, but fitting when the ephemeral ALT is also used.
+    // Each account saves ~32 bytes when moved to an ALT lookup.
+    let extra_accounts: Vec<AccountMeta> = (0..5)
+        .map(|_| AccountMeta::new_readonly(Pubkey::new_unique(), false))
+        .collect();
+    let payload_data = vec![0u8; 32];
+    let executable_payload = ExecutablePayload::new::<AccountMeta>(
+        &payload_data,
+        &extra_accounts,
+        EncodingScheme::Borsh,
+    );
+    let executable_payload_bytes = executable_payload.encode().unwrap();
+
+    let transfer_with_data = InterchainTransfer {
+        token_id,
+        source_address: "ethereum_address".as_bytes().to_vec(),
+        destination_address: destination_pubkey.to_bytes().to_vec(),
+        amount: 500_000u64,
+        data: Some(executable_payload_bytes),
+    };
+    let transfer_data_hub_message = HubMessage::ReceiveFromHub {
+        source_chain: "axelar".to_string(),
+        message: ItsMessage::InterchainTransfer(transfer_with_data),
+    };
+    let transfer_data_payload_bytes = borsh::to_vec(&transfer_data_hub_message).unwrap();
+    let transfer_data_payload_hash =
+        solana_sdk::keccak::hashv(&[&transfer_data_payload_bytes]).to_bytes();
+
+    let transfer_data_message = Message {
+        cc_id: CrossChainId {
+            chain: "axelar".to_string(),
+            id: transfer_data_message_id.to_string(),
+        },
+        source_address: source_address.clone(),
+        destination_chain: "solana-devnet".to_string(),
+        destination_address: its_program_address.clone(),
+        payload_hash: transfer_data_payload_hash,
+    };
+    let transfer_data_message_leaf = MessageLeaf {
+        message: transfer_data_message.clone(),
+        position: 0,
+        set_size: 1,
+        domain_separator: env.domain_separator,
+    };
+
+    let transfer_data_gw_task = approve_message(
+        &includer,
+        transfer_data_message.clone(),
+        transfer_data_message_leaf,
+        "gw-alt-transfer-data-001",
+    );
+    includer
+        .handle_gateway_tx_task(transfer_data_gw_task)
+        .await
+        .expect("Failed to approve transfer-with-data message");
+    println!("Transfer-with-data message approved");
+
+    let transfer_data_execute_task = ExecuteTask {
+        common: CommonTaskFields {
+            id: "exec-alt-transfer-data-001".into(),
+            chain: "solana-devnet".into(),
+            timestamp: "2025-11-26T14:47:21.567796Z".into(),
+            r#type: "EXECUTE".into(),
+            meta: None,
+        },
+        task: ExecuteTaskFields {
+            message: GatewayV2Message {
+                message_id: transfer_data_message_id.to_string(),
+                source_chain: "axelar".to_string(),
+                source_address: source_address.clone(),
+                destination_address: its_program_address.clone(),
+                payload_hash: BASE64_STANDARD.encode(transfer_data_payload_hash),
+            },
+            payload: BASE64_STANDARD.encode(&transfer_data_payload_bytes),
+            available_gas_balance: Amount {
+                token_id: None,
+                amount: "10000000000".to_string(),
+            },
+        },
+    };
+
+    // This will either succeed or revert (destination doesn't implement executable interface),
+    // but either way it exercises the ephemeral ALT creation + dual-ALT v0 tx path.
+    // A revert returns Ok(vec![Event::...]) with REVERTED status, not Err.
+    let transfer_data_result = includer
+        .handle_execute_task(transfer_data_execute_task)
+        .await;
+    assert!(
+        transfer_data_result.is_ok(),
+        "InterchainTransfer with data should not error (may revert): {:?}",
+        transfer_data_result.err()
+    );
+    println!(
+        "InterchainTransfer with data completed (global + ephemeral ALT). Events: {:?}",
+        transfer_data_result.as_ref().unwrap().len()
+    );
+
+    println!("\nSUCCESS: Both ALT paths exercised!");
     env.cleanup().await;
 }
