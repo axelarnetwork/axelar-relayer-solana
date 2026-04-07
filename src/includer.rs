@@ -411,22 +411,22 @@ impl<
                 addresses: alt_state.addresses.to_vec(),
             });
         } else if needs_ephemeral_alt {
-            // Deduplicate: remove accounts already in the global ALT, signers, and the program_id
-            let deduped_accounts: Vec<AccountMeta> = extra_alt_accounts
+            // Remove accounts already in the global ALT, signers, and the program_id
+            let extra_alt_accounts: Vec<AccountMeta> = extra_alt_accounts
                 .iter()
                 .filter(|acc| {
                     !acc.is_signer
                         && acc.pubkey != instruction.program_id
                         && acc.pubkey != self.keypair.pubkey()
-                        && !&self.its_global_alt.addresses.contains(&acc.pubkey)
+                        && !self.its_global_alt.addresses.contains(&acc.pubkey)
                 })
                 .cloned()
                 .collect();
 
             debug!(
-                "Creating new ephemeral ALT for message_id={}, accounts_count={})",
+                "Creating new ephemeral ALT for message_id={}, accounts_count={}",
                 task.task.message.message_id,
-                deduped_accounts.len(),
+                extra_alt_accounts.len(),
             );
 
             let recent_slot = self
@@ -437,7 +437,7 @@ impl<
                 .saturating_sub(1);
             let (alt_ix_create, alt_ix_extend, alt_pubkey, authority_keypair_str) = self
                 .transaction_builder
-                .build_lookup_table_instructions(recent_slot, &deduped_accounts)
+                .build_lookup_table_instructions(recent_slot, &extra_alt_accounts)
                 .await
                 .map_err(|e| IncluderError::GenericError(e.to_string()))?;
             let authority_keypair = keypair_from_base58_string(&authority_keypair_str)
