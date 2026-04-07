@@ -418,7 +418,7 @@ impl<
                     !acc.is_signer
                         && acc.pubkey != instruction.program_id
                         && acc.pubkey != self.keypair.pubkey()
-                        && !(&self.its_global_alt.addresses).contains(&acc.pubkey)
+                        && !&self.its_global_alt.addresses.contains(&acc.pubkey)
                 })
                 .cloned()
                 .collect();
