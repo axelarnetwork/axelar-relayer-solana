@@ -35,8 +35,8 @@ tracing = "0.1.40"
 uuid = { version = "1.0", features = ["v4"] }
 
 # Anchor
-anchor-lang = "1.0.0-rc.5"
-anchor-spl = "1.0.0-rc.5"
+anchor-lang = "1.0.0"
+anchor-spl = "1.0.0"
 
 # Solana
 mpl-token-metadata = "^5.1.2-alpha.2"
@@ -59,13 +59,13 @@ solana-test-validator = "~3.1"
 
 # Solana Axelar
 governance-gmp = "0.1.4"
-solana-axelar-gas-service = { version = "1.0.1", default-features = false, features = ["no-entrypoint"] }
-solana-axelar-gateway = { version = "1.0.1", default-features = false, features = ["no-entrypoint"] }
-solana-axelar-governance = { version = "1.0.1", default-features = false, features = ["no-entrypoint"] }
-solana-axelar-its = { version = "1.0.1", default-features = false, features = ["no-entrypoint"] }
-solana-axelar-memo = { version = "1.0.1", default-features = false, features = ["no-entrypoint"] }
-solana-axelar-operators = { version = "1.0.1", default-features = false, features = ["no-entrypoint"] }
-solana-axelar-std = "1.0.0"
+solana-axelar-gas-service = { version = "1.1.0", default-features = false, features = ["no-entrypoint"] }
+solana-axelar-gateway = { version = "1.1.0", default-features = false, features = ["no-entrypoint"] }
+solana-axelar-governance = { version = "1.1.0", default-features = false, features = ["no-entrypoint"] }
+solana-axelar-its = { version = "1.1.0", default-features = false, features = ["no-entrypoint"] }
+solana-axelar-memo = { version = "1.1.0", default-features = false, features = ["no-entrypoint"] }
+solana-axelar-operators = { version = "1.1.0", default-features = false, features = ["no-entrypoint"] }
+solana-axelar-std = "1.1.0"
 
 # Relayer
 relayer-core = { git = "https://github.com/commonprefix/axelar-relayer-core", tag = "1.0.1", features = ["mocks"] }
