@@ -9,8 +9,8 @@ use crate::transaction_builder::{TransactionBuilder, TransactionBuilderTrait};
 #[cfg(not(feature = "devnet-amplifier"))]
 use crate::utils::not_enough_gas_event;
 use crate::utils::{
-    get_gas_service_event_authority_pda, get_gateway_event_authority_pda,
-    keypair_from_base58_string,
+    estimate_v0_tx_size, get_gas_service_event_authority_pda, get_gateway_event_authority_pda,
+    keypair_from_base58_string, MAX_TX_SIZE,
 };
 use anchor_lang::prelude::AccountMeta;
 use anchor_lang::{InstructionData, ToAccountMetas};
@@ -27,6 +27,9 @@ use relayer_core::{
     database::Database, gmp_api::GmpApiTrait, includer::Includer, includer_worker::IncluderWorker,
     payload_cache::PayloadCache, queue::Queue,
 };
+use solana_address_lookup_table_interface::instruction::{
+    create_lookup_table, extend_lookup_table,
+};
 use solana_address_lookup_table_interface::state::AddressLookupTable;
 use solana_axelar_gas_service;
 use solana_axelar_std::execute_data::{ExecuteData, MerklizedPayload, PayloadType};
@@ -34,6 +37,7 @@ use solana_axelar_std::MerklizedMessage;
 use solana_axelar_std::{CrossChainId, Message};
 use solana_sdk::clock::Slot;
 use solana_sdk::instruction::Instruction;
+use solana_sdk::message::AddressLookupTableAccount;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Signature;
 use solana_sdk::signer::{keypair::Keypair, Signer};
@@ -42,6 +46,7 @@ use solana_transaction_parser::gmp_types::{
     RefundTask,
 };
 use solana_transaction_parser::redis::TransactionType;
+use std::slice::from_ref;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -49,6 +54,130 @@ use tokio::time::sleep;
 use tracing::{debug, error, info, warn};
 
 const SOLANA_EXPIRATION_TIME: u64 = 90;
+
+/// Verifies that the relayer keypair is registered as an operator in the gas service.
+async fn ensure_relayer_is_operator(
+    client: &IncluderClient,
+    keypair: &Keypair,
+) -> Result<(), IncluderError> {
+    let (operator_pda, _) = solana_axelar_operators::OperatorAccount::try_find_pda(
+        &keypair.pubkey(),
+    )
+    .ok_or_else(|| IncluderError::GenericError("Failed to derive operator PDA".to_string()))?;
+
+    client.get_account_data(&operator_pda).await.map_err(|_| {
+        IncluderError::GenericError(format!(
+            "Relayer key {} is not registered as a gas service operator (PDA {} not found on-chain)",
+            keypair.pubkey(),
+            operator_pda
+        ))
+    })?;
+
+    info!(
+        "Relayer {} verified as gas service operator",
+        keypair.pubkey()
+    );
+    Ok(())
+}
+
+/// Ensures a global ITS ALT exists on-chain with the expected accounts.
+/// If `alt_pubkey` is provided (from config), fetches it and verifies accounts match.
+/// If not provided, creates a new ALT on-chain.
+async fn ensure_its_alt_exists(
+    alt_pubkey: Option<Pubkey>,
+    client: &IncluderClient,
+    keypair: &Keypair,
+) -> Result<AddressLookupTableAccount, IncluderError> {
+    let expected_accounts = SolanaConfig::expected_its_alt_accounts()
+        .map_err(|e| IncluderError::GenericError(e.to_string()))?;
+
+    if let Some(pubkey) = alt_pubkey {
+        let alt_account_data = client.get_account_data(&pubkey).await.map_err(|e| {
+            IncluderError::GenericError(format!("Failed to fetch ITS global ALT {}: {}", pubkey, e))
+        })?;
+        let alt_state = AddressLookupTable::deserialize(&alt_account_data).map_err(|e| {
+            IncluderError::GenericError(format!(
+                "Failed to deserialize ITS global ALT {}: {}",
+                pubkey, e
+            ))
+        })?;
+        let on_chain_addresses = alt_state.addresses.to_vec();
+
+        for expected in &expected_accounts {
+            if !on_chain_addresses.contains(expected) {
+                return Err(IncluderError::GenericError(format!(
+                    "ITS global ALT {} is missing expected account {}",
+                    pubkey, expected
+                )));
+            }
+        }
+
+        info!("Using existing ITS global ALT: {}", pubkey);
+        Ok(AddressLookupTableAccount {
+            key: pubkey,
+            addresses: on_chain_addresses,
+        })
+    } else {
+        // We need to create a new global ALT and then add it to the config
+        let recent_slot = client
+            .get_slot()
+            .await
+            .map_err(|e| IncluderError::GenericError(e.to_string()))?
+            .saturating_sub(1);
+
+        let (create_ix, alt_pubkey) =
+            create_lookup_table(keypair.pubkey(), keypair.pubkey(), recent_slot);
+        let extend_ix = extend_lookup_table(
+            alt_pubkey,
+            keypair.pubkey(),
+            Some(keypair.pubkey()),
+            expected_accounts.clone(),
+        );
+
+        let recent_blockhash = client
+            .get_latest_blockhash()
+            .await
+            .map_err(|e| IncluderError::GenericError(e.to_string()))?;
+
+        let tx = solana_sdk::transaction::Transaction::new_signed_with_payer(
+            &[create_ix, extend_ix],
+            Some(&keypair.pubkey()),
+            &[keypair],
+            recent_blockhash,
+        );
+
+        client
+            .send_transaction(
+                crate::transaction_type::SolanaTransactionType::Legacy(tx),
+                None,
+            )
+            .await
+            .map_err(|e| {
+                IncluderError::GenericError(format!("Failed to create ITS global ALT: {}", e))
+            })?;
+
+        // Wait for ALT to activate
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+        warn!(
+            "Created new persistent ALT for ITS with pubkey: {}",
+            alt_pubkey
+        );
+
+        Ok(AddressLookupTableAccount {
+            key: alt_pubkey,
+            addresses: expected_accounts,
+        })
+    }
+}
+
+/// Estimated tx fee for deactivating an ephemeral ALT (2 signers × 5,000 base + priority fee).
+/// Measured with 1000 CU price, 200k CU limit: 10,200 lamports.
+const ALT_DEACTIVATE_COST: u64 = 10_200;
+
+/// Estimated tx fee for closing an ephemeral ALT (2 signers × 5,000 base + priority fee).
+/// Measured with 1000 CU price, 200k CU limit: 10,200 lamports.
+const ALT_CLOSE_COST: u64 = 10_200;
 
 #[derive(Clone)]
 pub struct SolanaIncluder<
@@ -65,6 +194,7 @@ pub struct SolanaIncluder<
     gmp_api: Arc<G>,
     redis_conn: R,
     refunds_model: Arc<RF>,
+    its_global_alt: AddressLookupTableAccount,
 }
 
 impl<
@@ -84,6 +214,7 @@ impl<
         gmp_api: Arc<G>,
         redis_conn: R,
         refunds_model: Arc<RF>,
+        its_global_alt: AddressLookupTableAccount,
     ) -> Self {
         Self {
             client,
@@ -93,6 +224,7 @@ impl<
             gmp_api,
             redis_conn,
             refunds_model,
+            its_global_alt,
         }
     }
 
@@ -138,6 +270,14 @@ impl<
             redis_conn.clone(),
         );
 
+        ensure_relayer_is_operator(&client, &keypair)
+            .await
+            .map_err(|e| error_stack::report!(e))?;
+
+        let its_global_alt =
+            ensure_its_alt_exists(config.its_global_alt_pubkey(), &client, &keypair)
+                .await
+                .map_err(|e| error_stack::report!(e))?;
         let solana_includer = SolanaIncluder::new(
             Arc::clone(&client),
             Arc::clone(&keypair),
@@ -146,6 +286,7 @@ impl<
             Arc::clone(&gmp_api),
             redis_conn.clone(),
             refunds_model,
+            its_global_alt,
         );
 
         let refund_manager = SolanaRefundManager::new()
@@ -171,7 +312,7 @@ impl<
         ixs: Vec<Instruction>,
         execute_data: Option<&ExecuteData>,
     ) -> Result<(Signature, Option<u64>), SolanaIncluderError> {
-        let (tx, _) = match self.transaction_builder.build(&ixs, None, None).await {
+        let (tx, _) = match self.transaction_builder.build(&ixs, vec![], None).await {
             Ok((tx, cost)) => (tx, cost),
             Err(e) => {
                 return Err(SolanaIncluderError::GenericError(e.to_string()));
@@ -205,27 +346,89 @@ impl<
         &self,
         instruction: Instruction,
         task: ExecuteTask,
-        accounts: &[AccountMeta], // The accounts for which we need to create an ALT. We skip creation if it's empty
-        existing_alt_pubkey: Option<Pubkey>, // The pubkey of an existing ALT. We skip creation if exists already and re-use it
+        extra_alt_accounts: &[AccountMeta], // Non-empty only for ITS InterchainTransfer with data that overflows
+        existing_alt_pubkey: Option<Pubkey>, // Existing ephemeral ALT from a previous attempt (stored in Redis)
+        destination_address: Pubkey,
     ) -> Result<Vec<Event>, IncluderError> {
         let mut alt_cost = None;
         let mut available_gas_balance = i64::from_str(&task.task.available_gas_balance.amount)
             .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
-        let alt_info = if let Some(existing_alt_pubkey) = existing_alt_pubkey {
-            // if a key existed already for an ALT, we can reuse it as it will have been created previously
+        let mut address_lookup_tables: Vec<AddressLookupTableAccount> = vec![];
+
+        // If this is an ITS transaction, always include the global ALT
+        if destination_address == solana_axelar_its::ID {
             debug!(
-                "ALT decision for message_id={}: reusing existing alt={}",
-                task.task.message.message_id, existing_alt_pubkey
+                "Using global ITS ALT={} for message_id={}",
+                self.its_global_alt.key, task.task.message.message_id
             );
-            Some(ALTInfo::new(Some(existing_alt_pubkey)))
-        } else if !accounts.is_empty() {
-            // case where we need to create a new ALT
+            address_lookup_tables.push(self.its_global_alt.clone());
+        }
+
+        // Ephemeral ALT: reuse existing from Redis, or create new if tx overflows with just the global ALT
+        let needs_ephemeral_alt = if !extra_alt_accounts.is_empty() && existing_alt_pubkey.is_none()
+        {
+            // Estimate tx size with only the global ALT to decide if ephemeral ALT is needed
+            match estimate_v0_tx_size(
+                from_ref(&instruction),
+                &address_lookup_tables,
+                &self.keypair.pubkey(),
+            ) {
+                Ok(size) => {
+                    debug!(
+                        "Estimated tx size for message_id={}: {} bytes (max {})",
+                        task.task.message.message_id, size, MAX_TX_SIZE
+                    );
+                    size > MAX_TX_SIZE
+                }
+                Err(e) => {
+                    // If we can't estimate, assume we need the ephemeral ALT
+                    warn!(
+                        "Failed to estimate tx size for message_id={}: {}, assuming ephemeral ALT needed",
+                        task.task.message.message_id, e
+                    );
+                    true
+                }
+            }
+        } else {
+            false
+        };
+
+        if let Some(existing_alt_pubkey) = existing_alt_pubkey {
             debug!(
-                "ALT decision for message_id={}: creating new ALT, accounts_count={}",
+                "Reusing existing ephemeral alt={} for message_id={}",
+                existing_alt_pubkey, task.task.message.message_id
+            );
+            let alt_account_data = self
+                .client
+                .get_account_data(&existing_alt_pubkey)
+                .await
+                .map_err(|e| IncluderError::GenericError(e.to_string()))?;
+            let alt_state = AddressLookupTable::deserialize(&alt_account_data)
+                .map_err(|e| IncluderError::GenericError(e.to_string()))?;
+            address_lookup_tables.push(AddressLookupTableAccount {
+                key: existing_alt_pubkey,
+                addresses: alt_state.addresses.to_vec(),
+            });
+        } else if needs_ephemeral_alt {
+            // Remove accounts already in the global ALT, signers, and the program_id
+            let extra_alt_accounts: Vec<AccountMeta> = extra_alt_accounts
+                .iter()
+                .filter(|acc| {
+                    !acc.is_signer
+                        && acc.pubkey != instruction.program_id
+                        && acc.pubkey != self.keypair.pubkey()
+                        && !self.its_global_alt.addresses.contains(&acc.pubkey)
+                })
+                .cloned()
+                .collect();
+
+            debug!(
+                "Creating new ephemeral ALT for message_id={}, accounts_count={}",
                 task.task.message.message_id,
-                accounts.len()
+                extra_alt_accounts.len(),
             );
+
             let recent_slot = self
                 .client
                 .get_slot()
@@ -234,29 +437,34 @@ impl<
                 .saturating_sub(1);
             let (alt_ix_create, alt_ix_extend, alt_pubkey, authority_keypair_str) = self
                 .transaction_builder
-                .build_lookup_table_instructions(recent_slot, accounts)
+                .build_lookup_table_instructions(recent_slot, &extra_alt_accounts)
                 .await
                 .map_err(|e| IncluderError::GenericError(e.to_string()))?;
             let authority_keypair = keypair_from_base58_string(&authority_keypair_str)
                 .map_err(|e| IncluderError::GenericError(e.to_string()))?;
+
             let (alt_tx_build, estimated_alt_cost) = self
                 .transaction_builder
                 .build(
                     &[alt_ix_create.clone(), alt_ix_extend.clone()],
-                    None,
+                    vec![],
                     Some(vec![authority_keypair]),
                 )
                 .await
                 .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
+            // Total ALT lifecycle cost: creation tx + deactivation tx + close tx
+            // Rent is excluded because it's reclaimed when the ALT is closed.
+            let total_alt_lifecycle_cost =
+                estimated_alt_cost + ALT_DEACTIVATE_COST + ALT_CLOSE_COST;
+
             #[cfg(feature = "devnet-amplifier")]
-            let _ = estimated_alt_cost;
+            let _ = total_alt_lifecycle_cost;
             #[cfg(not(feature = "devnet-amplifier"))]
-            if estimated_alt_cost as i64 > available_gas_balance {
-                // TODO: should take into account the cost for closing the ALT
+            if total_alt_lifecycle_cost as i64 > available_gas_balance {
                 return Ok(not_enough_gas_event(
                     available_gas_balance,
-                    estimated_alt_cost,
+                    total_alt_lifecycle_cost,
                     task,
                     Arc::clone(&self.gmp_api),
                 ));
@@ -268,13 +476,10 @@ impl<
                 .await
                 .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
-            self.wait_for_alt_activation(&alt_pubkey, accounts.len())
+            self.wait_for_alt_activation(&alt_pubkey, extra_alt_accounts.len())
                 .await?;
 
             // Wait for ALT to be fully propagated before using it in the main transaction.
-            // The delay ensures that when we fetch a new blockhash for the main transaction,
-            // that blockhash's slot is AFTER the ALT creation slot. Otherwise, the transaction
-            // will fail with "Transaction address table lookup uses an invalid index".
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
             self.redis_conn
@@ -290,10 +495,11 @@ impl<
                 available_gas_balance.saturating_sub(alt_cost.unwrap_or(0) as i64);
 
             debug!(
-                "ALT transaction sent successfully: {}",
+                "Ephemeral ALT transaction sent successfully: {}",
                 signature.to_string()
             );
 
+            // Store ephemeral ALT in Redis for cleanup by alt_manager
             if let Err(e) = self
                 .redis_conn
                 .write_alt_entry(
@@ -305,21 +511,20 @@ impl<
             {
                 error!("Failed to write ALT pubkey to Redis: {}", e);
             }
-            Some(
-                ALTInfo::new(Some(alt_pubkey))
-                    .with_addresses(accounts.iter().map(|acc| acc.pubkey).collect()),
-            )
-        } else {
-            // we set accounts to an empty vector when we do not want to create an ALT
-            debug!(
-                "ALT decision for message_id={}: no ALT needed",
-                task.task.message.message_id
-            );
-            None
-        };
+
+            address_lookup_tables.push(AddressLookupTableAccount {
+                key: alt_pubkey,
+                addresses: extra_alt_accounts.iter().map(|acc| acc.pubkey).collect(),
+            });
+        }
+
         let (transaction, estimated_tx_cost) = self
             .transaction_builder
-            .build(std::slice::from_ref(&instruction), alt_info.clone(), None)
+            .build(
+                std::slice::from_ref(&instruction),
+                address_lookup_tables,
+                None,
+            )
             .await
             .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
@@ -540,7 +745,7 @@ impl<
 
         let (tx, _) = self
             .transaction_builder
-            .build(&[ix], None, None)
+            .build(&[ix], vec![], None)
             .await
             .map_err(|e| SolanaIncluderError::GenericError(e.to_string()))?;
 
@@ -1063,9 +1268,15 @@ impl<
             },
         };
 
-        self.build_execute_transaction_and_send(instruction, task, &accounts, existing_alt_pubkey)
-            .await
-            .map_err(|e| IncluderError::GenericError(e.to_string()))
+        self.build_execute_transaction_and_send(
+            instruction,
+            task,
+            &accounts,
+            existing_alt_pubkey,
+            destination_address,
+        )
+        .await
+        .map_err(|e| IncluderError::GenericError(e.to_string()))
     }
 
     #[cfg_attr(
@@ -1136,7 +1347,7 @@ impl<
 
         let (tx, estimated_tx_cost) = self
             .transaction_builder
-            .build(&[ix], None, None)
+            .build(&[ix], vec![], None)
             .await
             .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
@@ -1176,26 +1387,6 @@ impl<
     }
 }
 
-#[derive(Clone)]
-pub struct ALTInfo {
-    pub alt_pubkey: Option<Pubkey>,
-    pub alt_addresses: Option<Vec<Pubkey>>,
-}
-
-impl ALTInfo {
-    pub fn new(alt_pubkey: Option<Pubkey>) -> Self {
-        Self {
-            alt_pubkey,
-            alt_addresses: None,
-        }
-    }
-
-    pub fn with_addresses(mut self, addresses: Vec<Pubkey>) -> Self {
-        self.alt_addresses = Some(addresses);
-        self
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1207,6 +1398,13 @@ mod tests {
     use base64::prelude::BASE64_STANDARD;
 
     use relayer_core::gmp_api::MockGmpApiTrait;
+
+    fn dummy_its_alt() -> AddressLookupTableAccount {
+        AddressLookupTableAccount {
+            key: Pubkey::new_unique(),
+            addresses: vec![],
+        }
+    }
 
     use solana_address_lookup_table_interface::state::LookupTableMeta;
     use solana_axelar_std::{
@@ -1355,6 +1553,7 @@ mod tests {
             Arc::new(mock_gmp_api),
             redis_conn,
             Arc::new(mock_refunds_model),
+            dummy_its_alt(),
         )
     }
 
@@ -2477,9 +2676,12 @@ mod tests {
         let alt_pubkey = Pubkey::new_unique();
         let alt_addresses = vec![Pubkey::new_unique()];
 
+        // Use a large payload so estimate_v0_tx_size determines the tx overflows,
+        // triggering the ephemeral ALT creation path.
+        let large_payload = vec![0u8; 1100];
         let exec_ix = Instruction::new_with_bytes(
             solana_axelar_its::ID,
-            &[],
+            &large_payload,
             vec![AccountMeta::new(keypair.pubkey(), true)],
         );
 
@@ -2711,9 +2913,12 @@ mod tests {
         assert_eq!(result.unwrap(), vec![]);
     }
 
+    /// ITS tx with small payload (no ephemeral ALT needed) but insufficient gas for the main tx.
+    /// The tx fits with just the global ALT, so no ephemeral ALT is created.
+    /// The gas check on the main tx build triggers InsufficientGas.
     #[cfg(not(feature = "devnet-amplifier"))]
     #[tokio::test]
-    async fn handle_execute_its_task_insufficient_gas_due_to_alt() {
+    async fn handle_execute_its_task_insufficient_gas_for_main_tx_no_ephemeral_alt() {
         let (
             mut mock_gmp_api,
             keypair,
@@ -2724,8 +2929,8 @@ mod tests {
             mut transaction_builder,
         ) = get_includer_fields();
 
-        let message_id = "test-execute-its-456".to_string();
-        let available_gas = 9_000u64;
+        let message_id = "test-execute-its-no-eph-456".to_string();
+        let available_gas = 50u64; // Very low — not enough for even the main tx
 
         mock_client
             .expect_incoming_message_already_executed()
@@ -2737,98 +2942,45 @@ mod tests {
             .times(1)
             .returning(|_| Ok(None));
 
-        let alt_pubkey = Pubkey::new_unique();
-        let alt_addresses = [Pubkey::new_unique()];
-
+        // Small instruction — fits with global ALT only, no ephemeral needed
         let exec_ix = Instruction::new_with_bytes(
             solana_axelar_its::ID,
             &[21, 22, 23, 24],
-            vec![
-                AccountMeta::new(keypair.pubkey(), true),
-                AccountMeta::new_readonly(alt_addresses[0], false),
-            ],
+            vec![AccountMeta::new(keypair.pubkey(), true)],
         );
 
-        // Create accounts for ALT
-        let alt_accounts_for_mock: Vec<AccountMeta> = alt_addresses
-            .iter()
-            .map(|pk| AccountMeta::new(*pk, false))
-            .collect();
-        let alt_accounts_clone = alt_accounts_for_mock.clone();
-
+        // build_execute_instruction returns empty accounts (no ephemeral ALT candidate)
         let exec_ix_for_builder = exec_ix.clone();
-
         transaction_builder
             .expect_build_execute_instruction()
             .times(1)
-            .returning(move |_, _, _| {
-                Ok((exec_ix_for_builder.clone(), alt_accounts_clone.clone()))
-            });
+            .returning(move |_, _, _| Ok((exec_ix_for_builder.clone(), vec![])));
 
-        // Mock get_slot for ALT creation
-        mock_client
-            .expect_get_slot()
-            .times(1)
-            .returning(|| Box::pin(async { Ok(1000u64) }));
-
-        let alt_ix_create =
-            Instruction::new_with_bytes(solana_sdk_ids::system_program::ID, &[3], vec![]);
-        let alt_ix_extend =
-            Instruction::new_with_bytes(solana_sdk_ids::system_program::ID, &[4], vec![]);
-
-        // Create a valid base58-encoded keypair string for testing
-        let test_authority_keypair = Keypair::new();
-        let authority_keypair_str = test_authority_keypair.to_base58_string();
-
-        // Mock build_lookup_table_instructions
-        let alt_ix_create_for_mock = alt_ix_create.clone();
-        let alt_ix_extend_for_mock = alt_ix_extend.clone();
-        let authority_keypair_str_clone = authority_keypair_str.clone();
-        transaction_builder
-            .expect_build_lookup_table_instructions()
-            .times(1)
-            .returning(move |_, _| {
-                Ok((
-                    alt_ix_create_for_mock.clone(),
-                    alt_ix_extend_for_mock.clone(),
-                    alt_pubkey,
-                    authority_keypair_str_clone.clone(),
-                ))
-            });
-
-        let mut alt_tx = Transaction::new_with_payer(
-            &[alt_ix_create.clone(), alt_ix_extend.clone()],
-            Some(&keypair.pubkey()),
-        );
-        alt_tx.sign(&[&keypair], Hash::default());
-
-        let alt_tx_clone = alt_tx.clone();
-
-        // ALT creation cost exceeds available gas, so build() is called only once for ALT
-        // and the function returns early without building the main transaction
+        // build is called once for the main tx — returns cost > available_gas
+        let mut main_tx =
+            Transaction::new_with_payer(std::slice::from_ref(&exec_ix), Some(&keypair.pubkey()));
+        main_tx.sign(&[&keypair], Hash::default());
+        let main_tx_clone = main_tx.clone();
         transaction_builder
             .expect_build()
             .times(1)
             .returning(move |_, _, _| {
-                // First call is for ALT creation - return cost > available_gas (9_000)
                 Ok((
-                    SolanaTransactionType::Legacy(alt_tx_clone.clone()),
-                    10_000u64, // > 9_000 available_gas
+                    SolanaTransactionType::Legacy(main_tx_clone.clone()),
+                    100u64, // > 50 available_gas
                 ))
             });
 
-        // With insufficient gas, we must NOT send any txs or write Redis
+        // No ALT creation, no sends
         mock_client.expect_send_transaction().times(0);
         redis_conn.expect_write_gas_cost_for_message_id().times(0);
-        redis_conn.expect_write_alt_entry().times(0);
 
         let msg_id_for_event = message_id.clone();
         mock_gmp_api
             .expect_cannot_execute_message()
             .times(1)
-            .withf(move |id, msg_id, _src_chain, details, reason| {
-                *id == "test-execute-task-its-456"
-                    && *msg_id == msg_id_for_event
+            .withf(move |_id, msg_id, _src_chain, details, reason| {
+                *msg_id == msg_id_for_event
                     && details.contains("Not enough gas")
                     && matches!(reason, CannotExecuteMessageReason::InsufficientGas)
             })
@@ -2856,7 +3008,7 @@ mod tests {
 
         let execute_task = ExecuteTask {
             common: CommonTaskFields {
-                id: "test-execute-task-its-456".to_string(),
+                id: "test-execute-task-its-no-eph-456".to_string(),
                 chain: "test-chain".to_string(),
                 timestamp: Utc::now().to_string(),
                 r#type: "execute".to_string(),
@@ -2878,12 +3030,361 @@ mod tests {
             },
         };
 
-        let result: Result<Vec<Event>, IncluderError> =
-            includer.handle_execute_task(execute_task).await;
-
+        let result = includer.handle_execute_task(execute_task).await;
         assert!(result.is_ok());
         let events = result.unwrap();
         assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], Event::CannotExecuteMessageV2 { .. }));
+    }
+
+    /// ITS tx with large payload (overflows → needs ephemeral ALT) but insufficient gas
+    /// for the ALT creation. The ALT creation cost exceeds available gas, so we return
+    /// InsufficientGas without sending any transactions.
+    #[cfg(not(feature = "devnet-amplifier"))]
+    #[tokio::test]
+    async fn handle_execute_its_task_insufficient_gas_for_ephemeral_alt_creation() {
+        let (
+            mut mock_gmp_api,
+            keypair,
+            chain_name,
+            mut redis_conn,
+            mock_refunds_model,
+            mut mock_client,
+            mut transaction_builder,
+        ) = get_includer_fields();
+
+        let message_id = "test-execute-its-eph-gas-456".to_string();
+        let available_gas = 9_000u64;
+
+        mock_client
+            .expect_incoming_message_already_executed()
+            .times(1)
+            .returning(|_| Box::pin(async { Ok(false) }));
+
+        redis_conn
+            .expect_get_alt_entry()
+            .times(1)
+            .returning(|_| Ok(None));
+
+        let alt_pubkey = Pubkey::new_unique();
+        let alt_addresses = [Pubkey::new_unique()];
+
+        // Large payload to ensure estimate_v0_tx_size > MAX_TX_SIZE → needs ephemeral ALT
+        let large_payload = vec![0u8; 1100];
+        let exec_ix = Instruction::new_with_bytes(
+            solana_axelar_its::ID,
+            &large_payload,
+            vec![
+                AccountMeta::new(keypair.pubkey(), true),
+                AccountMeta::new_readonly(alt_addresses[0], false),
+            ],
+        );
+
+        let alt_accounts_for_mock: Vec<AccountMeta> = alt_addresses
+            .iter()
+            .map(|pk| AccountMeta::new(*pk, false))
+            .collect();
+        let alt_accounts_clone = alt_accounts_for_mock.clone();
+        let exec_ix_for_builder = exec_ix.clone();
+
+        transaction_builder
+            .expect_build_execute_instruction()
+            .times(1)
+            .returning(move |_, _, _| {
+                Ok((exec_ix_for_builder.clone(), alt_accounts_clone.clone()))
+            });
+
+        mock_client
+            .expect_get_slot()
+            .times(1)
+            .returning(|| Box::pin(async { Ok(1000u64) }));
+
+        let alt_ix_create =
+            Instruction::new_with_bytes(solana_sdk_ids::system_program::ID, &[3], vec![]);
+        let alt_ix_extend =
+            Instruction::new_with_bytes(solana_sdk_ids::system_program::ID, &[4], vec![]);
+
+        let test_authority_keypair = Keypair::new();
+        let authority_keypair_str = test_authority_keypair.to_base58_string();
+
+        let alt_ix_create_for_mock = alt_ix_create.clone();
+        let alt_ix_extend_for_mock = alt_ix_extend.clone();
+        let authority_keypair_str_clone = authority_keypair_str.clone();
+        transaction_builder
+            .expect_build_lookup_table_instructions()
+            .times(1)
+            .returning(move |_, _| {
+                Ok((
+                    alt_ix_create_for_mock.clone(),
+                    alt_ix_extend_for_mock.clone(),
+                    alt_pubkey,
+                    authority_keypair_str_clone.clone(),
+                ))
+            });
+
+        let mut alt_tx = Transaction::new_with_payer(
+            &[alt_ix_create.clone(), alt_ix_extend.clone()],
+            Some(&keypair.pubkey()),
+        );
+        alt_tx.sign(&[&keypair], Hash::default());
+        let alt_tx_clone = alt_tx.clone();
+
+        // ALT lifecycle cost (10_000 + 10_200 + 10_200 = 30_400) exceeds available_gas (9_000)
+        transaction_builder
+            .expect_build()
+            .times(1)
+            .returning(move |_, _, _| {
+                Ok((
+                    SolanaTransactionType::Legacy(alt_tx_clone.clone()),
+                    10_000u64,
+                ))
+            });
+
+        // With insufficient gas, we must NOT send any txs or write Redis
+        mock_client.expect_send_transaction().times(0);
+        redis_conn.expect_write_gas_cost_for_message_id().times(0);
+        redis_conn.expect_write_alt_entry().times(0);
+
+        let msg_id_for_event = message_id.clone();
+        mock_gmp_api
+            .expect_cannot_execute_message()
+            .times(1)
+            .withf(move |_id, msg_id, _src_chain, details, reason| {
+                *msg_id == msg_id_for_event
+                    && details.contains("Not enough gas")
+                    && matches!(reason, CannotExecuteMessageReason::InsufficientGas)
+            })
+            .returning(|_, _, _, _, _| Event::CannotExecuteMessageV2 {
+                common: CommonEventFields {
+                    r#type: "CANNOT_EXECUTE_MESSAGE/V2".to_string(),
+                    event_id: "test-event".to_string(),
+                    meta: None,
+                },
+                message_id: "test".to_string(),
+                source_chain: "test".to_string(),
+                reason: CannotExecuteMessageReason::InsufficientGas,
+                details: "test".to_string(),
+            });
+
+        let includer = create_test_includer(
+            mock_client,
+            keypair,
+            chain_name,
+            transaction_builder,
+            mock_gmp_api,
+            redis_conn,
+            mock_refunds_model,
+        );
+
+        let execute_task = ExecuteTask {
+            common: CommonTaskFields {
+                id: "test-execute-task-its-eph-gas-456".to_string(),
+                chain: "test-chain".to_string(),
+                timestamp: Utc::now().to_string(),
+                r#type: "execute".to_string(),
+                meta: None,
+            },
+            task: ExecuteTaskFields {
+                message: GatewayV2Message {
+                    message_id: message_id.clone(),
+                    source_chain: "ethereum".to_string(),
+                    destination_address: solana_axelar_its::ID.to_string(),
+                    payload_hash: BASE64_STANDARD.encode([5u8; 32]),
+                    source_address: Pubkey::new_unique().to_string(),
+                },
+                payload: BASE64_STANDARD.encode(b"test-payload"),
+                available_gas_balance: Amount {
+                    amount: available_gas.to_string(),
+                    token_id: None,
+                },
+            },
+        };
+
+        let result = includer.handle_execute_task(execute_task).await;
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], Event::CannotExecuteMessageV2 { .. }));
+    }
+
+    /// Tests the borderline case where gas covers ALT creation but NOT the full lifecycle
+    /// (creation + deactivation + close). With the new check this should fail with InsufficientGas.
+    /// The available gas is set between `estimated_alt_cost` and
+    /// `estimated_alt_cost + ALT_DEACTIVATE_COST + ALT_CLOSE_COST`.
+    #[cfg(not(feature = "devnet-amplifier"))]
+    #[tokio::test]
+    async fn handle_execute_its_task_insufficient_gas_for_alt_lifecycle() {
+        let (
+            mut mock_gmp_api,
+            keypair,
+            chain_name,
+            mut redis_conn,
+            mock_refunds_model,
+            mut mock_client,
+            mut transaction_builder,
+        ) = get_includer_fields();
+
+        let message_id = "test-execute-its-alt-lifecycle-789".to_string();
+        // ALT creation build will return cost 8_000.
+        // 8_000 + ALT_DEACTIVATE_COST(10_200) + ALT_CLOSE_COST(10_200) = 28_400
+        // Set gas to 20_000: enough for creation alone, but not for full lifecycle.
+        let available_gas = 20_000u64;
+
+        mock_client
+            .expect_incoming_message_already_executed()
+            .times(1)
+            .returning(|_| Box::pin(async { Ok(false) }));
+
+        redis_conn
+            .expect_get_alt_entry()
+            .times(1)
+            .returning(|_| Ok(None));
+
+        let alt_pubkey = Pubkey::new_unique();
+        let alt_addresses = [Pubkey::new_unique()];
+
+        // Large payload to ensure estimate_v0_tx_size > MAX_TX_SIZE → needs ephemeral ALT
+        let large_payload = vec![0u8; 1100];
+        let exec_ix = Instruction::new_with_bytes(
+            solana_axelar_its::ID,
+            &large_payload,
+            vec![
+                AccountMeta::new(keypair.pubkey(), true),
+                AccountMeta::new_readonly(alt_addresses[0], false),
+            ],
+        );
+
+        let alt_accounts_for_mock: Vec<AccountMeta> = alt_addresses
+            .iter()
+            .map(|pk| AccountMeta::new(*pk, false))
+            .collect();
+        let alt_accounts_clone = alt_accounts_for_mock.clone();
+        let exec_ix_for_builder = exec_ix.clone();
+
+        transaction_builder
+            .expect_build_execute_instruction()
+            .times(1)
+            .returning(move |_, _, _| {
+                Ok((exec_ix_for_builder.clone(), alt_accounts_clone.clone()))
+            });
+
+        mock_client
+            .expect_get_slot()
+            .times(1)
+            .returning(|| Box::pin(async { Ok(1000u64) }));
+
+        let alt_ix_create =
+            Instruction::new_with_bytes(solana_sdk_ids::system_program::ID, &[3], vec![]);
+        let alt_ix_extend =
+            Instruction::new_with_bytes(solana_sdk_ids::system_program::ID, &[4], vec![]);
+
+        let test_authority_keypair = Keypair::new();
+        let authority_keypair_str = test_authority_keypair.to_base58_string();
+
+        let alt_ix_create_for_mock = alt_ix_create.clone();
+        let alt_ix_extend_for_mock = alt_ix_extend.clone();
+        let authority_keypair_str_clone = authority_keypair_str.clone();
+        transaction_builder
+            .expect_build_lookup_table_instructions()
+            .times(1)
+            .returning(move |_, _| {
+                Ok((
+                    alt_ix_create_for_mock.clone(),
+                    alt_ix_extend_for_mock.clone(),
+                    alt_pubkey,
+                    authority_keypair_str_clone.clone(),
+                ))
+            });
+
+        let mut alt_tx = Transaction::new_with_payer(
+            &[alt_ix_create.clone(), alt_ix_extend.clone()],
+            Some(&keypair.pubkey()),
+        );
+        alt_tx.sign(&[&keypair], Hash::default());
+        let alt_tx_clone = alt_tx.clone();
+
+        // Return ALT creation cost of 8_000.
+        // Old check: 8_000 < 20_000 → would pass.
+        // New check: 8_000 + 10_200 + 10_200 = 28_400 > 20_000 → fails.
+        transaction_builder
+            .expect_build()
+            .times(1)
+            .returning(move |_, _, _| {
+                Ok((
+                    SolanaTransactionType::Legacy(alt_tx_clone.clone()),
+                    8_000u64,
+                ))
+            });
+
+        // Should NOT send any txs or write to Redis — early return with InsufficientGas
+        mock_client.expect_send_transaction().times(0);
+        redis_conn.expect_write_gas_cost_for_message_id().times(0);
+        redis_conn.expect_write_alt_entry().times(0);
+
+        let msg_id_for_event = message_id.clone();
+        mock_gmp_api
+            .expect_cannot_execute_message()
+            .times(1)
+            .withf(move |_id, msg_id, _src_chain, details, reason| {
+                *msg_id == msg_id_for_event
+                    && details.contains("Not enough gas")
+                    && matches!(reason, CannotExecuteMessageReason::InsufficientGas)
+            })
+            .returning(|_, _, _, _, _| Event::CannotExecuteMessageV2 {
+                common: CommonEventFields {
+                    r#type: "CANNOT_EXECUTE_MESSAGE/V2".to_string(),
+                    event_id: "test-event".to_string(),
+                    meta: None,
+                },
+                message_id: "test".to_string(),
+                source_chain: "test".to_string(),
+                reason: CannotExecuteMessageReason::InsufficientGas,
+                details: "test".to_string(),
+            });
+
+        let includer = create_test_includer(
+            mock_client,
+            keypair,
+            chain_name,
+            transaction_builder,
+            mock_gmp_api,
+            redis_conn,
+            mock_refunds_model,
+        );
+
+        let execute_task = ExecuteTask {
+            common: CommonTaskFields {
+                id: "test-execute-task-its-alt-lifecycle-789".to_string(),
+                chain: "test-chain".to_string(),
+                timestamp: Utc::now().to_string(),
+                r#type: "execute".to_string(),
+                meta: None,
+            },
+            task: ExecuteTaskFields {
+                message: GatewayV2Message {
+                    message_id: message_id.clone(),
+                    source_chain: "ethereum".to_string(),
+                    destination_address: solana_axelar_its::ID.to_string(),
+                    payload_hash: BASE64_STANDARD.encode([99u8; 32]),
+                    source_address: Pubkey::new_unique().to_string(),
+                },
+                payload: BASE64_STANDARD.encode(b"test-payload"),
+                available_gas_balance: Amount {
+                    amount: available_gas.to_string(),
+                    token_id: None,
+                },
+            },
+        };
+
+        let result = includer.handle_execute_task(execute_task).await;
+
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(
+            events.len(),
+            1,
+            "Should return exactly one InsufficientGas event"
+        );
         assert!(matches!(events[0], Event::CannotExecuteMessageV2 { .. }));
     }
 
@@ -2915,9 +3416,12 @@ mod tests {
         let alt_pubkey = Pubkey::new_unique();
         let alt_addresses = vec![Pubkey::new_unique()];
 
+        // Use a large payload so estimate_v0_tx_size determines the tx overflows,
+        // triggering the ephemeral ALT creation path.
+        let large_payload = vec![0u8; 1100];
         let exec_ix = Instruction::new_with_bytes(
             solana_axelar_its::ID,
-            &[31, 32, 33, 34],
+            &large_payload,
             vec![
                 AccountMeta::new(keypair.pubkey(), true),
                 AccountMeta::new_readonly(alt_addresses[0], false),
@@ -3269,6 +3773,37 @@ mod tests {
             });
 
         // Note: get_units_consumed_from_simulation is not called since transaction_builder is mocked
+
+        // Mock get_account_data for the existing ALT pubkey (fetched from chain to deserialize)
+        let alt_addresses_clone = alt_addresses.clone();
+        mock_client
+            .expect_get_account_data()
+            .times(1)
+            .returning(move |_| {
+                let addrs = alt_addresses_clone.clone();
+                Box::pin(async move {
+                    let meta = LookupTableMeta {
+                        deactivation_slot: Slot::MAX,
+                        last_extended_slot: 0,
+                        last_extended_slot_start_index: 0,
+                        authority: Some(Pubkey::new_unique()),
+                        _padding: 0,
+                    };
+                    let mut account_data = Vec::new();
+                    account_data.extend_from_slice(&1u32.to_le_bytes());
+                    account_data.extend_from_slice(&meta.deactivation_slot.to_le_bytes());
+                    account_data.extend_from_slice(&meta.last_extended_slot.to_le_bytes());
+                    account_data
+                        .extend_from_slice(&meta.last_extended_slot_start_index.to_le_bytes());
+                    account_data.push(1);
+                    account_data.extend_from_slice(meta.authority.unwrap().as_ref());
+                    account_data.extend_from_slice(&[0u8; 2]);
+                    for addr in &addrs {
+                        account_data.extend_from_slice(addr.as_ref());
+                    }
+                    Ok(account_data)
+                })
+            });
 
         // Only the main tx is sent; no ALT tx
         let send_signature = Signature::default();
@@ -5134,9 +5669,12 @@ mod tests {
         let alt_pubkey = Pubkey::new_unique();
         let alt_addresses = vec![Pubkey::new_unique(), Pubkey::new_unique()];
 
+        // Use a large payload so estimate_v0_tx_size determines the tx overflows,
+        // triggering the ephemeral ALT creation path.
+        let large_payload = vec![0u8; 1100];
         let exec_ix = Instruction::new_with_bytes(
             solana_axelar_its::ID,
-            &[50, 51, 52, 53],
+            &large_payload,
             vec![
                 AccountMeta::new(keypair.pubkey(), true),
                 AccountMeta::new_readonly(alt_addresses[0], false),

@@ -414,6 +414,10 @@ async fn test_gas_refunded_event_parsing() {
         Arc::new(mock_gmp_api),
         mock_redis,
         refunds_model,
+        solana_sdk::message::AddressLookupTableAccount {
+            key: solana_sdk::pubkey::Pubkey::new_unique(),
+            addresses: vec![],
+        },
     );
 
     let (treasury, _) =

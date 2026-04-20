@@ -1,6 +1,7 @@
 refund_manager_addresses: ""
 includer_secrets: ""
 instance_id: "0"
+its_global_alt: ""
 queue_address: ""
 gmp_api_url: ""
 payload_cache: ""
