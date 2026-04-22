@@ -21,6 +21,9 @@ pub struct SolanaConfig {
     #[serde(default = "default_cu_price_upper_limit")]
     pub cu_price_upper_limit: u64,
 
+    #[serde(default = "default_min_wallet_balance_lamports")]
+    pub min_wallet_balance_lamports: u64,
+
     pub its_global_alt: Option<String>,
 }
 
@@ -30,6 +33,10 @@ fn default_cu_price_lower_limit() -> u64 {
 
 fn default_cu_price_upper_limit() -> u64 {
     10_000
+}
+
+fn default_min_wallet_balance_lamports() -> u64 {
+    500_000_000 // 0.5 SOL
 }
 
 impl SolanaConfig {
