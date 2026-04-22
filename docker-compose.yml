@@ -51,6 +51,16 @@ services:
       - .env
     restart: always
 
+  wallet_balance_monitor:
+    build:
+      context: .
+      args:
+        BINARY_NAME: wallet_balance_monitor
+        FEATURES: ${NETWORK}
+    env_file:
+      - .env
+    restart: always
+
 networks:
   axelar-relayer:
     name: ${NETWORK}-axelar-relayer-solana

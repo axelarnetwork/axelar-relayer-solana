@@ -46,5 +46,6 @@ num_workers:
 jaeger_grpc_url:
 cu_price_lower_limit:
 cu_price_upper_limit:
+min_wallet_balance_lamports:
 gas_estimates:
   native_gas_refund:

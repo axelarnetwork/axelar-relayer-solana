@@ -107,6 +107,10 @@ path = "src/bin/recovery/subscriber.rs"
 name = "cu_price_calculator"
 path = "src/bin/cu_price_calculator.rs"
 
+[[bin]]
+name = "wallet_balance_monitor"
+path = "src/bin/wallet_balance_monitor.rs"
+
 [features]
 instrumentation = []
 # Enable this feature in integration tests to access mock types
