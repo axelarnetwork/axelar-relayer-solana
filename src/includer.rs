@@ -60,24 +60,35 @@ async fn ensure_relayer_is_operator(
     client: &IncluderClient,
     keypair: &Keypair,
 ) -> Result<(), IncluderError> {
-    let (operator_pda, _) = solana_axelar_operators::OperatorAccount::try_find_pda(
-        &keypair.pubkey(),
-    )
-    .ok_or_else(|| IncluderError::GenericError("Failed to derive operator PDA".to_string()))?;
+    #[cfg(feature = "devnet-amplifier")]
+    {
+        let _ = client;
+        let _ = keypair;
+        Ok(())
+    }
 
-    client.get_account_data(&operator_pda).await.map_err(|_| {
-        IncluderError::GenericError(format!(
-            "Relayer key {} is not registered as a gas service operator (PDA {} not found on-chain)",
-            keypair.pubkey(),
-            operator_pda
-        ))
-    })?;
+    #[cfg(not(feature = "devnet-amplifier"))]
+    {
+        let (operator_pda, _) = solana_axelar_operators::OperatorAccount::try_find_pda(
+            &keypair.pubkey(),
+        )
+        .ok_or_else(|| IncluderError::GenericError("Failed to derive operator PDA".to_string()))?;
 
-    info!(
-        "Relayer {} verified as gas service operator",
-        keypair.pubkey()
-    );
-    Ok(())
+        client.get_account_data(&operator_pda).await.map_err(|_| {
+            error!("Relayer key {} is not registered as a gas service operator (PDA {} not found on-chain)", keypair.pubkey(), operator_pda);
+            IncluderError::GenericError(format!(
+                "Relayer key {} is not registered as a gas service operator (PDA {} not found on-chain)",
+                keypair.pubkey(),
+                operator_pda
+            ))
+        })?;
+
+        info!(
+            "Relayer {} verified as gas service operator",
+            keypair.pubkey()
+        );
+        Ok(())
+    }
 }
 
 /// Ensures a global ITS ALT exists on-chain with the expected accounts.
