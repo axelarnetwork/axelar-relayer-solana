@@ -111,6 +111,10 @@ path = "src/bin/cu_price_calculator.rs"
 name = "wallet_balance_monitor"
 path = "src/bin/wallet_balance_monitor.rs"
 
+[[bin]]
+name = "claim_gas_service_fees"
+path = "src/bin/scripts/claim_gas_service_fees.rs"
+
 [features]
 instrumentation = []
 # Enable this feature in integration tests to access mock types
