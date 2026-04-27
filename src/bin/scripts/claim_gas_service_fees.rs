@@ -14,7 +14,8 @@ use solana_sdk::signer::Signer;
 use std::sync::Arc;
 use tracing::info;
 
-/// Amount of lamports to claim from the gas service treasury to the operator's wallet.
+// Amount of lamports to claim from the gas service treasury to the operator's wallet
+// Note: 1 SOL = 1_000_000_000
 const CLAIM_AMOUNT_LAMPORTS: u64 = 100_000_000;
 
 #[tokio::main]
