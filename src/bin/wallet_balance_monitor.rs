@@ -43,13 +43,13 @@ async fn main() -> anyhow::Result<()> {
                         wallet = %pubkey,
                         balance_lamports = balance,
                         threshold_lamports,
-                        "Wallet balance is below threshold"
+                        "Relayer wallet balance is below threshold"
                     );
                 } else {
                     debug!(
                         wallet = %pubkey,
                         balance_lamports = balance,
-                        "Wallet balance OK"
+                        "Relayer wallet balance OK"
                     );
                 }
             }
