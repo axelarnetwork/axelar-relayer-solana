@@ -23,7 +23,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY parsers/Cargo.toml ./parsers/
 
 # Create dummy files for each workspace member to cache dependencies
-RUN mkdir -p src/bin/recovery && \
+RUN mkdir -p src/bin/recovery src/bin/scripts && \
     echo 'fn main() {}' > src/bin/ingestor.rs && \
     echo 'fn main() {}' > src/bin/includer.rs && \
     echo 'fn main() {}' > src/bin/subscriber.rs && \
@@ -31,6 +31,7 @@ RUN mkdir -p src/bin/recovery && \
     echo 'fn main() {}' > src/bin/alt_manager.rs && \
     echo 'fn main() {}' > src/bin/cu_price_calculator.rs && \
     echo 'fn main() {}' > src/bin/wallet_balance_monitor.rs && \
+    echo 'fn main() {}' > src/bin/scripts/claim_gas_service_fees.rs && \
     mkdir -p parsers/src && \
     echo 'pub fn dummy() {}' > parsers/src/lib.rs
 
