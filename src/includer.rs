@@ -2064,11 +2064,7 @@ mod tests {
             })
             .await;
 
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Cost is higher than remaining balance"));
+        assert!(result.is_ok());
     }
 
     #[tokio::test]

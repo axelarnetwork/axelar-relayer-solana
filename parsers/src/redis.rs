@@ -60,14 +60,14 @@ impl CostCacheTrait for CostCache {
                     }
                 }
                 _ => {
-                    debug!(
-                        "Failed to get cost from Redis for key {} (attempt {}/{}): Key not found. Retrying in {:?}...",
-                        key,
-                        attempt + 1,
-                        max_retries,
-                        backoff_duration
-                    );
                     if attempt < max_retries - 1 {
+                        debug!(
+                            "Failed to get cost from Redis for key {} (attempt {}/{}): Key not found. Retrying in {:?}...",
+                            key,
+                            attempt + 1,
+                            max_retries,
+                            backoff_duration
+                        );
                         sleep(backoff_duration).await;
                         backoff_duration *= 2;
                     }
