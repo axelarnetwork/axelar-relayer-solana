@@ -1363,10 +1363,11 @@ impl<
             .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
         if estimated_tx_cost >= refund_amount {
-            return Err(IncluderError::GenericError(format!(
+            warn!(
                 "Cost is higher than remaining balance to refund. Cost: {}, Remaining balance: {}",
                 estimated_tx_cost, refund_amount
-            )));
+            );
+            return Ok(());
         }
 
         // write the signature to the database before sending the transaction to avoid
