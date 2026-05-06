@@ -277,15 +277,73 @@ impl IncluderClientTrait for IncluderClient {
         &self,
         incoming_message_pda: &Pubkey,
     ) -> Result<bool, IncluderClientError> {
-        let raw_incoming_message = self
-            .inner()
-            .get_account_data(incoming_message_pda)
-            .await
-            .map_err(|e| IncluderClientError::GenericError(e.to_string()))?;
-        let incoming_message = read(&raw_incoming_message).ok_or_else(|| {
-            IncluderClientError::GenericError("Could not read incoming message".to_string())
-        })?;
-        Ok(incoming_message.status.is_executed())
+        // The amplifier issues EXECUTE within ~400ms of MessageApproved being
+        // posted, but the load-balanced RPC fleet can take longer to replicate
+        // the slot that contains the IncomingMessage PDA. The PDA is
+        // guaranteed to exist by the amplifier — we just need to wait for the
+        // lagging backend to catch up.
+        //
+        // We use `get_account_with_commitment` so account-not-found is signaled
+        // by `value: None` rather than a `RpcError::ForUser("AccountNotFound …")`
+        // string — that's a real enum-level signal we can match on without
+        // brittle string parsing.
+        //
+        // 3 retries → 4 attempts total. Worst-case wall time on persistent
+        // not-found: 2 + 4 + 8 = 14s, then propagate to RabbitMQ requeue.
+        const NOT_FOUND_BACKOFFS_SEC: [u64; 3] = [2, 4, 8];
+
+        let mut last_err: Option<IncluderClientError> = None;
+
+        for attempt in 0..=NOT_FOUND_BACKOFFS_SEC.len() {
+            if attempt > 0 {
+                let delay = NOT_FOUND_BACKOFFS_SEC
+                    .get(attempt - 1)
+                    .copied()
+                    .unwrap_or(8);
+                warn!(
+                    attempt,
+                    delay_sec = delay,
+                    pda = %incoming_message_pda,
+                    "IncomingMessage PDA not found yet (likely RPC replica lag after MessageApproved); retrying after backoff"
+                );
+                sleep(Duration::from_secs(delay)).await;
+            }
+
+            match self
+                .inner()
+                .get_account_with_commitment(incoming_message_pda, self.commitment)
+                .await
+            {
+                // Account exists — parse it and return.
+                Ok(resp) if resp.value.is_some() => {
+                    let account = resp.value.expect("checked Some above");
+                    let incoming_message = read(&account.data).ok_or_else(|| {
+                        IncluderClientError::GenericError(
+                            "Could not read incoming message".to_string(),
+                        )
+                    })?;
+                    return Ok(incoming_message.status.is_executed());
+                }
+                // Account not found at this slot — retry; replica may catch up.
+                Ok(_) => {
+                    last_err = Some(IncluderClientError::GenericError(format!(
+                        "IncomingMessage PDA {} not found",
+                        incoming_message_pda
+                    )));
+                    continue;
+                }
+                // Transport / RPC error — surface immediately, don't burn 14s.
+                Err(e) => {
+                    return Err(IncluderClientError::GenericError(e.to_string()));
+                }
+            }
+        }
+
+        Err(last_err.unwrap_or_else(|| {
+            IncluderClientError::GenericError(
+                "incoming_message_already_executed exhausted retries".into(),
+            )
+        }))
     }
 
     async fn get_signature_status(
@@ -310,28 +368,35 @@ impl IncluderClientTrait for IncluderClient {
     ) -> Result<u64, IncluderClientError> {
         use solana_rpc_client_api::config::RpcSimulateTransactionConfig;
 
-        // `replace_recent_blockhash: true` tells the RPC to substitute its own
-        // current blockhash before simulating, which kills the BlockhashNotFound
-        // class of failures caused by RPC replica lag (the blockhash we fetched
-        // from one backend hasn't propagated to the backend doing the sim).
-        // `sig_verify: false` is required because swapping the blockhash
-        // invalidates the existing signatures, and simulation doesn't need them.
-        let cfg = RpcSimulateTransactionConfig {
+        // Backoffs between retries (seconds). 3 retries → 4 attempts total.
+        // Worst-case wall time on persistent failure: 2 + 4 + 8 = 14s.
+        const RETRY_BACKOFFS_SEC: [u64; 3] = [2, 4, 8];
+
+        // Retries use `replace_recent_blockhash: true` to break out of RPC
+        // replica-lag transients (`BlockhashNotFound` and similar): a stale
+        // backend that doesn't have the original blockhash yet will instead
+        // substitute its own latest one. We do NOT enable this on the first
+        // attempt because it can race against freshly-activated ALT entries
+        // (the sim sees the latest slot's view, where a just-extended ALT may
+        // not yet resolve all its programs). On retries we accept that risk
+        // because the alternative is a permanent BlockhashNotFound loop.
+        // `sig_verify: false` is required when replacing the blockhash since
+        // signatures over the original blockhash become invalid.
+        let retry_cfg = RpcSimulateTransactionConfig {
             sig_verify: false,
             replace_recent_blockhash: true,
             commitment: Some(self.commitment),
             ..Default::default()
         };
 
-        // Backoffs between retries (seconds). 3 retries → 4 attempts total.
-        // Worst-case wall time on persistent failure: 2 + 4 + 8 = 14s.
-        const RETRY_BACKOFFS_SEC: [u64; 3] = [2, 4, 8];
-
         let mut last_err: Option<IncluderClientError> = None;
 
         for attempt in 0..=RETRY_BACKOFFS_SEC.len() {
             if attempt > 0 {
-                let delay = RETRY_BACKOFFS_SEC[attempt - 1];
+                // `attempt - 1` is in 0..RETRY_BACKOFFS_SEC.len() by loop
+                // construction, but use `.get()` defensively rather than
+                // direct indexing.
+                let delay = RETRY_BACKOFFS_SEC.get(attempt - 1).copied().unwrap_or(8);
                 warn!(
                     attempt,
                     delay_sec = delay,
@@ -341,16 +406,30 @@ impl IncluderClientTrait for IncluderClient {
                 sleep(Duration::from_secs(delay)).await;
             }
 
-            let simulation_result = match &transaction {
-                SolanaTransactionType::Legacy(tx) => {
-                    self.inner()
-                        .simulate_transaction_with_config(tx, cfg.clone())
-                        .await
+            // First attempt uses default config (matches pre-existing behavior
+            // and avoids the ALT-activation race). Retries opt into
+            // replace_recent_blockhash to recover from replica-lag transients.
+            let simulation_result = if attempt == 0 {
+                match &transaction {
+                    SolanaTransactionType::Legacy(tx) => {
+                        self.inner().simulate_transaction(tx).await
+                    }
+                    SolanaTransactionType::Versioned(tx) => {
+                        self.inner().simulate_transaction(tx).await
+                    }
                 }
-                SolanaTransactionType::Versioned(tx) => {
-                    self.inner()
-                        .simulate_transaction_with_config(tx, cfg.clone())
-                        .await
+            } else {
+                match &transaction {
+                    SolanaTransactionType::Legacy(tx) => {
+                        self.inner()
+                            .simulate_transaction_with_config(tx, retry_cfg.clone())
+                            .await
+                    }
+                    SolanaTransactionType::Versioned(tx) => {
+                        self.inner()
+                            .simulate_transaction_with_config(tx, retry_cfg.clone())
+                            .await
+                    }
                 }
             };
 
