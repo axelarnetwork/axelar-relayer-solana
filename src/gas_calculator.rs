@@ -7,7 +7,7 @@
 //     consumption is deterministic on mainnet. We skip simulation entirely and return a
 //     constant — see CU_HARDCODED_* below.
 //   - simulated: instructions whose CU varies with payload/accounts. We simulate, take
-//     `units_consumed`, add a 10% margin. On simulation error, we either fall back to a
+//     `units_consumed`, add a 25% margin. On simulation error, we either fall back to a
 //     conservative constant (ApproveMessage, AltCreateExtend) or propagate the error
 //     (Execute, Other) — never silently return 0 like the previous implementation.
 
@@ -19,9 +19,11 @@ use relayer_core::utils::ThreadSafe;
 use tracing::{debug, error};
 
 /// Margin added on top of simulated CU to absorb between-sim and on-chain state drift.
-/// On stable state, observed sim-vs-actual deltas are 0 to +3 CU (effectively zero), so
-/// 10% is plenty of headroom for the simulated paths.
-const PERCENT_POINTS_TO_TOP_UP: u64 = 10;
+/// Mainnet stats show stable-state sim-vs-actual deltas of 0–+3 CU, but ApproveMessage
+/// has ±4.2% payload-driven variance, and integration tests against a local validator
+/// can produce additional drift beyond mainnet samples. 25% gives comfortable headroom
+/// without inflating priority-fee cost meaningfully (since milliLamports × CU is small).
+const PERCENT_POINTS_TO_TOP_UP: u64 = 25;
 
 /// Hardcoded CU values for protocol-known instructions (mainnet-measured + ~10% buffer).
 /// These do not vary by payload, so simulation is wasted work and adds a failure mode
@@ -116,7 +118,8 @@ impl<IC: IncluderClientTrait> GasCalculatorTrait for GasCalculator<IC> {
 impl<IC: IncluderClientTrait> GasCalculator<IC> {
     /// Simulate the transaction; on success return `units_consumed × (1 + margin)`.
     /// On simulation error, log it and either return `fallback` (if provided) or surface
-    /// the error so the includer can retry against fresh state.
+    /// the error so the includer can retry against fresh state. The fallback only fires
+    /// on simulation failure — it is not a floor on a successful simulation.
     async fn simulate_with_fallback(
         &self,
         tx: SolanaTransactionType,
@@ -133,18 +136,10 @@ impl<IC: IncluderClientTrait> GasCalculator<IC> {
                     .saturating_mul(PERCENT_POINTS_TO_TOP_UP)
                     .saturating_div(100);
                 let final_cu = units.saturating_add(safety_margin);
-                use std::io::Write;
-                let _ = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open("/tmp/cu_debug.log")
-                    .and_then(|mut f| {
-                        writeln!(
-                            f,
-                            "[CU_DEBUG] kind={:?} simulated_units={} margin_pct={} final_cu={}",
-                            kind, units, PERCENT_POINTS_TO_TOP_UP, final_cu
-                        )
-                    });
+                println!(
+                    "[CU_DEBUG] kind={:?} simulated_units={} margin_pct={} final_cu={}",
+                    kind, units, PERCENT_POINTS_TO_TOP_UP, final_cu
+                );
                 debug!(
                     kind = ?kind,
                     simulated_units = units,
@@ -156,18 +151,6 @@ impl<IC: IncluderClientTrait> GasCalculator<IC> {
             }
             Err(e) => match fallback {
                 Some(cu) => {
-                    use std::io::Write;
-                    let _ = std::fs::OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open("/tmp/cu_debug.log")
-                        .and_then(|mut f| {
-                            writeln!(
-                                f,
-                                "[CU_DEBUG] kind={:?} SIMULATION_FAILED fallback_cu={} err={}",
-                                kind, cu, e
-                            )
-                        });
                     error!(
                         kind = ?kind,
                         fallback_cu = cu,
@@ -242,7 +225,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn approve_message_simulates_and_applies_10pct_margin() {
+    async fn approve_message_simulates_and_applies_margin() {
         let mut client = MockIncluderClientTrait::new();
         client
             .expect_get_units_consumed_from_simulation()
@@ -254,8 +237,8 @@ mod tests {
             .compute_budget(dummy_tx(), InstructionKind::ApproveMessage)
             .await
             .unwrap();
-        // 50_000 + 10% = 55_000
-        assert_eq!(cu, 55_000);
+        // 50_000 + 25% = 62_500
+        assert_eq!(cu, 62_500);
     }
 
     #[tokio::test]
@@ -277,7 +260,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn alt_create_extend_simulates_and_applies_10pct_margin() {
+    async fn alt_create_extend_simulates_and_applies_margin() {
         let mut client = MockIncluderClientTrait::new();
         client
             .expect_get_units_consumed_from_simulation()
@@ -289,7 +272,8 @@ mod tests {
             .compute_budget(dummy_tx(), InstructionKind::AltCreateExtend)
             .await
             .unwrap();
-        assert_eq!(cu, 11_000);
+        // 10_000 + 25% = 12_500
+        assert_eq!(cu, 12_500);
     }
 
     #[tokio::test]
@@ -311,7 +295,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn execute_simulates_and_applies_10pct_margin() {
+    async fn execute_simulates_and_applies_margin() {
         let mut client = MockIncluderClientTrait::new();
         client
             .expect_get_units_consumed_from_simulation()
@@ -323,8 +307,8 @@ mod tests {
             .compute_budget(dummy_tx(), InstructionKind::Execute)
             .await
             .unwrap();
-        // 49_910 + floor(49_910 * 10 / 100) = 49_910 + 4_991 = 54_901
-        assert_eq!(cu, 54_901);
+        // 49_910 + floor(49_910 * 25 / 100) = 49_910 + 12_477 = 62_387
+        assert_eq!(cu, 62_387);
     }
 
     #[tokio::test]
@@ -356,11 +340,12 @@ mod tests {
             .times(1)
             .returning(|_| Box::pin(async { Ok(20_000) }));
         let calc = GasCalculator::new(client);
+        // 20_000 + 25% = 25_000
         assert_eq!(
             calc.compute_budget(dummy_tx(), InstructionKind::Other)
                 .await
                 .unwrap(),
-            22_000
+            25_000
         );
 
         // error path — no fallback
