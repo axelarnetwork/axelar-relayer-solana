@@ -80,10 +80,8 @@ where
 
     async fn handle_wasm_event(&self, task: ReactToWasmEventTask) -> Result<(), IngestorError> {
         warn!("handle_wasm_event: {:?}", task);
-
-        Err(IngestorError::GenericError(
-            "Still not implemented".to_string(),
-        ))
+        // TODO: Make sure we do not receive this. For now, log warning and ignore
+        Ok(())
     }
 
     async fn handle_construct_proof(&self, task: ConstructProofTask) -> Result<(), IngestorError> {

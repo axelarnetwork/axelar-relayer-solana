@@ -1,6 +1,6 @@
 use anchor_lang::{InstructionData, ToAccountMetas};
 use axelar_relayer_solana::config::SolanaConfig;
-use axelar_relayer_solana::gas_calculator::GasCalculator;
+use axelar_relayer_solana::gas_calculator::{GasCalculator, InstructionKind};
 use axelar_relayer_solana::includer_client::{IncluderClient, IncluderClientTrait};
 use axelar_relayer_solana::redis::RedisConnection;
 use axelar_relayer_solana::transaction_builder::{TransactionBuilder, TransactionBuilderTrait};
@@ -75,7 +75,7 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let (tx, estimated_tx_cost) = transaction_builder
-        .build(&[ix], vec![], None)
+        .build(&[ix], vec![], None, InstructionKind::Other)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to build collect_fees transaction: {}", e))?;
 

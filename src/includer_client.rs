@@ -321,6 +321,24 @@ impl IncluderClientTrait for IncluderClient {
                 .await
                 .map_err(|e| IncluderClientError::GenericError(e.to_string()))?,
         };
+
+        // The RPC happily returns `units_consumed: Some(0)` together with `err: Some(...)`
+        // when the simulation itself failed (transient state contention, missing PDA, etc.).
+        // Reading units_consumed without checking err produced a silent CU=0 in the past,
+        // which then shipped a tx with SetComputeUnitLimit(0) that always preflight-fails.
+        if let Some(err) = simulation_result.value.err {
+            error!(
+                error = ?err,
+                logs = ?simulation_result.value.logs,
+                units_consumed_before_error = ?simulation_result.value.units_consumed,
+                "Transaction simulation returned an error"
+            );
+            return Err(IncluderClientError::GenericError(format!(
+                "simulation errored: {:?}; logs: {:?}",
+                err, simulation_result.value.logs
+            )));
+        }
+
         Ok(simulation_result.value.units_consumed.ok_or_else(|| {
             IncluderClientError::GenericError("Units consumed not found".to_string())
         })?)
