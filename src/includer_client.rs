@@ -308,40 +308,92 @@ impl IncluderClientTrait for IncluderClient {
         &self,
         transaction: SolanaTransactionType,
     ) -> Result<u64, IncluderClientError> {
-        // Is there a better way with an impl Trait maybe?
-        let simulation_result = match transaction {
-            SolanaTransactionType::Legacy(tx) => self
-                .inner()
-                .simulate_transaction(&tx)
-                .await
-                .map_err(|e| IncluderClientError::GenericError(e.to_string()))?,
-            SolanaTransactionType::Versioned(tx) => self
-                .inner()
-                .simulate_transaction(&tx)
-                .await
-                .map_err(|e| IncluderClientError::GenericError(e.to_string()))?,
+        use solana_rpc_client_api::config::RpcSimulateTransactionConfig;
+
+        // `replace_recent_blockhash: true` tells the RPC to substitute its own
+        // current blockhash before simulating, which kills the BlockhashNotFound
+        // class of failures caused by RPC replica lag (the blockhash we fetched
+        // from one backend hasn't propagated to the backend doing the sim).
+        // `sig_verify: false` is required because swapping the blockhash
+        // invalidates the existing signatures, and simulation doesn't need them.
+        let cfg = RpcSimulateTransactionConfig {
+            sig_verify: false,
+            replace_recent_blockhash: true,
+            commitment: Some(self.commitment),
+            ..Default::default()
         };
 
-        // The RPC happily returns `units_consumed: Some(0)` together with `err: Some(...)`
-        // when the simulation itself failed (transient state contention, missing PDA, etc.).
-        // Reading units_consumed without checking err produced a silent CU=0 in the past,
-        // which then shipped a tx with SetComputeUnitLimit(0) that always preflight-fails.
-        if let Some(err) = simulation_result.value.err {
-            error!(
-                error = ?err,
-                logs = ?simulation_result.value.logs,
-                units_consumed_before_error = ?simulation_result.value.units_consumed,
-                "Transaction simulation returned an error"
-            );
-            return Err(IncluderClientError::GenericError(format!(
-                "simulation errored: {:?}; logs: {:?}",
-                err, simulation_result.value.logs
-            )));
+        // Backoffs between retries (seconds). 3 retries → 4 attempts total.
+        // Worst-case wall time on persistent failure: 2 + 4 + 8 = 14s.
+        const RETRY_BACKOFFS_SEC: [u64; 3] = [2, 4, 8];
+
+        let mut last_err: Option<IncluderClientError> = None;
+
+        for attempt in 0..=RETRY_BACKOFFS_SEC.len() {
+            if attempt > 0 {
+                let delay = RETRY_BACKOFFS_SEC[attempt - 1];
+                warn!(
+                    attempt,
+                    delay_sec = delay,
+                    last_error = ?last_err,
+                    "retrying simulate_transaction after error"
+                );
+                sleep(Duration::from_secs(delay)).await;
+            }
+
+            let simulation_result = match &transaction {
+                SolanaTransactionType::Legacy(tx) => {
+                    self.inner()
+                        .simulate_transaction_with_config(tx, cfg.clone())
+                        .await
+                }
+                SolanaTransactionType::Versioned(tx) => {
+                    self.inner()
+                        .simulate_transaction_with_config(tx, cfg.clone())
+                        .await
+                }
+            };
+
+            match simulation_result {
+                Err(e) => {
+                    last_err = Some(IncluderClientError::GenericError(e.to_string()));
+                    continue;
+                }
+                Ok(resp) => {
+                    // The RPC happily returns `units_consumed: Some(0)` together with
+                    // `err: Some(...)` when the simulation itself failed (transient
+                    // state contention, missing PDA, etc.). Reading units_consumed
+                    // without checking err silently produced a CU=0 tx in the past,
+                    // which always preflight-fails with "Computational budget exceeded".
+                    if let Some(sim_err) = resp.value.err {
+                        error!(
+                            attempt,
+                            error = ?sim_err,
+                            logs = ?resp.value.logs,
+                            units_consumed_before_error = ?resp.value.units_consumed,
+                            "Transaction simulation returned an error"
+                        );
+                        last_err = Some(IncluderClientError::GenericError(format!(
+                            "simulation errored: {:?}; logs: {:?}",
+                            sim_err, resp.value.logs
+                        )));
+                        continue;
+                    }
+
+                    return resp.value.units_consumed.ok_or_else(|| {
+                        IncluderClientError::GenericError(
+                            "simulation succeeded but units_consumed missing".into(),
+                        )
+                    });
+                }
+            }
         }
 
-        Ok(simulation_result.value.units_consumed.ok_or_else(|| {
-            IncluderClientError::GenericError("Units consumed not found".to_string())
-        })?)
+        Err(last_err.unwrap_or_else(|| {
+            IncluderClientError::GenericError(
+                "simulate_transaction failed after all retries".into(),
+            )
+        }))
     }
 
     async fn get_transaction_cost_from_signature(

@@ -133,6 +133,18 @@ impl<IC: IncluderClientTrait> GasCalculator<IC> {
                     .saturating_mul(PERCENT_POINTS_TO_TOP_UP)
                     .saturating_div(100);
                 let final_cu = units.saturating_add(safety_margin);
+                use std::io::Write;
+                let _ = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open("/tmp/cu_debug.log")
+                    .and_then(|mut f| {
+                        writeln!(
+                            f,
+                            "[CU_DEBUG] kind={:?} simulated_units={} margin_pct={} final_cu={}",
+                            kind, units, PERCENT_POINTS_TO_TOP_UP, final_cu
+                        )
+                    });
                 debug!(
                     kind = ?kind,
                     simulated_units = units,
@@ -144,6 +156,18 @@ impl<IC: IncluderClientTrait> GasCalculator<IC> {
             }
             Err(e) => match fallback {
                 Some(cu) => {
+                    use std::io::Write;
+                    let _ = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open("/tmp/cu_debug.log")
+                        .and_then(|mut f| {
+                            writeln!(
+                                f,
+                                "[CU_DEBUG] kind={:?} SIMULATION_FAILED fallback_cu={} err={}",
+                                kind, cu, e
+                            )
+                        });
                     error!(
                         kind = ?kind,
                         fallback_cu = cu,
