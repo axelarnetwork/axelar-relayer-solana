@@ -28,7 +28,7 @@ const PERCENT_POINTS_TO_TOP_UP: u64 = 25;
 /// Hardcoded CU values for protocol-known instructions (mainnet-measured + ~10% buffer).
 /// These do not vary by payload, so simulation is wasted work and adds a failure mode
 /// (sim-during-state-race).
-const CU_HARDCODED_INIT_PAYLOAD_VERIFICATION: u64 = 13_000;
+const CU_HARDCODED_INIT_PAYLOAD_VERIFICATION: u64 = 20_000;
 const CU_HARDCODED_VERIFY_SIGNATURE: u64 = 220_000;
 
 /// Conservative fallbacks for simulated instructions when the simulation itself errors.
