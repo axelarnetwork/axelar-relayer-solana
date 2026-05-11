@@ -31,8 +31,12 @@ async fn main() -> anyhow::Result<()> {
     let receiver = operator;
 
     let client = Arc::new(
-        IncluderClient::new(&config.solana_poll_rpc, config.solana_commitment(), 3)
-            .map_err(|e| anyhow::anyhow!("Failed to create includer client: {}", e))?,
+        IncluderClient::new(
+            &config.solana_poll_rpc,
+            config.solana_includer_commitment(),
+            3,
+        )
+        .map_err(|e| anyhow::anyhow!("Failed to create includer client: {}", e))?,
     );
 
     let redis_client = redis::Client::open(config.common_config.redis_server.clone())?;

@@ -439,19 +439,25 @@ impl IncluderClientTrait for IncluderClient {
                     continue;
                 }
                 Ok(resp) => {
-                    // The RPC happily returns `units_consumed: Some(0)` together with
-                    // `err: Some(...)` when the simulation itself failed (transient
-                    // state contention, missing PDA, etc.). Reading units_consumed
-                    // without checking err silently produced a CU=0 tx in the past,
-                    // which always preflight-fails with "Computational budget exceeded".
                     if let Some(sim_err) = resp.value.err {
-                        error!(
-                            attempt,
-                            error = ?sim_err,
-                            logs = ?resp.value.logs,
-                            units_consumed_before_error = ?resp.value.units_consumed,
-                            "Transaction simulation returned an error"
-                        );
+                        let is_last_attempt = attempt == RETRY_BACKOFFS_SEC.len();
+                        if is_last_attempt {
+                            error!(
+                                attempt,
+                                error = ?sim_err,
+                                logs = ?resp.value.logs,
+                                units_consumed_before_error = ?resp.value.units_consumed,
+                                "Transaction simulation returned an error"
+                            );
+                        } else {
+                            warn!(
+                                attempt,
+                                error = ?sim_err,
+                                logs = ?resp.value.logs,
+                                units_consumed_before_error = ?resp.value.units_consumed,
+                                "Transaction simulation returned an error"
+                            );
+                        }
                         last_err = Some(IncluderClientError::GenericError(format!(
                             "simulation errored: {:?}; logs: {:?}",
                             sim_err, resp.value.logs
