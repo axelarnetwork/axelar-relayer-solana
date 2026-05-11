@@ -5,11 +5,11 @@
 // Two paths exist depending on `InstructionKind`:
 //   - hardcoded: protocol-known instructions (init session, verify signature) whose CU
 //     consumption is deterministic on mainnet. We skip simulation entirely and return a
-//     constant — see CU_HARDCODED_* below.
+//     constant, see CU_HARDCODED_* below.
 //   - simulated: instructions whose CU varies with payload/accounts. We simulate, take
 //     `units_consumed`, add a 25% margin. On simulation error, we either fall back to a
 //     conservative constant (ApproveMessage, AltCreateExtend) or propagate the error
-//     (Execute, Other) — never silently return 0 like the previous implementation.
+//     (Execute, Other)
 
 use crate::error::GasCalculatorError;
 use crate::includer_client::IncluderClientTrait;
@@ -19,21 +19,13 @@ use relayer_core::utils::ThreadSafe;
 use tracing::{debug, error};
 
 /// Margin added on top of simulated CU to absorb between-sim and on-chain state drift.
-/// Mainnet stats show stable-state sim-vs-actual deltas of 0–+3 CU, but ApproveMessage
-/// has ±4.2% payload-driven variance, and integration tests against a local validator
-/// can produce additional drift beyond mainnet samples. 25% gives comfortable headroom
-/// without inflating priority-fee cost meaningfully (since milliLamports × CU is small).
 const PERCENT_POINTS_TO_TOP_UP: u64 = 25;
 
 /// Hardcoded CU values for protocol-known instructions (mainnet-measured + ~10% buffer).
-/// These do not vary by payload, so simulation is wasted work and adds a failure mode
-/// (sim-during-state-race).
 const CU_HARDCODED_INIT_PAYLOAD_VERIFICATION: u64 = 25_000;
 const CU_HARDCODED_VERIFY_SIGNATURE: u64 = 220_000;
 
 /// Conservative fallbacks for simulated instructions when the simulation itself errors.
-/// Sized comfortably above mainnet-observed peaks so a one-off sim failure doesn't block
-/// inclusion.
 const CU_FALLBACK_APPROVE_MESSAGE: u64 = 80_000;
 const CU_FALLBACK_ALT_CREATE_EXTEND: u64 = 20_000;
 
@@ -117,9 +109,8 @@ impl<IC: IncluderClientTrait> GasCalculatorTrait for GasCalculator<IC> {
 
 impl<IC: IncluderClientTrait> GasCalculator<IC> {
     /// Simulate the transaction; on success return `units_consumed × (1 + margin)`.
-    /// On simulation error, log it and either return `fallback` (if provided) or surface
-    /// the error so the includer can retry against fresh state. The fallback only fires
-    /// on simulation failure — it is not a floor on a successful simulation.
+    /// On simulation error, log it and either return a fallback value or surface
+    /// the error so the includer can retry against fresh state
     async fn simulate_with_fallback(
         &self,
         tx: SolanaTransactionType,
