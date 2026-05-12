@@ -22,7 +22,7 @@ use tracing::{debug, error};
 const PERCENT_POINTS_TO_TOP_UP: u64 = 25;
 
 /// Hardcoded CU values for protocol-known instructions (mainnet-measured + ~10% buffer).
-const CU_HARDCODED_INIT_PAYLOAD_VERIFICATION: u64 = 25_000;
+const CU_HARDCODED_INIT_PAYLOAD_VERIFICATION: u64 = 30_000;
 const CU_HARDCODED_VERIFY_SIGNATURE: u64 = 220_000;
 
 /// Conservative fallbacks for simulated instructions when the simulation itself errors.
