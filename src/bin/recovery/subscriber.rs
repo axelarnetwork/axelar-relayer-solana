@@ -32,8 +32,11 @@ async fn main() -> anyhow::Result<()> {
 
     let solana_transaction_model = PgSolanaTransactionModel::new(pg_pool.clone());
 
-    let solana_rpc_client: SolanaRpcClient =
-        SolanaRpcClient::new(&config.solana_poll_rpc, config.solana_commitment(), 3)?;
+    let solana_rpc_client: SolanaRpcClient = SolanaRpcClient::new(
+        &config.solana_poll_rpc,
+        config.solana_subscriber_commitment(),
+        3,
+    )?;
 
     let solana_poller = SolanaPoller::new(
         solana_rpc_client,

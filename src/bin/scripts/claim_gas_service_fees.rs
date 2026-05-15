@@ -1,6 +1,6 @@
 use anchor_lang::{InstructionData, ToAccountMetas};
 use axelar_relayer_solana::config::SolanaConfig;
-use axelar_relayer_solana::gas_calculator::GasCalculator;
+use axelar_relayer_solana::gas_calculator::{GasCalculator, InstructionKind};
 use axelar_relayer_solana::includer_client::{IncluderClient, IncluderClientTrait};
 use axelar_relayer_solana::redis::RedisConnection;
 use axelar_relayer_solana::transaction_builder::{TransactionBuilder, TransactionBuilderTrait};
@@ -31,8 +31,12 @@ async fn main() -> anyhow::Result<()> {
     let receiver = operator;
 
     let client = Arc::new(
-        IncluderClient::new(&config.solana_poll_rpc, config.solana_commitment(), 3)
-            .map_err(|e| anyhow::anyhow!("Failed to create includer client: {}", e))?,
+        IncluderClient::new(
+            &config.solana_poll_rpc,
+            config.solana_includer_commitment(),
+            3,
+        )
+        .map_err(|e| anyhow::anyhow!("Failed to create includer client: {}", e))?,
     );
 
     let redis_client = redis::Client::open(config.common_config.redis_server.clone())?;
@@ -75,7 +79,7 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let (tx, estimated_tx_cost) = transaction_builder
-        .build(&[ix], vec![], None)
+        .build(&[ix], vec![], None, InstructionKind::Other)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to build collect_fees transaction: {}", e))?;
 

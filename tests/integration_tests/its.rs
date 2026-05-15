@@ -2852,20 +2852,98 @@ async fn test_its_global_alt_with_and_without_ephemeral() {
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
     // ========== Step 3: InterchainTransfer WITH data (global ALT + ephemeral ALT) ==========
-    // This creates an ExecutablePayload with many accounts to push the tx over 1232 bytes.
-    // The destination program (operator pubkey) won't implement the executable interface,
-    // so the tx will revert — but it proves the ephemeral ALT was created and both ALTs
-    // were included in the v0 transaction.
+    // Use the memo program as the destination. Memo implements the
+    // `execute_with_interchain_token` interface, so the ITS CPI into it
+    // succeeds (memo logs the payload and increments its counter PDA).
+    // We also include extra random accounts in the executable payload to
+    // push the v0 tx over 1232 bytes, forcing the relayer to allocate an
+    // ephemeral ALT on top of the global ITS ALT.
     println!("\n--- Step 3: InterchainTransfer with data (global + ephemeral ALT) ---");
     let transfer_data_message_id = "test-alt-paths-transfer-data-001";
 
-    // Create an ExecutablePayload with extra accounts to push the tx over 1232 bytes
-    // when using only the global ALT, but fitting when the ephemeral ALT is also used.
-    // Each account saves ~32 bytes when moved to an ALT lookup.
-    let extra_accounts: Vec<AccountMeta> = (0..5)
-        .map(|_| AccountMeta::new_readonly(Pubkey::new_unique(), false))
-        .collect();
-    let payload_data = vec![0u8; 32];
+    // Memo's `execute_with_interchain_token` requires an initialized counter
+    // PDA. Init it once before the transfer so the CPI succeeds.
+    use anchor_lang::InstructionData as _;
+    use anchor_lang::ToAccountMetas as _;
+    let (counter_pda, _counter_bump) =
+        Pubkey::find_program_address(&[b"counter"], &env.memo_program_id);
+    let init_counter_ix = solana_sdk::instruction::Instruction {
+        program_id: env.memo_program_id,
+        accounts: solana_axelar_memo::accounts::Init {
+            counter: counter_pda,
+            payer: env.payer.pubkey(),
+            system_program: solana_sdk_ids::system_program::ID,
+        }
+        .to_account_metas(None),
+        data: solana_axelar_memo::instruction::Init {}.data(),
+    };
+    let init_counter_blockhash = env.rpc_client.get_latest_blockhash().await.unwrap();
+    let init_counter_tx = solana_sdk::transaction::Transaction::new_signed_with_payer(
+        &[init_counter_ix],
+        Some(&env.payer.pubkey()),
+        &[&env.payer],
+        init_counter_blockhash,
+    );
+    match env
+        .rpc_client
+        .send_and_confirm_transaction(&init_counter_tx)
+        .await
+    {
+        Ok(sig) => println!("Counter PDA initialized: {}", sig),
+        Err(e) => panic!("Failed to initialize counter PDA: {:?}", e),
+    }
+
+    // Pre-create a real ATA for env.payer with the token mint. Memo's
+    // `execute_with_interchain_token` does an optional onward TransferChecked
+    // when remaining_accounts[0] is provided; pointing it at a real, valid
+    // ATA lets that inner CPI succeed instead of erroring with
+    // IncorrectProgramId. The payer is a convenient ATA owner (test signer).
+    let (its_root_pda, _) = solana_axelar_its::InterchainTokenService::find_pda();
+    let (token_mint_pda, _) =
+        solana_axelar_its::TokenManager::find_token_mint(token_id, its_root_pda);
+    let payer_ata = anchor_spl::associated_token::get_associated_token_address_with_program_id(
+        &env.payer.pubkey(),
+        &token_mint_pda,
+        &anchor_spl::token_2022::ID,
+    );
+    let create_payer_ata_ix =
+        anchor_spl::associated_token::spl_associated_token_account::instruction::create_associated_token_account(
+            &env.payer.pubkey(),
+            &env.payer.pubkey(),
+            &token_mint_pda,
+            &anchor_spl::token_2022::ID,
+        );
+    let create_ata_blockhash = env.rpc_client.get_latest_blockhash().await.unwrap();
+    let create_ata_tx = solana_sdk::transaction::Transaction::new_signed_with_payer(
+        &[create_payer_ata_ix],
+        Some(&env.payer.pubkey()),
+        &[&env.payer],
+        create_ata_blockhash,
+    );
+    // The ATA may already exist if a previous test left state behind; ignore
+    // the error in that case. If creation truly failed, the subsequent CPI
+    // will surface the real cause.
+    let _ = env
+        .rpc_client
+        .send_and_confirm_transaction(&create_ata_tx)
+        .await;
+
+    // Memo's `execute_with_interchain_token` accounts: `its_executable` (handled
+    // by the relayer) + `counter` (writable) + optional remaining accounts.
+    // Layout for the executable_payload's extra_accounts:
+    //   [0]    counter PDA   — writable (memo increments it)
+    //   [1]    payer's ATA   — writable; memo's optional onward TransferChecked
+    //                          target. A real ATA lets this CPI succeed.
+    //   [2..]  4 readonly fillers — bulk up the v0 tx size past 1232 bytes so
+    //                                the global ITS ALT alone can't fit it,
+    //                                forcing ephemeral ALT creation.
+    let mut extra_accounts: Vec<AccountMeta> = vec![
+        AccountMeta::new(counter_pda, false),
+        AccountMeta::new(payer_ata, false),
+    ];
+    extra_accounts.extend((0..4).map(|_| AccountMeta::new_readonly(Pubkey::new_unique(), false)));
+    // Memo reads `data` as UTF-8; real text bytes make the log readable.
+    let payload_data = b"its-dual-alt-test-memo".to_vec();
     let executable_payload = ExecutablePayload::new::<AccountMeta>(
         &payload_data,
         &extra_accounts,
@@ -2873,10 +2951,11 @@ async fn test_its_global_alt_with_and_without_ephemeral() {
     );
     let executable_payload_bytes = executable_payload.encode().unwrap();
 
+    let transfer_data_destination = env.memo_program_id;
     let transfer_with_data = InterchainTransfer {
         token_id,
         source_address: "ethereum_address".as_bytes().to_vec(),
-        destination_address: destination_pubkey.to_bytes().to_vec(),
+        destination_address: transfer_data_destination.to_bytes().to_vec(),
         amount: 500_000u64,
         data: Some(executable_payload_bytes),
     };
@@ -2941,8 +3020,10 @@ async fn test_its_global_alt_with_and_without_ephemeral() {
         },
     };
 
-    // This will either succeed or revert (destination doesn't implement executable interface),
-    // but either way it exercises the ephemeral ALT creation + dual-ALT v0 tx path.
+    // Memo's `execute_with_interchain_token` succeeds (logs payload, bumps
+    // counter), then attempts an onward token transfer using the first
+    // remaining account — which is a random pubkey here, so memo reverts
+    // at that step. Either outcome exercises the dual-ALT relayer path.
     // A revert returns Ok(vec![Event::...]) with REVERTED status, not Err.
     let transfer_data_result = includer
         .handle_execute_task(transfer_data_execute_task)

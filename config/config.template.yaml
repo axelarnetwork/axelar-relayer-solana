@@ -8,6 +8,8 @@ payload_cache: ""
 solana_stream_rpc: ""
 solana_poll_rpc: ""
 solana_keypair: "" # base58 encoded solana keypair
+solana_subscriber_commitment: # one of: processed, confirmed, finalized (default: finalized)
+solana_includer_commitment: # one of: processed, confirmed, finalized (default: confirmed)
 axelar_contracts:
   chain_gateway: ""
   chain_multisig_prover: ""

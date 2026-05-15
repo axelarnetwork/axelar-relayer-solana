@@ -1,4 +1,4 @@
-use crate::gas_calculator::GasCalculatorTrait;
+use crate::gas_calculator::{GasCalculatorTrait, InstructionKind};
 use crate::includer_client::IncluderClientTrait;
 use crate::redis::RedisConnectionTrait;
 use crate::utils::{
@@ -56,6 +56,7 @@ pub trait TransactionBuilderTrait<IC: IncluderClientTrait, R: RedisConnectionTra
         ixs: &[Instruction],
         address_lookup_tables: Vec<AddressLookupTableAccount>,
         extra_signing_keypairs: Option<Vec<Keypair>>,
+        kind: InstructionKind,
     ) -> Result<(SolanaTransactionType, u64), TransactionBuilderError>;
 
     async fn build_execute_instruction(
@@ -189,6 +190,7 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
         ixs: &[Instruction],
         address_lookup_tables: Vec<AddressLookupTableAccount>,
         extra_signing_keypairs: Option<Vec<Keypair>>,
+        kind: InstructionKind,
     ) -> Result<(SolanaTransactionType, u64), TransactionBuilderError> {
         let unit_price = self
             .redis_conn
@@ -221,10 +223,11 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
         .await
         .map_err(|e| TransactionBuilderError::CreateTransactionError(e.to_string()))?;
 
-        // Compute the actual compute budget required for the transaction
+        // Compute the actual compute budget required for the transaction.
+        // For hardcoded kinds (init/verify) `proto_transaction` is unused inside `compute_budget`.
         let compute_budget = self
             .gas_calculator
-            .compute_budget(proto_transaction.clone())
+            .compute_budget(proto_transaction.clone(), kind)
             .await
             .map_err(|e| TransactionBuilderError::ClientError(e.to_string()))?;
 
@@ -718,7 +721,7 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
 #[cfg(test)]
 mod tests {
     use crate::error::TransactionBuilderError;
-    use crate::gas_calculator::MockGasCalculatorTrait;
+    use crate::gas_calculator::{InstructionKind, MockGasCalculatorTrait};
     use crate::includer_client::MockIncluderClientTrait;
     use crate::redis::MockRedisConnectionTrait;
     use crate::transaction_builder::{TransactionBuilder, TransactionBuilderTrait};
@@ -800,7 +803,7 @@ mod tests {
         mock_gas
             .expect_compute_budget()
             .times(1)
-            .returning(|_| Ok(100_000u64));
+            .returning(|_, _| Ok(100_000u64));
 
         mock_client
             .expect_get_latest_blockhash()
@@ -823,7 +826,12 @@ mod tests {
         );
 
         let (tx, _cost) = builder
-            .build(std::slice::from_ref(&user_ix), alts, None)
+            .build(
+                std::slice::from_ref(&user_ix),
+                alts,
+                None,
+                InstructionKind::Other,
+            )
             .await
             .expect("build with ALT should succeed");
 
@@ -867,7 +875,7 @@ mod tests {
         mock_gas
             .expect_compute_budget()
             .times(1)
-            .returning(|_| Ok(100_000u64));
+            .returning(|_, _| Ok(100_000u64));
 
         mock_client
             .expect_get_latest_blockhash()
@@ -885,7 +893,12 @@ mod tests {
         );
 
         let (tx, _cost) = builder
-            .build(std::slice::from_ref(&user_ix), vec![], None)
+            .build(
+                std::slice::from_ref(&user_ix),
+                vec![],
+                None,
+                InstructionKind::Other,
+            )
             .await
             .expect("build without ALT should succeed");
 
@@ -934,7 +947,7 @@ mod tests {
         mock_gas
             .expect_compute_budget()
             .times(1)
-            .returning(|_| Ok(100_000u64));
+            .returning(|_, _| Ok(100_000u64));
 
         mock_client
             .expect_get_latest_blockhash()
@@ -956,6 +969,7 @@ mod tests {
                 std::slice::from_ref(&user_ix),
                 vec![],
                 Some(extra_signing_keypairs),
+                InstructionKind::Other,
             )
             .await
             .expect("build with extra signing keypairs should succeed");
@@ -1003,7 +1017,7 @@ mod tests {
         mock_gas
             .expect_compute_budget()
             .times(1)
-            .returning(|_| Ok(100_000u64));
+            .returning(|_, _| Ok(100_000u64));
         mock_client
             .expect_get_latest_blockhash()
             .times(1)
@@ -1031,7 +1045,12 @@ mod tests {
         );
 
         let (tx, _cost) = builder
-            .build(std::slice::from_ref(&user_ix), alts, None)
+            .build(
+                std::slice::from_ref(&user_ix),
+                alts,
+                None,
+                InstructionKind::Other,
+            )
             .await
             .expect("build with two ALTs should succeed");
 

@@ -16,7 +16,7 @@ use tracing::{debug, error};
 use solana_commitment_config::{CommitmentConfig, CommitmentLevel};
 use solana_rpc_client_api::response::RpcConfirmedTransactionStatusWithSignature;
 use solana_sdk::{
-    instruction::Instruction,
+    instruction::{Instruction, InstructionError},
     message::{v0, AddressLookupTableAccount, VersionedMessage},
     pubkey::Pubkey,
     signature::{Keypair, Signature},
@@ -353,6 +353,11 @@ pub fn not_enough_gas_event<G: GmpApiTrait>(
 }
 
 pub fn is_recoverable(transaction_error: &TransactionError) -> bool {
+    if let TransactionError::InstructionError(_, InstructionError::ComputationalBudgetExceeded) =
+        transaction_error
+    {
+        return true;
+    }
     !matches!(
         transaction_error,
         TransactionError::InstructionError(_, _)
@@ -1100,6 +1105,10 @@ mod tests {
         assert!(!is_recoverable(&transaction_error));
 
         let transaction_error = TransactionError::AccountNotFound;
+        assert!(is_recoverable(&transaction_error));
+
+        let transaction_error =
+            TransactionError::InstructionError(0, InstructionError::ComputationalBudgetExceeded);
         assert!(is_recoverable(&transaction_error));
     }
 

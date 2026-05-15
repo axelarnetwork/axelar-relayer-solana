@@ -5,7 +5,9 @@ use std::fmt::{Display, Formatter};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
-use tracing::debug;
+use tracing::{debug, warn};
+
+const DEFAULT_COST: u64 = 5000;
 
 #[derive(Clone)]
 pub struct CostCache {
@@ -68,21 +70,16 @@ impl CostCacheTrait for CostCache {
                         );
                         sleep(backoff_duration).await;
                         backoff_duration *= 2;
-                    } else {
-                        return Err(anyhow::anyhow!(
-                            "Failed to get cost for key {} after {} attempts: Key not found in Redis",
-                            key,
-                            max_retries
-                        ));
                     }
                 }
             }
         }
 
-        Err(anyhow::anyhow!(
-            "Failed to get cost for key {}: Max retries exceeded",
-            key
-        ))
+        warn!(
+            "Failed to get cost for key {}: Max retries exceeded. Defaulting to {}.",
+            key, DEFAULT_COST
+        );
+        Ok(DEFAULT_COST)
     }
 }
 

@@ -21,8 +21,10 @@ async fn main() -> anyhow::Result<()> {
     let threshold_lamports = config.min_wallet_balance_lamports;
 
     let pubkey = config.signing_keypair().pubkey();
-    let rpc =
-        RpcClient::new_with_commitment(config.solana_poll_rpc.clone(), config.solana_commitment());
+    let rpc = RpcClient::new_with_commitment(
+        config.solana_poll_rpc.clone(),
+        config.solana_includer_commitment(),
+    );
 
     info!(
         wallet = %pubkey,
@@ -43,13 +45,13 @@ async fn main() -> anyhow::Result<()> {
                         wallet = %pubkey,
                         balance_lamports = balance,
                         threshold_lamports,
-                        "Relayer wallet balance is below threshold"
+                        "Wallet balance is below threshold"
                     );
                 } else {
                     debug!(
                         wallet = %pubkey,
                         balance_lamports = balance,
-                        "Relayer wallet balance OK"
+                        "Wallet balance OK"
                     );
                 }
             }

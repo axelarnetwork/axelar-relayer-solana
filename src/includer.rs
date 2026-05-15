@@ -1,6 +1,7 @@
 use crate::config::SolanaConfig;
 use crate::error::{IncluderClientError, SolanaIncluderError, TransactionBuilderError};
 use crate::gas_calculator::GasCalculator;
+use crate::gas_calculator::InstructionKind;
 use crate::includer_client::{IncluderClient, IncluderClientTrait};
 use crate::models::refunds::RefundsModel;
 use crate::redis::RedisConnectionTrait;
@@ -263,7 +264,7 @@ impl<
         IncluderError,
     > {
         let solana_rpc = config.solana_poll_rpc.clone();
-        let solana_commitment = config.solana_commitment();
+        let solana_commitment = config.solana_includer_commitment();
 
         let client = Arc::new(
             IncluderClient::new(&solana_rpc, solana_commitment, 3)
@@ -322,8 +323,13 @@ impl<
         &self,
         ixs: Vec<Instruction>,
         execute_data: Option<&ExecuteData>,
+        kind: InstructionKind,
     ) -> Result<(Signature, Option<u64>), SolanaIncluderError> {
-        let (tx, _) = match self.transaction_builder.build(&ixs, vec![], None).await {
+        let (tx, _) = match self
+            .transaction_builder
+            .build(&ixs, vec![], None, kind)
+            .await
+        {
             Ok((tx, cost)) => (tx, cost),
             Err(e) => {
                 return Err(SolanaIncluderError::GenericError(e.to_string()));
@@ -460,6 +466,7 @@ impl<
                     &[alt_ix_create.clone(), alt_ix_extend.clone()],
                     vec![],
                     Some(vec![authority_keypair]),
+                    InstructionKind::AltCreateExtend,
                 )
                 .await
                 .map_err(|e| IncluderError::GenericError(e.to_string()))?;
@@ -535,6 +542,7 @@ impl<
                 std::slice::from_ref(&instruction),
                 address_lookup_tables,
                 None,
+                InstructionKind::Execute,
             )
             .await
             .map_err(|e| IncluderError::GenericError(e.to_string()))?;
@@ -756,7 +764,12 @@ impl<
 
         let (tx, _) = self
             .transaction_builder
-            .build(&[ix], vec![], None)
+            .build(
+                &[ix],
+                vec![],
+                None,
+                InstructionKind::InitPayloadVerification,
+            )
             .await
             .map_err(|e| SolanaIncluderError::GenericError(e.to_string()))?;
 
@@ -844,7 +857,7 @@ impl<
                     data: ix_data,
                 };
 
-                self.build_and_send_transaction(vec![ix], None)
+                self.build_and_send_transaction(vec![ix], None, InstructionKind::VerifySignature)
             })
             .collect::<FuturesUnordered<_>>();
 
@@ -941,7 +954,9 @@ impl<
         };
 
         // Build and send RotateSigners transaction
-        let (signature, gas_cost) = self.build_and_send_transaction(vec![ix], None).await?;
+        let (signature, gas_cost) = self
+            .build_and_send_transaction(vec![ix], None, InstructionKind::Other)
+            .await?;
         debug!(
             "Rotated signers transaction sent successfully: {}. Cost: {:?}",
             signature, gas_cost
@@ -1014,8 +1029,12 @@ impl<
                 Ok(async move {
                     (
                         cc_id,
-                        self.build_and_send_transaction(vec![ix], Some(execute_data))
-                            .await,
+                        self.build_and_send_transaction(
+                            vec![ix],
+                            Some(execute_data),
+                            InstructionKind::ApproveMessage,
+                        )
+                        .await,
                     )
                 })
             })
@@ -1358,15 +1377,16 @@ impl<
 
         let (tx, estimated_tx_cost) = self
             .transaction_builder
-            .build(&[ix], vec![], None)
+            .build(&[ix], vec![], None, InstructionKind::Other)
             .await
             .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
         if estimated_tx_cost >= refund_amount {
-            return Err(IncluderError::GenericError(format!(
+            warn!(
                 "Cost is higher than remaining balance to refund. Cost: {}, Remaining balance: {}",
                 estimated_tx_cost, refund_amount
-            )));
+            );
+            return Ok(());
         }
 
         // write the signature to the database before sending the transaction to avoid
@@ -1909,7 +1929,7 @@ mod tests {
         transaction_builder
             .expect_build()
             .times(1)
-            .returning(move |_, _, _| {
+            .returning(move |_, _, _, _| {
                 Ok((
                     crate::transaction_type::SolanaTransactionType::Legacy(
                         test_tx_for_build.clone(),
@@ -2005,7 +2025,7 @@ mod tests {
         transaction_builder
             .expect_build()
             .times(1)
-            .returning(move |ixs, _, _| {
+            .returning(move |ixs, _, _, _| {
                 // Build a transaction that includes both the refund instruction AND compute budget
                 let mut all_ixs = vec![ComputeBudgetInstruction::set_compute_unit_price(
                     high_micro_price,
@@ -2063,11 +2083,7 @@ mod tests {
             })
             .await;
 
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Cost is higher than remaining balance"));
+        assert!(result.is_ok());
     }
 
     #[tokio::test]
@@ -2117,7 +2133,7 @@ mod tests {
         transaction_builder
             .expect_build()
             .times(1)
-            .returning(move |_, _, _| {
+            .returning(move |_, _, _, _| {
                 Ok((
                     crate::transaction_type::SolanaTransactionType::Legacy(
                         test_tx_for_build.clone(),
@@ -2211,7 +2227,7 @@ mod tests {
         transaction_builder
             .expect_build()
             .times(1)
-            .returning(move |_, _, _| {
+            .returning(move |_, _, _, _| {
                 Ok((
                     crate::transaction_type::SolanaTransactionType::Legacy(
                         test_tx_for_build.clone(),
@@ -2320,7 +2336,7 @@ mod tests {
         transaction_builder
             .expect_build()
             .times(1)
-            .returning(move |_, _, _| {
+            .returning(move |_, _, _, _| {
                 Ok((
                     crate::transaction_type::SolanaTransactionType::Legacy(
                         test_tx_for_build.clone(),
@@ -2416,7 +2432,7 @@ mod tests {
         transaction_builder
             .expect_build()
             .times(1)
-            .returning(move |_, _, _| {
+            .returning(move |_, _, _, _| {
                 Ok((
                     crate::transaction_type::SolanaTransactionType::Legacy(
                         test_tx_for_build.clone(),
@@ -2773,7 +2789,7 @@ mod tests {
         transaction_builder
             .expect_build()
             .times(2)
-            .returning(move |_, _, _| {
+            .returning(move |_, _, _, _| {
                 let idx = build_calls_clone.fetch_add(1, Ordering::SeqCst);
                 if idx == 0 {
                     // First call is for ALT creation
@@ -2975,7 +2991,7 @@ mod tests {
         transaction_builder
             .expect_build()
             .times(1)
-            .returning(move |_, _, _| {
+            .returning(move |_, _, _, _| {
                 Ok((
                     SolanaTransactionType::Legacy(main_tx_clone.clone()),
                     100u64, // > 50 available_gas
@@ -3144,7 +3160,7 @@ mod tests {
         transaction_builder
             .expect_build()
             .times(1)
-            .returning(move |_, _, _| {
+            .returning(move |_, _, _, _| {
                 Ok((
                     SolanaTransactionType::Legacy(alt_tx_clone.clone()),
                     10_000u64,
@@ -3320,7 +3336,7 @@ mod tests {
         transaction_builder
             .expect_build()
             .times(1)
-            .returning(move |_, _, _| {
+            .returning(move |_, _, _, _| {
                 Ok((
                     SolanaTransactionType::Legacy(alt_tx_clone.clone()),
                     8_000u64,
@@ -3516,7 +3532,7 @@ mod tests {
         transaction_builder
             .expect_build()
             .times(2)
-            .returning(move |_, _, _| {
+            .returning(move |_, _, _, _| {
                 let idx = build_calls_clone.fetch_add(1, Ordering::SeqCst);
                 if idx == 0 {
                     // First call is for ALT creation
@@ -3774,7 +3790,7 @@ mod tests {
         transaction_builder
             .expect_build()
             .times(1)
-            .returning(move |_, _, _| {
+            .returning(move |_, _, _, _| {
                 Ok((
                     crate::transaction_type::SolanaTransactionType::Versioned(
                         main_tx_clone.clone(),
@@ -3947,7 +3963,7 @@ mod tests {
         transaction_builder
             .expect_build()
             .times(3)
-            .returning(move |_, _, _| {
+            .returning(move |_, _, _, _| {
                 let idx = build_calls_clone.fetch_add(1, Ordering::SeqCst);
                 match idx {
                     0 => Ok((
@@ -4082,7 +4098,7 @@ mod tests {
         transaction_builder
             .expect_build()
             .times(3)
-            .returning(move |_, _, _| {
+            .returning(move |_, _, _, _| {
                 let idx = build_calls_clone.fetch_add(1, Ordering::SeqCst);
                 match idx {
                     0 => Ok((
@@ -4308,7 +4324,7 @@ mod tests {
         transaction_builder
             .expect_build()
             .times(5)
-            .returning(move |_, _, _| {
+            .returning(move |_, _, _, _| {
                 let idx = build_calls_clone.fetch_add(1, Ordering::SeqCst);
                 match idx {
                     0 => Ok((
@@ -4528,7 +4544,7 @@ mod tests {
         transaction_builder
             .expect_build()
             .times(3)
-            .returning(move |_, _, _| {
+            .returning(move |_, _, _, _| {
                 let idx = build_calls_clone.fetch_add(1, Ordering::SeqCst);
                 match idx {
                     0 => Ok((
@@ -4707,7 +4723,7 @@ mod tests {
         transaction_builder
             .expect_build()
             .times(3)
-            .returning(move |_, _, _| {
+            .returning(move |_, _, _, _| {
                 let idx = build_calls_clone.fetch_add(1, Ordering::SeqCst);
                 match idx {
                     0 => Ok((
@@ -4892,7 +4908,7 @@ mod tests {
         transaction_builder
             .expect_build()
             .times(3)
-            .returning(move |_, _, _| {
+            .returning(move |_, _, _, _| {
                 let idx = build_calls_clone.fetch_add(1, Ordering::SeqCst);
                 match idx {
                     0 => Ok((
@@ -5077,7 +5093,7 @@ mod tests {
         transaction_builder
             .expect_build()
             .times(3)
-            .returning(move |_, _, _| {
+            .returning(move |_, _, _, _| {
                 let idx = build_calls_clone.fetch_add(1, Ordering::SeqCst);
                 match idx {
                     0 => Ok((
@@ -5292,7 +5308,7 @@ mod tests {
         transaction_builder
             .expect_build()
             .times(4)
-            .returning(move |_, _, _| {
+            .returning(move |_, _, _, _| {
                 let idx = build_calls_clone.fetch_add(1, Ordering::SeqCst);
                 match idx {
                     0 => Ok((
@@ -5491,7 +5507,7 @@ mod tests {
         transaction_builder
             .expect_build()
             .times(1)
-            .returning(move |_, _, _| {
+            .returning(move |_, _, _, _| {
                 Ok((SolanaTransactionType::Legacy(test_tx_clone.clone()), 100u64))
             });
 
@@ -5769,7 +5785,7 @@ mod tests {
         transaction_builder
             .expect_build()
             .times(2)
-            .returning(move |_, _, _| {
+            .returning(move |_, _, _, _| {
                 let idx = build_calls_clone.fetch_add(1, Ordering::SeqCst);
                 if idx == 0 {
                     Ok((
