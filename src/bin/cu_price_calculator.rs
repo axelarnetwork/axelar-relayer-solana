@@ -6,6 +6,7 @@ use dotenv::dotenv;
 use relayer_core::config::config_from_yaml;
 use relayer_core::logging::setup_logging;
 use relayer_core::redis::connection_manager;
+use relayer_core::utils::setup_heartbeat;
 use std::time::Duration;
 use tokio::time;
 use tracing::{debug, error, info};
@@ -25,6 +26,12 @@ async fn main() -> anyhow::Result<()> {
     let redis_conn_manager =
         connection_manager(redis_client.clone(), None, None, None, None).await?;
     let redis_conn = RedisConnection::new(redis_conn_manager.clone());
+
+    setup_heartbeat(
+        "heartbeat:cu_price_calculator".to_owned(),
+        redis_conn_manager,
+        None,
+    );
 
     let includer_client = IncluderClient::new(
         &config.solana_poll_rpc,

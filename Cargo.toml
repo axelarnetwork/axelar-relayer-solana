@@ -68,7 +68,7 @@ solana-axelar-operators = { version = "1.1.0", default-features = false, feature
 solana-axelar-std = "1.1.0"
 
 # Relayer
-relayer-core = { git = "https://github.com/commonprefix/axelar-relayer-core", tag = "1.0.1", features = ["mocks"] }
+relayer-core = { git = "https://github.com/commonprefix/axelar-relayer-core", tag = "v1.0.3", features = ["mocks"] }
 
 # Dev
 lapin = "2.5"
