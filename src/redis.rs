@@ -10,6 +10,7 @@ use tracing::{debug, warn};
 use redis::aio::ConnectionManager;
 
 const GAS_COST_EXPIRATION: u64 = 604800; // one week
+const CU_PRICE_EXPIRATION: u64 = 600; // ten minutes
 const ALT_PREFIX: &str = "ALT:";
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -554,7 +555,9 @@ impl RedisConnectionTrait for RedisConnection {
     async fn set_cu_price(&self, cu_price: u64) -> Result<(), RedisInterfaceError> {
         let mut redis_conn = self.conn.clone();
         let key = "cu_price";
-        redis::AsyncCommands::set::<_, _, ()>(&mut redis_conn, key, cu_price)
+        let set_opts = SetOptions::default().with_expiration(SetExpiry::EX(CU_PRICE_EXPIRATION));
+        redis_conn
+            .set_options(key, cu_price, set_opts)
             .await
             .map_err(|e| {
                 RedisInterfaceError::GenericError(format!("Failed to set CU price in Redis: {}", e))
@@ -1628,6 +1631,24 @@ mod tests {
         // Try to get CU price when it doesn't exist
         let result = redis_conn.get_cu_price().await.unwrap();
         assert_eq!(result, None);
+    }
+
+    #[tokio::test]
+    async fn test_cu_price_expiration() {
+        let (_container, redis_conn) = create_redis_connection().await;
+
+        let cu_price = 12345u64;
+
+        redis_conn.set_cu_price(cu_price).await.unwrap();
+
+        let mut conn = redis_conn.inner().clone();
+        let ttl: i64 = redis::AsyncCommands::ttl(&mut conn, "cu_price")
+            .await
+            .unwrap();
+
+        assert!(ttl > 0, "TTL should be positive");
+        assert!(ttl <= CU_PRICE_EXPIRATION as i64);
+        assert!(ttl > (CU_PRICE_EXPIRATION as i64 - 10));
     }
 
     #[tokio::test]

@@ -155,32 +155,32 @@ impl<STR: SolanaStreamClientTrait, SM: SolanaTransactionModel> SolanaListener<ST
         cancellation_token: CancellationToken,
     ) {
         loop {
-            let solana_stream_client = match SolanaStreamClient::new(
-                &solana_config.solana_stream_rpc,
-                solana_config.solana_subscriber_commitment(),
+            let solana_stream_client = match try_with_retries(
+                "stream client creation",
+                stream_name,
+                &cancellation_token,
+                || {
+                    SolanaStreamClient::new(
+                        &solana_config.solana_stream_rpc,
+                        solana_config.solana_subscriber_commitment(),
+                    )
+                },
             )
             .await
             {
-                Ok(solana_stream_client) => solana_stream_client,
-                Err(e) => {
-                    error!(
-                        "Error creating solana stream client for {}: {:?}",
-                        stream_name, e
-                    );
-                    break;
-                }
+                Some(client) => client,
+                None => break,
             };
 
-            let mut subscriber_stream = match solana_stream_client
-                .logs_subscriber(account.to_string())
+            let mut subscriber_stream =
+                match try_with_retries("logs subscriber", stream_name, &cancellation_token, || {
+                    solana_stream_client.logs_subscriber(account.to_string())
+                })
                 .await
-            {
-                Ok(subscriber) => subscriber,
-                Err(e) => {
-                    error!("Error creating {} subscriber stream: {:?}", stream_name, e);
-                    break;
-                }
-            };
+                {
+                    Some(subscriber) => subscriber,
+                    None => break,
+                };
 
             let mut should_break = false;
             let tracker = TaskTracker::new();
@@ -337,4 +337,80 @@ impl<STR: SolanaStreamClientTrait, SM: SolanaTransactionModel> SolanaListener<ST
             }
         }
     }
+}
+
+/// Runs `op` up to 4 times (1 initial + 3 retries with 1s, 3s, 5s backoff). On
+/// the first success returns `Some(value)`. If every attempt fails, or the
+/// cancellation token fires mid-retry, returns `None` and the caller should
+/// treat that as a hard failure of the operation.
+async fn try_with_retries<T, E, F, Fut>(
+    op_name: &str,
+    stream_name: &str,
+    token: &CancellationToken,
+    mut op: F,
+) -> Option<T>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, E>>,
+    E: std::fmt::Debug,
+{
+    const RETRY_DELAYS_SECS: [u64; 3] = [1, 3, 5];
+    let total = RETRY_DELAYS_SECS.len() + 1;
+
+    // Schedule: initial attempt has no delay, then each retry waits its backoff.
+    let schedule = std::iter::once(None).chain(RETRY_DELAYS_SECS.iter().map(|&d| Some(d)));
+
+    for (idx, delay_secs) in schedule.enumerate() {
+        let attempt = idx + 1;
+        if let Some(delay) = delay_secs {
+            select! {
+                _ = token.cancelled() => {
+                    info!(
+                        "Cancellation during {} retries for {}; aborting.",
+                        op_name, stream_name
+                    );
+                    return None;
+                }
+                _ = tokio::time::sleep(Duration::from_secs(delay)) => {}
+            }
+        }
+
+        let result = select! {
+            _ = token.cancelled() => {
+                info!(
+                    "Cancellation during {} for {}; aborting.",
+                    op_name, stream_name
+                );
+                return None;
+            }
+            res = op() => res,
+        };
+
+        match result {
+            Ok(v) => {
+                if attempt > 1 {
+                    info!(
+                        "{} for {} succeeded on attempt {}/{}",
+                        op_name, stream_name, attempt, total
+                    );
+                }
+                return Some(v);
+            }
+            Err(e) => {
+                if attempt < total {
+                    warn!(
+                        "{} for {} attempt {}/{} failed: {:?}. Retrying...",
+                        op_name, stream_name, attempt, total, e
+                    );
+                } else {
+                    error!(
+                        "{} for {} failed after {} attempts: {:?}",
+                        op_name, stream_name, total, e
+                    );
+                }
+            }
+        }
+    }
+
+    None
 }
