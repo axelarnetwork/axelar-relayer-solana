@@ -32,6 +32,7 @@ macro_rules! ensure_single_feature {
 pub mod config;
 pub mod error;
 pub mod gas_calculator;
+pub mod gas_estimation;
 pub mod ingestor;
 pub mod models;
 pub mod poll_client;

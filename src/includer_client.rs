@@ -7,6 +7,8 @@ use solana_axelar_std::execute_data::ExecuteData;
 use solana_client::rpc_response::RpcPrioritizationFee;
 use solana_commitment_config::CommitmentConfig;
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
+use solana_rpc_client_api::config::RpcSimulateTransactionConfig;
+use solana_rpc_client_api::response::RpcSimulateTransactionResult;
 use solana_sdk::{account::Account, hash::Hash, pubkey::Pubkey, signature::Signature};
 use std::{sync::Arc, time::Duration};
 use tokio::time::sleep;
@@ -78,6 +80,97 @@ impl IncluderClient {
             max_retries,
             commitment,
         })
+    }
+
+    // Run `simulateTransaction` with retry/backoff, returning the raw result on success.
+    async fn simulate_with_retry(
+        &self,
+        transaction: &SolanaTransactionType,
+    ) -> Result<RpcSimulateTransactionResult, IncluderClientError> {
+        const RETRY_BACKOFFS_SEC: [u64; 3] = [2, 4, 8];
+
+        // First attempt mirrors the pre-existing default config (no blockhash replacement).
+        let first_cfg = RpcSimulateTransactionConfig {
+            commitment: Some(self.commitment),
+            ..Default::default()
+        };
+        let retry_cfg = RpcSimulateTransactionConfig {
+            sig_verify: false,
+            replace_recent_blockhash: true,
+            commitment: Some(self.commitment),
+            ..Default::default()
+        };
+
+        let mut last_err: Option<IncluderClientError> = None;
+
+        for attempt in 0..=RETRY_BACKOFFS_SEC.len() {
+            if attempt > 0 {
+                let delay = RETRY_BACKOFFS_SEC.get(attempt - 1).copied().unwrap_or(8);
+                warn!(
+                    attempt,
+                    delay_sec = delay,
+                    last_error = ?last_err,
+                    "retrying simulate_transaction after error"
+                );
+                sleep(Duration::from_secs(delay)).await;
+            }
+
+            let cfg = if attempt == 0 {
+                first_cfg.clone()
+            } else {
+                retry_cfg.clone()
+            };
+            let simulation_result = match transaction {
+                SolanaTransactionType::Legacy(tx) => {
+                    self.client.simulate_transaction_with_config(tx, cfg).await
+                }
+                SolanaTransactionType::Versioned(tx) => {
+                    self.client.simulate_transaction_with_config(tx, cfg).await
+                }
+            };
+
+            match simulation_result {
+                Err(e) => {
+                    last_err = Some(IncluderClientError::GenericError(e.to_string()));
+                    continue;
+                }
+                Ok(resp) => {
+                    if let Some(sim_err) = resp.value.err {
+                        let is_last_attempt = attempt == RETRY_BACKOFFS_SEC.len();
+                        if is_last_attempt {
+                            error!(
+                                attempt,
+                                error = ?sim_err,
+                                logs = ?resp.value.logs,
+                                units_consumed_before_error = ?resp.value.units_consumed,
+                                "Transaction simulation returned an error"
+                            );
+                        } else {
+                            warn!(
+                                attempt,
+                                error = ?sim_err,
+                                logs = ?resp.value.logs,
+                                units_consumed_before_error = ?resp.value.units_consumed,
+                                "Transaction simulation returned an error"
+                            );
+                        }
+                        last_err = Some(IncluderClientError::GenericError(format!(
+                            "simulation errored: {:?}; logs: {:?}",
+                            sim_err, resp.value.logs
+                        )));
+                        continue;
+                    }
+
+                    return Ok(resp.value);
+                }
+            }
+        }
+
+        Err(last_err.unwrap_or_else(|| {
+            IncluderClientError::GenericError(
+                "simulate_transaction failed after all retries".into(),
+            )
+        }))
     }
 }
 
@@ -366,119 +459,12 @@ impl IncluderClientTrait for IncluderClient {
         &self,
         transaction: SolanaTransactionType,
     ) -> Result<u64, IncluderClientError> {
-        use solana_rpc_client_api::config::RpcSimulateTransactionConfig;
-
-        // Backoffs between retries (seconds). 3 retries → 4 attempts total.
-        // Worst-case wall time on persistent failure: 2 + 4 + 8 = 14s.
-        const RETRY_BACKOFFS_SEC: [u64; 3] = [2, 4, 8];
-
-        // Retries use `replace_recent_blockhash: true` to break out of RPC
-        // replica-lag transients (`BlockhashNotFound` and similar): a stale
-        // backend that doesn't have the original blockhash yet will instead
-        // substitute its own latest one. We do NOT enable this on the first
-        // attempt because it can race against freshly-activated ALT entries
-        // (the sim sees the latest slot's view, where a just-extended ALT may
-        // not yet resolve all its programs). On retries we accept that risk
-        // because the alternative is a permanent BlockhashNotFound loop.
-        // `sig_verify: false` is required when replacing the blockhash since
-        // signatures over the original blockhash become invalid.
-        let retry_cfg = RpcSimulateTransactionConfig {
-            sig_verify: false,
-            replace_recent_blockhash: true,
-            commitment: Some(self.commitment),
-            ..Default::default()
-        };
-
-        let mut last_err: Option<IncluderClientError> = None;
-
-        for attempt in 0..=RETRY_BACKOFFS_SEC.len() {
-            if attempt > 0 {
-                // `attempt - 1` is in 0..RETRY_BACKOFFS_SEC.len() by loop
-                // construction, but use `.get()` defensively rather than
-                // direct indexing.
-                let delay = RETRY_BACKOFFS_SEC.get(attempt - 1).copied().unwrap_or(8);
-                warn!(
-                    attempt,
-                    delay_sec = delay,
-                    last_error = ?last_err,
-                    "retrying simulate_transaction after error"
-                );
-                sleep(Duration::from_secs(delay)).await;
-            }
-
-            // First attempt uses default config (matches pre-existing behavior
-            // and avoids the ALT-activation race). Retries opt into
-            // replace_recent_blockhash to recover from replica-lag transients.
-            let simulation_result = if attempt == 0 {
-                match &transaction {
-                    SolanaTransactionType::Legacy(tx) => {
-                        self.inner().simulate_transaction(tx).await
-                    }
-                    SolanaTransactionType::Versioned(tx) => {
-                        self.inner().simulate_transaction(tx).await
-                    }
-                }
-            } else {
-                match &transaction {
-                    SolanaTransactionType::Legacy(tx) => {
-                        self.inner()
-                            .simulate_transaction_with_config(tx, retry_cfg.clone())
-                            .await
-                    }
-                    SolanaTransactionType::Versioned(tx) => {
-                        self.inner()
-                            .simulate_transaction_with_config(tx, retry_cfg.clone())
-                            .await
-                    }
-                }
-            };
-
-            match simulation_result {
-                Err(e) => {
-                    last_err = Some(IncluderClientError::GenericError(e.to_string()));
-                    continue;
-                }
-                Ok(resp) => {
-                    if let Some(sim_err) = resp.value.err {
-                        let is_last_attempt = attempt == RETRY_BACKOFFS_SEC.len();
-                        if is_last_attempt {
-                            error!(
-                                attempt,
-                                error = ?sim_err,
-                                logs = ?resp.value.logs,
-                                units_consumed_before_error = ?resp.value.units_consumed,
-                                "Transaction simulation returned an error"
-                            );
-                        } else {
-                            warn!(
-                                attempt,
-                                error = ?sim_err,
-                                logs = ?resp.value.logs,
-                                units_consumed_before_error = ?resp.value.units_consumed,
-                                "Transaction simulation returned an error"
-                            );
-                        }
-                        last_err = Some(IncluderClientError::GenericError(format!(
-                            "simulation errored: {:?}; logs: {:?}",
-                            sim_err, resp.value.logs
-                        )));
-                        continue;
-                    }
-
-                    return resp.value.units_consumed.ok_or_else(|| {
-                        IncluderClientError::GenericError(
-                            "simulation succeeded but units_consumed missing".into(),
-                        )
-                    });
-                }
-            }
-        }
-
-        Err(last_err.unwrap_or_else(|| {
+        let result = self.simulate_with_retry(&transaction).await?;
+        result.units_consumed.ok_or_else(|| {
             IncluderClientError::GenericError(
-                "simulate_transaction failed after all retries".into(),
+                "simulation succeeded but units_consumed missing".into(),
             )
-        }))
+        })
     }
 
     async fn get_transaction_cost_from_signature(
@@ -504,7 +490,15 @@ impl IncluderClientTrait for IncluderClient {
             {
                 Ok(transaction_info) => {
                     if let Some(meta) = &transaction_info.transaction.meta {
-                        return Ok(Some(meta.fee));
+                        // meta.fee is only the consensus tx fee (base sig + priority).
+                        // The fee payer (account index 0) also pays rent for any new
+                        // accounts created in the tx.
+                        // The true cost is the fee payer's balance delta.
+                        let actual = match (meta.pre_balances.first(), meta.post_balances.first()) {
+                            (Some(pre), Some(post)) => pre.saturating_sub(*post),
+                            _ => meta.fee,
+                        };
+                        return Ok(Some(actual));
                     } else {
                         return Ok(None);
                     }

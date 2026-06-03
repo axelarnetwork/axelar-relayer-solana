@@ -366,6 +366,7 @@ impl<
         extra_alt_accounts: &[AccountMeta], // Non-empty only for ITS InterchainTransfer with data that overflows
         existing_alt_pubkey: Option<Pubkey>, // Existing ephemeral ALT from a previous attempt (stored in Redis)
         destination_address: Pubkey,
+        entrypoint: crate::gas_estimation::ExecuteEntrypoint, // for the rent estimate
     ) -> Result<Vec<Event>, IncluderError> {
         let mut alt_cost = None;
         let mut available_gas_balance = i64::from_str(&task.task.available_gas_balance.amount)
@@ -547,13 +548,21 @@ impl<
             .await
             .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
+        // `estimated_tx_cost` is consensus-only (base + priority). The fee payer also funds
+        // rent for the accounts an ITS execute creates (token manager, mint, Metaplex
+        // metadata, ATAs, roles). Add that as a static, deterministic estimate keyed on the
+        // GMP entrypoint (resolved by the builder, including the destination-ATA existence
+        // check) so the check reflects the true cost the relayer pays.
+        let rent_estimate = crate::gas_estimation::execute_rent_lamports(entrypoint);
+        let total_estimated_cost = estimated_tx_cost.saturating_add(rent_estimate);
+
         #[cfg(feature = "devnet-amplifier")]
-        let _ = (available_gas_balance, estimated_tx_cost);
+        let _ = (available_gas_balance, total_estimated_cost);
         #[cfg(not(feature = "devnet-amplifier"))]
-        if estimated_tx_cost as i64 > available_gas_balance {
+        if total_estimated_cost as i64 > available_gas_balance {
             return Ok(not_enough_gas_event(
                 available_gas_balance,
-                estimated_tx_cost,
+                total_estimated_cost,
                 task,
                 Arc::clone(&self.gmp_api),
             ));
@@ -1261,7 +1270,7 @@ impl<
 
         let existing_alt_pubkey = existing_alt_entry.map(|(pubkey, _)| pubkey);
 
-        let (instruction, accounts) = match self
+        let (instruction, accounts, entrypoint) = match self
             .transaction_builder
             .build_execute_instruction(
                 &message,
@@ -1273,7 +1282,7 @@ impl<
             )
             .await
         {
-            Ok((instruction, accounts)) => (instruction, accounts),
+            Ok((instruction, accounts, entrypoint)) => (instruction, accounts, entrypoint),
             Err(e) => match e {
                 TransactionBuilderError::PayloadDecodeError(e) => {
                     error!(
@@ -1304,6 +1313,7 @@ impl<
             &accounts,
             existing_alt_pubkey,
             destination_address,
+            entrypoint,
         )
         .await
         .map_err(|e| IncluderError::GenericError(e.to_string()))
@@ -1421,6 +1431,7 @@ impl<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gas_estimation::ExecuteEntrypoint;
     use crate::includer_client::MockIncluderClientTrait;
     use crate::models::refunds::MockRefundsModel;
     use crate::redis::MockRedisConnectionTrait;
@@ -2125,6 +2136,7 @@ mod tests {
                 Ok((
                     instruction_for_mock.clone(),
                     vec![], // No ALT for governance
+                    ExecuteEntrypoint::Other,
                 ))
             });
 
@@ -2218,7 +2230,13 @@ mod tests {
         transaction_builder
             .expect_build_execute_instruction()
             .times(1)
-            .returning(move |_, _, _| Ok((instruction_for_mock.clone(), vec![])));
+            .returning(move |_, _, _| {
+                Ok((
+                    instruction_for_mock.clone(),
+                    vec![],
+                    ExecuteEntrypoint::Other,
+                ))
+            });
 
         let mut test_tx =
             solana_sdk::transaction::Transaction::new_with_payer(&[], Some(&keypair.pubkey()));
@@ -2328,6 +2346,7 @@ mod tests {
                 Ok((
                     test_instruction.clone(),
                     vec![], // No ALT for executable
+                    ExecuteEntrypoint::Other,
                 ))
             });
 
@@ -2423,7 +2442,13 @@ mod tests {
         transaction_builder
             .expect_build_execute_instruction()
             .times(1)
-            .returning(move |_, _, _| Ok((instruction_for_mock.clone(), vec![])));
+            .returning(move |_, _, _| {
+                Ok((
+                    instruction_for_mock.clone(),
+                    vec![],
+                    ExecuteEntrypoint::Other,
+                ))
+            });
 
         let mut test_tx =
             solana_sdk::transaction::Transaction::new_with_payer(&[], Some(&keypair.pubkey()));
@@ -2484,6 +2509,127 @@ mod tests {
             &message_id,
             &source_chain,
             &destination_address,
+            available_gas,
+        );
+        let result = includer.handle_execute_task(task).await;
+
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], Event::CannotExecuteMessageV2 { .. }));
+    }
+
+    /// A real `DeployInterchainToken` payload whose prepaid gas covers the consensus fee but not
+    /// the rent for the accounts it creates must be rejected before any transaction is sent. The
+    /// consensus-only estimate (`consensus_fee`) is *below* the available gas, so the pre-fix
+    /// check (consensus only) would have executed this and the relayer would have eaten the PDA
+    /// rent. The static rent the gate adds for a deploy is what tips the total past the available
+    /// gas — so this fails if the gate ever stops adding rent for deploys.
+    #[cfg(not(feature = "devnet-amplifier"))]
+    #[tokio::test]
+    async fn test_handle_execute_task_rejected_when_gas_covers_fee_but_not_rent() {
+        let (
+            mut mock_gmp_api,
+            keypair,
+            chain_name,
+            mut redis_conn,
+            mock_refunds_model,
+            mut mock_client,
+            mut transaction_builder,
+        ) = get_includer_fields();
+
+        let message_id = "test-execute-deploy-rent-001".to_string();
+        let source_chain = "ethereum".to_string();
+        // Sits in the gap the old consensus-only check missed: above the consensus fee, far
+        // below consensus fee + deploy rent (~20.5M).
+        let available_gas = 300_000u64;
+        let consensus_fee = 28_470u64;
+
+        mock_client
+            .expect_incoming_message_already_executed()
+            .times(1)
+            .returning(|_| Box::pin(async move { Ok(false) }));
+
+        let message_id_clone = message_id.clone();
+        redis_conn
+            .expect_get_alt_entry()
+            .withf(move |id| *id == message_id_clone)
+            .times(1)
+            .returning(|_| Ok(None));
+
+        let exec_ix = Instruction::new_with_bytes(
+            solana_axelar_its::ID,
+            &[1, 2, 3, 4],
+            vec![AccountMeta::new(keypair.pubkey(), true)],
+        );
+        let exec_ix_for_builder = exec_ix.clone();
+        // The builder classifies this as a deploy (resolving the entrypoint), so the gate adds
+        // the static deploy rent on top of the consensus fee.
+        transaction_builder
+            .expect_build_execute_instruction()
+            .times(1)
+            .returning(move |_, _, _| {
+                Ok((
+                    exec_ix_for_builder.clone(),
+                    vec![],
+                    ExecuteEntrypoint::DeployInterchainToken { has_minter: false },
+                ))
+            });
+
+        let mut main_tx =
+            Transaction::new_with_payer(std::slice::from_ref(&exec_ix), Some(&keypair.pubkey()));
+        main_tx.sign(&[&keypair], Hash::default());
+        let main_tx_clone = main_tx.clone();
+        transaction_builder
+            .expect_build()
+            .times(1)
+            .returning(move |_, _, _, _| {
+                Ok((
+                    SolanaTransactionType::Legacy(main_tx_clone.clone()),
+                    consensus_fee,
+                ))
+            });
+
+        // Rejected before sending: no transaction, no recorded cost.
+        mock_client.expect_send_transaction().times(0);
+        redis_conn.expect_write_gas_cost_for_message_id().times(0);
+
+        let msg_id_for_event = message_id.clone();
+        mock_gmp_api
+            .expect_cannot_execute_message()
+            .times(1)
+            .withf(move |_id, msg_id, _src, details, reason| {
+                *msg_id == msg_id_for_event
+                    && details.contains("Not enough gas")
+                    && matches!(reason, CannotExecuteMessageReason::InsufficientGas)
+            })
+            .returning(|_, _, _, _, _| Event::CannotExecuteMessageV2 {
+                common: CommonEventFields {
+                    r#type: "CANNOT_EXECUTE_MESSAGE/V2".to_string(),
+                    event_id: "test-event".to_string(),
+                    meta: None,
+                },
+                message_id: "test".to_string(),
+                source_chain: "test".to_string(),
+                reason: CannotExecuteMessageReason::InsufficientGas,
+                details: "test".to_string(),
+            });
+
+        let includer = create_test_includer(
+            mock_client,
+            keypair,
+            chain_name,
+            transaction_builder,
+            mock_gmp_api,
+            redis_conn,
+            mock_refunds_model,
+        );
+
+        let task = create_execute_task(
+            "test-execute-deploy-rent-task-001",
+            &message_id,
+            &source_chain,
+            &solana_axelar_its::ID.to_string(),
             available_gas,
         );
         let result = includer.handle_execute_task(task).await;
@@ -2688,7 +2834,9 @@ mod tests {
         ) = get_includer_fields();
 
         let message_id = "test-execute-task-its-123".to_string();
-        let available_gas = 15_000u64;
+        // Must clear the ALT lifecycle cost (5_000 + 10_200 + 10_200 = 25_400) and the main
+        // tx cost so the happy path runs under the gas check (enabled on non-devnet features).
+        let available_gas = 50_000u64;
 
         mock_client
             .expect_incoming_message_already_executed()
@@ -2725,7 +2873,11 @@ mod tests {
             .expect_build_execute_instruction()
             .times(1)
             .returning(move |_, _, _| {
-                Ok((exec_ix_for_builder.clone(), alt_accounts_clone.clone()))
+                Ok((
+                    exec_ix_for_builder.clone(),
+                    alt_accounts_clone.clone(),
+                    ExecuteEntrypoint::Other,
+                ))
             });
 
         // Mock get_slot for ALT creation
@@ -2981,7 +3133,13 @@ mod tests {
         transaction_builder
             .expect_build_execute_instruction()
             .times(1)
-            .returning(move |_, _, _| Ok((exec_ix_for_builder.clone(), vec![])));
+            .returning(move |_, _, _| {
+                Ok((
+                    exec_ix_for_builder.clone(),
+                    vec![],
+                    ExecuteEntrypoint::Other,
+                ))
+            });
 
         // build is called once for the main tx — returns cost > available_gas
         let mut main_tx =
@@ -3118,7 +3276,11 @@ mod tests {
             .expect_build_execute_instruction()
             .times(1)
             .returning(move |_, _, _| {
-                Ok((exec_ix_for_builder.clone(), alt_accounts_clone.clone()))
+                Ok((
+                    exec_ix_for_builder.clone(),
+                    alt_accounts_clone.clone(),
+                    ExecuteEntrypoint::Other,
+                ))
             });
 
         mock_client
@@ -3292,7 +3454,11 @@ mod tests {
             .expect_build_execute_instruction()
             .times(1)
             .returning(move |_, _, _| {
-                Ok((exec_ix_for_builder.clone(), alt_accounts_clone.clone()))
+                Ok((
+                    exec_ix_for_builder.clone(),
+                    alt_accounts_clone.clone(),
+                    ExecuteEntrypoint::Other,
+                ))
             });
 
         mock_client
@@ -3428,7 +3594,9 @@ mod tests {
         ) = get_includer_fields();
 
         let message_id = "test-execute-its-789".to_string();
-        let available_gas = 20_000u64;
+        // Must clear the ALT lifecycle cost (6_000 + 10_200 + 10_200 = 26_400) and the main
+        // tx cost so the tx-error path runs under the gas check (enabled on non-devnet features).
+        let available_gas = 50_000u64;
 
         mock_client
             .expect_incoming_message_already_executed()
@@ -3468,7 +3636,11 @@ mod tests {
             .expect_build_execute_instruction()
             .times(1)
             .returning(move |_, _, _| {
-                Ok((exec_ix_for_builder.clone(), alt_accounts_clone.clone()))
+                Ok((
+                    exec_ix_for_builder.clone(),
+                    alt_accounts_clone.clone(),
+                    ExecuteEntrypoint::Other,
+                ))
             });
 
         // Mock get_slot for ALT creation
@@ -3767,7 +3939,11 @@ mod tests {
             .expect_build_execute_instruction()
             .times(1)
             .returning(move |_, _, _| {
-                Ok((exec_ix_for_builder.clone(), alt_accounts_clone.clone()))
+                Ok((
+                    exec_ix_for_builder.clone(),
+                    alt_accounts_clone.clone(),
+                    ExecuteEntrypoint::Other,
+                ))
             });
 
         let lookup_account = AddressLookupTableAccount {
@@ -5498,7 +5674,7 @@ mod tests {
         transaction_builder
             .expect_build_execute_instruction()
             .times(1)
-            .returning(move |_, _, _| Ok((exec_ix.clone(), vec![])));
+            .returning(move |_, _, _| Ok((exec_ix.clone(), vec![], ExecuteEntrypoint::Other)));
 
         // Build transaction - will be called and return estimated cost
         let mut test_tx = Transaction::new_with_payer(&[], Some(&keypair.pubkey()));
@@ -5615,7 +5791,7 @@ mod tests {
         transaction_builder
             .expect_build_execute_instruction()
             .times(1)
-            .returning(move |_, _, _| Ok((exec_ix.clone(), vec![])));
+            .returning(move |_, _, _| Ok((exec_ix.clone(), vec![], ExecuteEntrypoint::Other)));
 
         let includer = create_test_includer(
             mock_client,
@@ -5721,7 +5897,11 @@ mod tests {
             .expect_build_execute_instruction()
             .times(1)
             .returning(move |_, _, _| {
-                Ok((exec_ix_for_builder.clone(), alt_accounts_clone.clone()))
+                Ok((
+                    exec_ix_for_builder.clone(),
+                    alt_accounts_clone.clone(),
+                    ExecuteEntrypoint::Other,
+                ))
             });
 
         // Mock get_slot for ALT creation

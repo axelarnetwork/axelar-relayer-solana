@@ -8,6 +8,11 @@ use axelar_relayer_solana::mocks::{MockRefundsModel, MockUpdateEvents};
 use base64::prelude::BASE64_STANDARD;
 use base64::Engine;
 use relayer_core::gmp_api::gmp_types::{Event, MessageExecutionStatus};
+// The gas-rejection test is compiled out on devnet-amplifier (the check is disabled there).
+#[cfg(not(feature = "devnet-amplifier"))]
+use relayer_core::gmp_api::gmp_types::{CannotExecuteMessageReason, CommonEventFields};
+#[cfg(not(feature = "devnet-amplifier"))]
+use relayer_core::gmp_api::MockGmpApiTrait;
 use relayer_core::includer_worker::IncluderTrait;
 use relayer_core::ingestor::IngestorTrait;
 use relayer_core::queue::{QueueItem, QueueTrait};
@@ -47,7 +52,9 @@ async fn test_approve_and_execute_its_message() {
     let its_program_address = solana_axelar_its::ID.to_string();
 
     let components = create_includer_components(&env.rpc_url, &env.payer);
-    let mock_redis = create_mock_redis();
+    // Records the cost the includer reports per message id, so we can assert it against the
+    // fee payer's actual on-chain balance delta.
+    let (mock_redis, reported_costs) = create_recording_mock_redis();
     let mock_gmp_api = create_mock_gmp_api_for_execute();
     let mock_refunds_model = MockRefundsModel::new();
 
@@ -71,13 +78,14 @@ async fn test_approve_and_execute_its_message() {
     let salt = [1u8; 32];
     let token_id = interchain_token_id(&env.payer.pubkey(), &salt);
 
-    // Create DeployInterchainToken payload
+    // Create DeployInterchainToken payload. A minter is set so the deploy also creates the
+    // minter-roles (UserRoles) PDA, letting us lock that rent constant on-chain.
     let deploy_token = DeployInterchainToken {
         token_id,
         name: "Test Token".to_string(),
         symbol: "TEST".to_string(),
         decimals: 9,
-        minter: None,
+        minter: Some(env.payer.pubkey().to_bytes().to_vec()),
     };
 
     let hub_message = HubMessage::ReceiveFromHub {
@@ -292,7 +300,16 @@ async fn test_approve_and_execute_its_message() {
         deploy_message_id
     );
 
-    // Now execute the deploy
+    // Now execute the deploy. Snapshot the fee payer's balance around the call so we can
+    // compare the reported cost against what was actually spent on-chain (consensus fee +
+    // rent for the mint / metadata / token-manager PDAs the deploy creates).
+    let payer_pubkey = env.payer.pubkey();
+    let balance_before_deploy = env
+        .rpc_client
+        .get_balance(&payer_pubkey)
+        .await
+        .expect("balance before deploy");
+
     let deploy_result = includer.handle_execute_task(deploy_execute_task).await;
     match &deploy_result {
         Ok(events) => {
@@ -300,6 +317,68 @@ async fn test_approve_and_execute_its_message() {
         }
         Err(e) => {
             panic!("Deploy execution failed: {:?}", e);
+        }
+    }
+
+    let balance_after_deploy = env
+        .rpc_client
+        .get_balance(&payer_pubkey)
+        .await
+        .expect("balance after deploy");
+    let actual_deploy_cost = balance_before_deploy
+        .checked_sub(balance_after_deploy)
+        .expect("fee payer balance should not increase during execute");
+    let reported_deploy_cost = *reported_costs
+        .lock()
+        .unwrap()
+        .get(deploy_message_id)
+        .expect("deploy cost should have been reported");
+    println!(
+        "Deploy cost — reported: {}, actual balance delta: {}",
+        reported_deploy_cost, actual_deploy_cost
+    );
+    assert_eq!(
+        reported_deploy_cost, actual_deploy_cost,
+        "reported deploy cost must equal the fee payer's actual balance delta (rent included)"
+    );
+
+    // Lock the static rent constants used by the gas estimator against the accounts the deploy
+    // actually created on-chain. If a program upgrade changes a layout, these fail.
+    {
+        use axelar_relayer_solana::gas_estimation::{
+            INTERCHAIN_MINT_RENT, METADATA_RENT_AND_FEE, TOKEN_2022_ATA_RENT, TOKEN_MANAGER_RENT,
+            USER_ROLES_RENT,
+        };
+        use axelar_relayer_solana::utils::{
+            get_ata_with_program, get_minter_roles_pda, get_token_mint_pda,
+        };
+        use std::str::FromStr;
+        let token_2022 = Pubkey::from_str("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb").unwrap();
+        let mpl = Pubkey::from_str("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s").unwrap();
+        let (its_root_pda, _) = solana_axelar_its::InterchainTokenService::try_find_pda().unwrap();
+        let (token_manager_pda, _) =
+            solana_axelar_its::TokenManager::find_pda(token_id, its_root_pda);
+        let (mint, _) = get_token_mint_pda(&its_root_pda, &token_id).unwrap();
+        let (tm_ata, _) = get_ata_with_program(&token_manager_pda, &mint, &token_2022);
+        let (metadata, _) =
+            Pubkey::find_program_address(&[b"metadata", mpl.as_ref(), mint.as_ref()], &mpl);
+        // The deploy set the payer as minter, so the minter-roles (UserRoles) PDA exists.
+        let (minter_roles, _) =
+            get_minter_roles_pda(&token_manager_pda, &env.payer.pubkey()).unwrap();
+        for (name, pk, expected) in [
+            ("token_manager_pda", token_manager_pda, TOKEN_MANAGER_RENT),
+            ("token_mint", mint, INTERCHAIN_MINT_RENT),
+            ("token_manager_ata", tm_ata, TOKEN_2022_ATA_RENT),
+            ("mpl_metadata", metadata, METADATA_RENT_AND_FEE),
+            ("minter_roles", minter_roles, USER_ROLES_RENT),
+        ] {
+            let acc = env.rpc_client.get_account(&pk).await.expect("account");
+            assert_eq!(
+                acc.lamports,
+                expected,
+                "{name} rent constant drifted (data_len={})",
+                acc.data.len()
+            );
         }
     }
 
@@ -427,6 +506,12 @@ async fn test_approve_and_execute_its_message() {
     test_queue.clear().await;
 
     println!("Executing transfer...");
+    let balance_before_transfer = env
+        .rpc_client
+        .get_balance(&payer_pubkey)
+        .await
+        .expect("balance before transfer");
+
     match includer.handle_execute_task(transfer_execute_task).await {
         Ok(events) => {
             println!("Transfer executed successfully! Events: {:?}", events.len());
@@ -434,6 +519,50 @@ async fn test_approve_and_execute_its_message() {
         Err(e) => {
             panic!("Transfer execution failed: {:?}", e);
         }
+    }
+
+    let balance_after_transfer = env
+        .rpc_client
+        .get_balance(&payer_pubkey)
+        .await
+        .expect("balance after transfer");
+    let actual_transfer_cost = balance_before_transfer
+        .checked_sub(balance_after_transfer)
+        .expect("fee payer balance should not increase during execute");
+    let reported_transfer_cost = *reported_costs
+        .lock()
+        .unwrap()
+        .get(transfer_message_id)
+        .expect("transfer cost should have been reported");
+    println!(
+        "Transfer cost — reported: {}, actual balance delta: {}",
+        reported_transfer_cost, actual_transfer_cost
+    );
+    assert_eq!(
+        reported_transfer_cost, actual_transfer_cost,
+        "reported transfer cost must equal the fee payer's actual balance delta"
+    );
+
+    // Lock the destination-ATA rent constant against what the transfer actually created.
+    {
+        use axelar_relayer_solana::gas_estimation::TOKEN_2022_ATA_RENT;
+        use axelar_relayer_solana::utils::{get_ata_with_program, get_token_mint_pda};
+        use std::str::FromStr;
+        let token_2022 = Pubkey::from_str("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb").unwrap();
+        let (its_root_pda, _) = solana_axelar_its::InterchainTokenService::try_find_pda().unwrap();
+        let (mint, _) = get_token_mint_pda(&its_root_pda, &token_id).unwrap();
+        let (dest_ata, _) = get_ata_with_program(&destination_pubkey, &mint, &token_2022);
+        let acc = env
+            .rpc_client
+            .get_account(&dest_ata)
+            .await
+            .expect("dest ata");
+        assert_eq!(
+            acc.lamports,
+            TOKEN_2022_ATA_RENT,
+            "destination ATA rent constant drifted (data_len={})",
+            acc.data.len()
+        );
     }
 
     let mut found_transfer_tx = false;
@@ -931,6 +1060,29 @@ async fn test_approve_and_execute_its_message() {
     }
 
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+    // Lock the classic-SPL ATA rent constant: the linked-SPL transfer created the recipient's
+    // SPL ATA (165 bytes), which is smaller than a Token-2022 ATA.
+    {
+        use axelar_relayer_solana::gas_estimation::SPL_ATA_RENT;
+        let dest_spl_ata =
+            anchor_spl::associated_token::get_associated_token_address_with_program_id(
+                &link_transfer_destination,
+                &link_mint_pubkey,
+                &anchor_spl::token::ID,
+            );
+        let acc = env
+            .rpc_client
+            .get_account(&dest_spl_ata)
+            .await
+            .expect("linked SPL destination ATA");
+        assert_eq!(
+            acc.lamports,
+            SPL_ATA_RENT,
+            "classic-SPL ATA rent constant drifted (data_len={})",
+            acc.data.len()
+        );
+    }
 
     println!("InterchainTransfer on Linked SPL Token test completed!");
 
@@ -3039,5 +3191,228 @@ async fn test_its_global_alt_with_and_without_ephemeral() {
     );
 
     println!("\nSUCCESS: Both ALT paths exercised!");
+    env.cleanup().await;
+}
+
+/// Builds the gateway-approve task and execute task for an ITS `DeployInterchainToken`
+/// message, signed by the test verifier set. Returns the two tasks plus the derived token id.
+// Test-setup helper: unwrap / fixed-index into the test verifier set, same as the inline
+// `#[tokio::test]` code (which clippy.toml already exempts via allow-*-in-tests).
+#[cfg(not(feature = "devnet-amplifier"))]
+#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
+fn build_its_deploy_tasks(
+    env: &TestEnvironment,
+    salt: [u8; 32],
+    message_id: &str,
+    available_gas: u64,
+) -> (GatewayTxTask, ExecuteTask, [u8; 32]) {
+    let its_hub_address = env.its_hub_address.clone();
+    let its_program_address = solana_axelar_its::ID.to_string();
+    let token_id = interchain_token_id(&env.payer.pubkey(), &salt);
+
+    let deploy_token = DeployInterchainToken {
+        token_id,
+        name: "Test Token".to_string(),
+        symbol: "TEST".to_string(),
+        decimals: 9,
+        minter: None,
+    };
+    let hub_message = HubMessage::ReceiveFromHub {
+        source_chain: "axelar".to_string(),
+        message: ItsMessage::DeployInterchainToken(deploy_token),
+    };
+    let deploy_payload_bytes = borsh::to_vec(&hub_message).unwrap();
+    let deploy_payload_hash = solana_sdk::keccak::hashv(&[&deploy_payload_bytes]).to_bytes();
+
+    let deploy_message = Message {
+        cc_id: CrossChainId {
+            chain: "axelar".to_string(),
+            id: message_id.to_string(),
+        },
+        source_address: its_hub_address.clone(),
+        destination_chain: "solana-devnet".to_string(),
+        destination_address: its_program_address.clone(),
+        payload_hash: deploy_payload_hash,
+    };
+    let deploy_message_leaf = MessageLeaf {
+        message: deploy_message,
+        position: 0,
+        set_size: 1,
+        domain_separator: env.domain_separator,
+    };
+    let deploy_leaf_hash = deploy_message_leaf.hash();
+    let deploy_merkle_tree = MerkleTree::from_leaves(&[deploy_leaf_hash]);
+    let deploy_merkle_root = deploy_merkle_tree.root().expect("merkle root");
+
+    let deploy_verifier_info_1 = create_verifier_info(
+        &env.verifier_secret_keys[0],
+        deploy_merkle_root,
+        &env.verifier_leaves[0],
+        0,
+        &env.verifier_merkle_tree,
+        PayloadType::ApproveMessages,
+    );
+    let deploy_verifier_info_2 = create_verifier_info(
+        &env.verifier_secret_keys[1],
+        deploy_merkle_root,
+        &env.verifier_leaves[1],
+        1,
+        &env.verifier_merkle_tree,
+        PayloadType::ApproveMessages,
+    );
+
+    let deploy_execute_data = ExecuteData {
+        payload_merkle_root: deploy_merkle_root,
+        signing_verifier_set_merkle_root: env.verifier_set_hash,
+        signing_verifier_set_leaves: vec![deploy_verifier_info_1, deploy_verifier_info_2],
+        payload_items: MerklizedPayload::NewMessages {
+            messages: vec![MerklizedMessage {
+                leaf: deploy_message_leaf,
+                proof: vec![],
+            }],
+        },
+    };
+
+    let gateway_task = GatewayTxTask {
+        common: CommonTaskFields {
+            id: format!("{}-gateway", message_id),
+            chain: "solana-devnet".into(),
+            timestamp: "2025-11-26T14:47:18.567796Z".into(),
+            r#type: "GATEWAY_TX".into(),
+            meta: None,
+        },
+        task: GatewayTxTaskFields {
+            execute_data: BASE64_STANDARD.encode(borsh::to_vec(&deploy_execute_data).unwrap()),
+        },
+    };
+
+    let execute_task = ExecuteTask {
+        common: CommonTaskFields {
+            id: format!("{}-execute", message_id),
+            chain: "solana-devnet".into(),
+            timestamp: "2025-11-26T14:47:19.567796Z".into(),
+            r#type: "EXECUTE".into(),
+            meta: None,
+        },
+        task: ExecuteTaskFields {
+            message: GatewayV2Message {
+                message_id: message_id.to_string(),
+                source_chain: "axelar".to_string(),
+                source_address: its_hub_address,
+                destination_address: its_program_address,
+                payload_hash: BASE64_STANDARD.encode(deploy_payload_hash),
+            },
+            payload: BASE64_STANDARD.encode(&deploy_payload_bytes),
+            available_gas_balance: Amount {
+                token_id: None,
+                amount: available_gas.to_string(),
+            },
+        },
+    };
+
+    (gateway_task, execute_task, token_id)
+}
+
+/// A deploy whose prepaid gas covers the consensus fee (a few thousand lamports) but not the
+/// rent for the mint / metadata / token-manager PDAs it creates (~0.02 SOL) must be rejected
+/// with `InsufficientGas` and never executed on-chain. Before the rent-aware check, the gate
+/// compared only the consensus fee, so this exact case would have slipped through and the
+/// relayer would have eaten the rent.
+///
+/// The gas check is compiled out on `devnet-amplifier` (the default test feature), so this runs
+/// under the other network features — and needs that network's prebuilt programs, e.g.
+/// `cargo test --no-default-features --features test-mocks,mainnet --test integration`.
+#[cfg(not(feature = "devnet-amplifier"))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_its_deploy_rejected_when_gas_below_rent() {
+    let env = TestEnvironment::new().await;
+
+    let components = create_includer_components(&env.rpc_url, &env.payer);
+    let mock_redis = create_mock_redis();
+
+    // The execute path rejects before sending, calling `cannot_execute_message`.
+    let mut mock_gmp_api = MockGmpApiTrait::new();
+    mock_gmp_api.expect_cannot_execute_message().returning(
+        |task_id, message_id, source_chain, details, reason| Event::CannotExecuteMessageV2 {
+            common: CommonEventFields {
+                r#type: "CANNOT_EXECUTE_MESSAGE/V2".to_string(),
+                event_id: format!("{}-cannot-execute", task_id),
+                meta: None,
+            },
+            message_id,
+            source_chain,
+            reason,
+            details,
+        },
+    );
+    let mock_refunds_model = MockRefundsModel::new();
+
+    let includer = SolanaIncluder::new(
+        Arc::new(components.includer_client),
+        components.keypair,
+        "solana-devnet".to_string(),
+        components.transaction_builder,
+        Arc::new(mock_gmp_api),
+        mock_redis,
+        Arc::new(mock_refunds_model),
+        solana_sdk::message::AddressLookupTableAccount {
+            key: Pubkey::new_unique(),
+            addresses: vec![],
+        },
+    );
+
+    let message_id = "test-its-deploy-insufficient-gas-001";
+    let salt = [7u8; 32];
+    // > consensus fee (~thousands), << deploy rent (~millions). Sits exactly in the gap that
+    // the old consensus-only check missed.
+    let available_gas = 300_000u64;
+
+    let (gateway_task, execute_task, _token_id) =
+        build_its_deploy_tasks(&env, salt, message_id, available_gas);
+
+    includer
+        .handle_gateway_tx_task(gateway_task)
+        .await
+        .expect("Failed to approve deploy message");
+
+    let payer_pubkey = env.payer.pubkey();
+    let balance_before = env
+        .rpc_client
+        .get_balance(&payer_pubkey)
+        .await
+        .expect("balance before execute");
+
+    let result = includer
+        .handle_execute_task(execute_task)
+        .await
+        .expect("execute should return Ok with a cannot-execute event, not an error");
+
+    // 1) Rejected with InsufficientGas.
+    assert_eq!(
+        result.len(),
+        1,
+        "expected exactly one cannot-execute event, got {:?}",
+        result
+    );
+    match &result[0] {
+        Event::CannotExecuteMessageV2 { reason, .. } => assert!(
+            matches!(reason, CannotExecuteMessageReason::InsufficientGas),
+            "expected InsufficientGas, got {:?}",
+            reason
+        ),
+        other => panic!("expected CannotExecuteMessageV2, got {:?}", other),
+    }
+
+    // 2) Never executed: no transaction was sent, so the fee payer spent nothing.
+    let balance_after = env
+        .rpc_client
+        .get_balance(&payer_pubkey)
+        .await
+        .expect("balance after execute");
+    assert_eq!(
+        balance_before, balance_after,
+        "no execute transaction should have been sent; fee payer balance must be unchanged"
+    );
+
     env.cleanup().await;
 }

@@ -1,4 +1,5 @@
 use crate::gas_calculator::{GasCalculatorTrait, InstructionKind};
+use crate::gas_estimation::{classify_execute, ExecuteEntrypoint};
 use crate::includer_client::IncluderClientTrait;
 use crate::redis::RedisConnectionTrait;
 use crate::utils::{
@@ -64,14 +65,14 @@ pub trait TransactionBuilderTrait<IC: IncluderClientTrait, R: RedisConnectionTra
         message: &Message,
         payload: &[u8],
         destination_address: Pubkey,
-    ) -> Result<(Instruction, Vec<AccountMeta>), TransactionBuilderError>;
+    ) -> Result<(Instruction, Vec<AccountMeta>, ExecuteEntrypoint), TransactionBuilderError>;
 
     async fn build_its_instruction(
         &self,
         message: &Message,
         payload: &[u8],
         incoming_message_pda: Pubkey,
-    ) -> Result<(Instruction, Vec<AccountMeta>), TransactionBuilderError>;
+    ) -> Result<(Instruction, Vec<AccountMeta>, ExecuteEntrypoint), TransactionBuilderError>;
 
     async fn build_governance_instruction(
         &self,
@@ -255,7 +256,7 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
         message: &Message,
         payload: &[u8],
         destination_address: Pubkey,
-    ) -> Result<(Instruction, Vec<AccountMeta>), TransactionBuilderError> {
+    ) -> Result<(Instruction, Vec<AccountMeta>, ExecuteEntrypoint), TransactionBuilderError> {
         let (incoming_message_pda, _) =
             solana_axelar_gateway::IncomingMessage::try_find_pda(&message.command_id())
                 .ok_or_else(|| {
@@ -270,17 +271,22 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
                     .await
             }
             x if x == solana_axelar_governance::ID => {
-                self.build_governance_instruction(message, payload, incoming_message_pda)
-                    .await
+                // Governance/arbitrary executes fund no relayer accounts so no rent.
+                let (ix, accounts) = self
+                    .build_governance_instruction(message, payload, incoming_message_pda)
+                    .await?;
+                Ok((ix, accounts, ExecuteEntrypoint::Other))
             }
             _ => {
-                self.build_executable_instruction(
-                    message,
-                    payload,
-                    incoming_message_pda,
-                    destination_address,
-                )
-                .await
+                let (ix, accounts) = self
+                    .build_executable_instruction(
+                        message,
+                        payload,
+                        incoming_message_pda,
+                        destination_address,
+                    )
+                    .await?;
+                Ok((ix, accounts, ExecuteEntrypoint::Other))
             }
         }
     }
@@ -290,7 +296,7 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
         message: &Message,
         payload: &[u8],
         incoming_message_pda: Pubkey,
-    ) -> Result<(Instruction, Vec<AccountMeta>), TransactionBuilderError> {
+    ) -> Result<(Instruction, Vec<AccountMeta>, ExecuteEntrypoint), TransactionBuilderError> {
         // Use a copy for deserialization to preserve the original payload bytes
         let mut payload_reader = payload;
         let gmp_decoded_payload = HubMessage::deserialize(&mut payload_reader)
@@ -428,6 +434,11 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
 
         debug!("GMP decoded payload: {:?}", gmp_decoded_payload);
 
+        // Set for InterchainTransfer so we can check (after the instruction is built) whether the
+        // recipient ATA already exists. The cost estimate must not charge rent for an ATA that
+        // won't be created.
+        let mut transfer_destination_ata: Option<Pubkey> = None;
+
         match &gmp_decoded_payload {
             HubMessage::ReceiveFromHub { message, .. } => match message {
                 solana_axelar_its::encoding::Message::InterchainTransfer(transfer) => {
@@ -443,6 +454,7 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
                         &token_mint,
                         &token_program,
                     );
+                    transfer_destination_ata = Some(destination_ata);
                     accounts.extend(execute_interchain_transfer_extra_accounts(
                         destination_address,
                         destination_token_authority,
@@ -549,7 +561,20 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
             vec![]
         };
 
-        Ok((instruction, ephemeral_alt_accounts))
+        // For a transfer, the rent depends on whether the recipient ATA already exists.
+        let destination_ata_exists = match transfer_destination_ata {
+            Some(ata) => self.includer_client.get_account_data(&ata).await.is_ok(),
+            None => false,
+        };
+        let ata_is_token_2022 = token_program == spl_token_2022::ID;
+        let entrypoint = classify_execute(
+            &solana_axelar_its::ID,
+            payload,
+            destination_ata_exists,
+            ata_is_token_2022,
+        );
+
+        Ok((instruction, ephemeral_alt_accounts, entrypoint))
     }
 
     async fn build_governance_instruction(
@@ -1111,6 +1136,15 @@ mod tests {
                 Box::pin(async move { Ok(data) })
             });
 
+        // Any other account (e.g. the destination ATA existence check) is treated as missing.
+        mock_client.expect_get_account_data().returning(|_| {
+            Box::pin(async {
+                Err(crate::error::IncluderClientError::GenericError(
+                    "not found".to_string(),
+                ))
+            })
+        });
+
         // Mock get_account_owner for the token mint (return Token-2022 for native ITS tokens)
         mock_client
             .expect_get_account_owner()
@@ -1164,7 +1198,7 @@ mod tests {
         // Serialize using borsh
         let its_payload = borsh::to_vec(&hub_message).expect("Failed to serialize HubMessage");
 
-        let (its_instruction, its_accounts) = builder
+        let (its_instruction, its_accounts, _entrypoint) = builder
             .build_execute_instruction(&message, &its_payload, its_destination)
             .await
             .expect("ITS build_execute_instruction should succeed");
@@ -1196,7 +1230,7 @@ mod tests {
         };
         let governance_payload = gmp_payload.abi_encode();
 
-        let (governance_instruction, governance_accounts) = builder
+        let (governance_instruction, governance_accounts, _) = builder
             .build_execute_instruction(&message, &governance_payload, governance_destination)
             .await
             .expect("Governance build_execute_instruction should succeed");
@@ -1219,7 +1253,7 @@ mod tests {
         );
         let executable_payload_bytes = executable_payload.encode().unwrap();
 
-        let (arbitrary_instruction, arbitrary_accounts) = builder
+        let (arbitrary_instruction, arbitrary_accounts, _) = builder
             .build_execute_instruction(&message, &executable_payload_bytes, arbitrary_destination)
             .await
             .expect("Arbitrary program build_execute_instruction should succeed");
@@ -1262,6 +1296,15 @@ mod tests {
                 let data = mock_token_manager_data.clone();
                 Box::pin(async move { Ok(data) })
             });
+
+        // Destination ATA existence check (gas estimator): treat as missing.
+        mock_client.expect_get_account_data().returning(|_| {
+            Box::pin(async {
+                Err(crate::error::IncluderClientError::GenericError(
+                    "not found".to_string(),
+                ))
+            })
+        });
 
         mock_client
             .expect_get_account_owner()
@@ -1327,7 +1370,7 @@ mod tests {
         // Serialize using borsh
         let its_payload = borsh::to_vec(&hub_message).expect("Failed to serialize HubMessage");
 
-        let (its_instruction, its_accounts) = builder
+        let (its_instruction, its_accounts, _entrypoint) = builder
             .build_execute_instruction(&message, &its_payload, its_destination)
             .await
             .expect("ITS build_execute_instruction with ExecutablePayload should succeed");
@@ -1385,6 +1428,15 @@ mod tests {
                 let data = mock_token_manager_data.clone();
                 Box::pin(async move { Ok(data) })
             });
+
+        // Destination ATA existence check (gas estimator): treat as missing.
+        mock_client.expect_get_account_data().returning(|_| {
+            Box::pin(async {
+                Err(crate::error::IncluderClientError::GenericError(
+                    "not found".to_string(),
+                ))
+            })
+        });
 
         mock_client
             .expect_get_account_owner()
@@ -1492,6 +1544,15 @@ mod tests {
                 let data = mock_token_manager_data.clone();
                 Box::pin(async move { Ok(data) })
             });
+
+        // Destination ATA existence check (gas estimator): treat as missing.
+        mock_client.expect_get_account_data().returning(|_| {
+            Box::pin(async {
+                Err(crate::error::IncluderClientError::GenericError(
+                    "not found".to_string(),
+                ))
+            })
+        });
 
         mock_client
             .expect_get_account_owner()
@@ -1692,6 +1753,15 @@ mod tests {
                 Box::pin(async move { Ok(data) })
             });
 
+        // Destination ATA existence check (gas estimator): treat as missing.
+        mock_client.expect_get_account_data().returning(|_| {
+            Box::pin(async {
+                Err(crate::error::IncluderClientError::GenericError(
+                    "not found".to_string(),
+                ))
+            })
+        });
+
         // IMPORTANT: Return regular SPL Token program as the owner (not Token-2022)
         // This simulates a linked canonical token that uses the regular SPL Token program
         mock_client
@@ -1745,7 +1815,7 @@ mod tests {
 
         let its_payload = borsh::to_vec(&hub_message).expect("Failed to serialize HubMessage");
 
-        let (its_instruction, _its_accounts) = builder
+        let (its_instruction, _its_accounts, _entrypoint) = builder
             .build_execute_instruction(&message, &its_payload, its_destination)
             .await
             .expect("ITS build_execute_instruction should succeed for linked SPL token");
@@ -1934,6 +2004,15 @@ mod tests {
                 let data = mock_token_manager_data.clone();
                 Box::pin(async move { Ok(data) })
             });
+
+        // Destination ATA existence check (gas estimator): treat as missing.
+        mock_client.expect_get_account_data().returning(|_| {
+            Box::pin(async {
+                Err(crate::error::IncluderClientError::GenericError(
+                    "not found".to_string(),
+                ))
+            })
+        });
 
         mock_client
             .expect_get_account_owner()

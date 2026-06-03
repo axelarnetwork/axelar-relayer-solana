@@ -228,31 +228,13 @@ pub fn calculate_total_cost_lamports(
     tx: &SolanaTransactionType,
     units: u64,
 ) -> Result<u64, anyhow::Error> {
-    const LAMPORTS_PER_SIGNATURE: u64 = 5_000;
-    const MICRO_PER_LAMPORT: u128 = 1_000_000;
-
     let micro_price = tx.get_potential_micro_priority_price();
-
-    // to avoid overflows
-    #[inline]
-    fn ceil_div_u128(n: u128, d: u128) -> u128 {
-        let q = n / d;
-        let r = n % d;
-        if r == 0 {
-            q
-        } else {
-            q.saturating_add(1)
-        }
-    }
-
-    let total_micro = (micro_price as u128).saturating_mul(units as u128);
-    let priority_u128 = ceil_div_u128(total_micro, MICRO_PER_LAMPORT);
-    let priority_lamports: u64 = priority_u128.try_into().unwrap_or(u64::MAX);
-
     let sigs = tx.get_num_required_signatures();
-    let base_fee = LAMPORTS_PER_SIGNATURE.saturating_mul(sigs);
-
-    Ok(base_fee.saturating_add(priority_lamports))
+    Ok(crate::gas_estimation::consensus_fee_lamports(
+        sigs,
+        units,
+        micro_price,
+    ))
 }
 
 /// Maximum Solana transaction size
@@ -482,6 +464,10 @@ pub fn extract_proposal_hash_from_payload(payload: &[u8]) -> Result<[u8; 32], an
         );
 
     Ok(proposal_hash)
+}
+
+pub fn is_valid_pubkey(bytes: Option<&[u8]>) -> bool {
+    bytes.is_some_and(|b| Pubkey::try_from(b).is_ok())
 }
 
 #[cfg(test)]
