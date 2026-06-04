@@ -501,15 +501,22 @@ impl<
             // Wait for ALT to be fully propagated before using it in the main transaction.
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
+            // The ALT account's rent is reclaimed when the table is closed, so we
+            // exclude it from the reported/charged amount. The relayer will still
+            // pay the deactivate + close consensus fees later so we neeed to
+            // estimate for those now even though they haven't happened yet
+            let alt_rent = crate::gas_estimation::alt_rent_lamports(extra_alt_accounts.len());
+            alt_cost = actual_alt_cost
+                .map(|cost| cost.saturating_sub(alt_rent) + ALT_DEACTIVATE_COST + ALT_CLOSE_COST);
+
             self.redis_conn
                 .write_gas_cost_for_message_id(
                     task.task.message.message_id.clone(),
-                    actual_alt_cost.unwrap_or(0),
+                    alt_cost.unwrap_or(0),
                     TransactionType::Execute,
                 )
                 .await;
 
-            alt_cost = actual_alt_cost;
             available_gas_balance =
                 available_gas_balance.saturating_sub(alt_cost.unwrap_or(0) as i64);
 
@@ -2996,6 +3003,12 @@ mod tests {
                 })
             });
 
+        // Realistic costs: the ALT create+extend tx actually pays the lookup-table rent (1 address
+        // here) on top of its consensus fee; the includer must subtract the reclaimable rent and
+        // add the deactivate+close fees, so the reported ALT cost is fee + 20_400.
+        let alt_create_fee = 5_000u64;
+        let alt_send_cost = crate::gas_estimation::alt_rent_lamports(1) + alt_create_fee;
+        let main_tx_fee = 4_000u64;
         mock_client
             .expect_send_transaction()
             .times(2)
@@ -3003,11 +3016,11 @@ mod tests {
                 static CALL: AtomicUsize = AtomicUsize::new(0);
                 let idx = CALL.fetch_add(1, Ordering::SeqCst);
                 if idx == 0 {
-                    // First send is ALT transaction
-                    Box::pin(async { Ok((Signature::default(), Some(5_000))) })
+                    // First send is ALT transaction (consensus fee + reclaimable table rent)
+                    Box::pin(async move { Ok((Signature::default(), Some(alt_send_cost))) })
                 } else {
                     // Second send is main transaction
-                    Box::pin(async { Ok((Signature::default(), Some(4_000))) })
+                    Box::pin(async move { Ok((Signature::default(), Some(main_tx_fee))) })
                 }
             });
 
@@ -3028,6 +3041,9 @@ mod tests {
         let write_gas_cost_for_message_id_calls = Arc::new(AtomicUsize::new(0));
         let write_gas_cost_for_message_id_calls_clone =
             Arc::clone(&write_gas_cost_for_message_id_calls);
+        // ALT reported cost = create fee + deactivate + close (rent excluded); total adds main.
+        let expected_alt_cost = alt_create_fee + ALT_DEACTIVATE_COST + ALT_CLOSE_COST;
+        let expected_total_cost = expected_alt_cost + main_tx_fee;
         redis_conn
             .expect_write_gas_cost_for_message_id()
             .times(2)
@@ -3036,10 +3052,12 @@ mod tests {
             })
             .returning(move |_, cost, _| {
                 let idx = write_gas_cost_for_message_id_calls_clone.fetch_add(1, Ordering::SeqCst);
-                // First call: ALT cost (5_000), Second call: total cost (5_000 + 4_000 = 9_000)
                 assert!(
-                    (idx == 0 && cost == 5_000) || (idx == 1 && cost == 9_000),
-                    "Expected ALT cost 5_000 or total cost 9_000, got {} at idx {}",
+                    (idx == 0 && cost == expected_alt_cost)
+                        || (idx == 1 && cost == expected_total_cost),
+                    "Expected ALT cost {} or total {}, got {} at idx {}",
+                    expected_alt_cost,
+                    expected_total_cost,
                     cost,
                     idx
                 );
@@ -3770,7 +3788,9 @@ mod tests {
             .returning(move |_, _| {
                 let idx = send_calls_clone.fetch_add(1, Ordering::SeqCst);
                 if idx == 0 {
-                    Box::pin(async move { Ok((alt_signature_clone, Some(6_000u64))) })
+                    // ALT create tx: consensus fee (6_000) + reclaimable table rent (1 address).
+                    let alt_send_cost = crate::gas_estimation::alt_rent_lamports(1) + 6_000;
+                    Box::pin(async move { Ok((alt_signature_clone, Some(alt_send_cost))) })
                 } else {
                     Box::pin(async move {
                         Err(IncluderClientError::UnrecoverableTransactionError(
@@ -3805,28 +3825,31 @@ mod tests {
             })
             .returning(|_, _, _| Ok(()));
 
-        // The ALT cost (6000) is written when ALT transaction succeeds
-        // The total cost is NOT written when main transaction fails (only event is sent)
+        // The ALT cost is written when the ALT tx succeeds: create fee (6_000) + deactivate +
+        // close, with the reclaimable table rent excluded → 26_400. The total is NOT written
+        // when the main tx fails (only the REVERTED event is sent).
         let msg_id_for_gas = message_id.clone();
+        let expected_alt_cost = 6_000 + ALT_DEACTIVATE_COST + ALT_CLOSE_COST;
         redis_conn
             .expect_write_gas_cost_for_message_id()
             .times(1)
             .withf(move |id, cost, tx_type| {
                 id == &msg_id_for_gas
-                    && *cost == 6_000u64 // ALT cost only
+                    && *cost == expected_alt_cost
                     && matches!(tx_type, TransactionType::Execute)
             })
             .returning(|_, _, _| ());
 
-        // Expect MessageExecuted(REVERTED) with cost = alt_cost + main_cost_simulated = 11000
+        // REVERTED cost = reverted main tx cost (5_000) + ALT cost (26_400) = 31_400.
         let msg_id_for_event = message_id.clone();
+        let expected_reverted_cost = (main_tx_actual_cost + expected_alt_cost).to_string();
         mock_gmp_api
             .expect_execute_message()
             .times(1)
             .withf(move |msg_id, _src_chain, status, cost| {
                 *msg_id == msg_id_for_event
                     && matches!(status, MessageExecutionStatus::REVERTED)
-                    && cost.amount == "11000"
+                    && cost.amount == expected_reverted_cost
             })
             .returning(|_, _, _, _| Event::MessageExecuted {
                 common: CommonEventFields {
@@ -5855,9 +5878,12 @@ mod tests {
 
         let message_id = "revert-with-alt-cost-001".to_string();
         let available_gas = 50_000u64;
-        let alt_cost = 8_000u64;
+        let alt_cost = 8_000u64; // ALT create+extend consensus fee (the fee portion of the tx)
         let main_tx_estimated_cost = 12_000u64;
-        let expected_total_reverted_cost = alt_cost + main_tx_estimated_cost; // 20_000
+        // Reported ALT cost excludes the reclaimable table rent but adds the deactivate + close
+        // fees; the reverted event reports that plus the reverted main tx's cost.
+        let expected_alt_reported = alt_cost + ALT_DEACTIVATE_COST + ALT_CLOSE_COST;
+        let expected_total_reverted_cost = expected_alt_reported + main_tx_estimated_cost;
 
         mock_client
             .expect_incoming_message_already_executed()
@@ -6028,7 +6054,9 @@ mod tests {
             .returning(move |_, _| {
                 let idx = send_calls_clone.fetch_add(1, Ordering::SeqCst);
                 if idx == 0 {
-                    Box::pin(async move { Ok((alt_signature, Some(alt_cost))) })
+                    // Actual ALT cost = consensus fee + reclaimable table rent (2 addresses).
+                    let alt_send_cost = crate::gas_estimation::alt_rent_lamports(2) + alt_cost;
+                    Box::pin(async move { Ok((alt_signature, Some(alt_send_cost))) })
                 } else {
                     Box::pin(async move {
                         Err(IncluderClientError::UnrecoverableTransactionError(
@@ -6074,12 +6102,12 @@ mod tests {
             .times(1)
             .withf(move |id, cost, tx_type| {
                 id == &msg_id_for_gas
-                    && *cost == alt_cost
+                    && *cost == expected_alt_reported
                     && matches!(tx_type, TransactionType::Execute)
             })
             .returning(|_, _, _| ());
 
-        // The key assertion: reverted event should include ALT cost + estimated main tx cost
+        // The key assertion: reverted event should include ALT cost + reverted main tx cost
         let msg_id_for_event = message_id.clone();
         let expected_cost_str = expected_total_reverted_cost.to_string();
         let expected_cost_str_clone = expected_cost_str.clone();

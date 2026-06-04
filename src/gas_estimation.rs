@@ -49,6 +49,22 @@ fn ata_rent(is_token_2022: bool) -> u64 {
     }
 }
 
+/// Rent-exempt minimum for an account of `data_len` bytes on standard Solana clusters:
+/// `(128 + data_len) * 3480 * 2`. (The measured constants above all satisfy this.)
+pub fn rent_exempt_lamports(data_len: usize) -> u64 {
+    const ACCOUNT_STORAGE_OVERHEAD: u64 = 128;
+    const LAMPORTS_PER_BYTE_YEAR_TIMES_THRESHOLD: u64 = 6960; // 3480 lamports/byte/year * 2 years
+    (ACCOUNT_STORAGE_OVERHEAD + data_len as u64) * LAMPORTS_PER_BYTE_YEAR_TIMES_THRESHOLD
+}
+
+/// Rent for an address lookup table holding `num_addresses` entries (56-byte meta + 32 bytes per
+/// address). This rent is reclaimed when the table is closed, so it must be excluded from a
+/// message's reported cost. Only the create/extend consensus fee is a real cost.
+pub fn alt_rent_lamports(num_addresses: usize) -> u64 {
+    const LOOKUP_TABLE_META_SIZE: usize = 56;
+    rent_exempt_lamports(LOOKUP_TABLE_META_SIZE + 32 * num_addresses)
+}
+
 /// Which ITS GMP entrypoint an execute transaction drives. Determines which accounts the fee
 /// payer funds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -211,6 +227,31 @@ mod tests {
             amount: 1_000_000,
             data: None,
         }))
+    }
+
+    #[test]
+    fn rent_formula_reproduces_measured_constants() {
+        // Every measured account constant satisfies (128 + data_len) * 6960 — which is why we can
+        // trust the same formula for ALTs (whose size varies and can't be a single constant).
+        assert_eq!(rent_exempt_lamports(139), TOKEN_MANAGER_RENT);
+        assert_eq!(rent_exempt_lamports(82), INTERCHAIN_MINT_RENT);
+        assert_eq!(rent_exempt_lamports(170), TOKEN_2022_ATA_RENT);
+        assert_eq!(rent_exempt_lamports(165), SPL_ATA_RENT);
+        assert_eq!(rent_exempt_lamports(10), USER_ROLES_RENT);
+        // Metaplex metadata = rent(607 bytes) + the 10,000,000-lamport create fee.
+        assert_eq!(
+            rent_exempt_lamports(607) + 10_000_000,
+            METADATA_RENT_AND_FEE
+        );
+    }
+
+    #[test]
+    fn alt_rent_scales_with_address_count() {
+        // ALT account = 56-byte meta + 32 bytes per address.
+        assert_eq!(alt_rent_lamports(0), rent_exempt_lamports(56));
+        assert_eq!(alt_rent_lamports(1), rent_exempt_lamports(88));
+        assert_eq!(alt_rent_lamports(20), rent_exempt_lamports(696));
+        assert_eq!(alt_rent_lamports(1), 1_503_360); // (128 + 88) * 6960
     }
 
     #[test]
