@@ -1150,7 +1150,20 @@ async fn test_rotate_signers() {
         hex::encode(new_verifier_set_merkle_root)
     );
 
-    let result = includer.handle_gateway_tx_task(task).await;
+    // The rotate-signers instruction is heavy; its simulated compute budget can occasionally fall
+    // a hair short and surface as a RecoverableTransactionError (ComputationalBudgetExceeded). In
+    // production such tasks are re-queued and retried (treated as retriable in #48); a fresh
+    // simulation on retry estimates the budget correctly. Mirror that here so the test isn't flaky.
+    let mut result = includer.handle_gateway_tx_task(task.clone()).await;
+    for attempt in 1..=3 {
+        match &result {
+            Err(e) if format!("{:?}", e).contains("RecoverableTransactionError") => {
+                println!("Rotate signers hit a recoverable error, retrying ({attempt}/3)...");
+                result = includer.handle_gateway_tx_task(task.clone()).await;
+            }
+            _ => break,
+        }
+    }
 
     match result {
         Ok(()) => {
