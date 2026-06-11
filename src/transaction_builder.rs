@@ -588,7 +588,12 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
 
         // For a transfer, the rent depends on whether the recipient ATA already exists.
         let destination_ata_exists = match transfer_destination_ata {
-            Some(ata) => self.includer_client.get_account_data(&ata).await.is_ok(),
+            Some(ata) => self
+                .includer_client
+                .get_account(&ata)
+                .await
+                .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?
+                .is_some(),
             None => false,
         };
         let entrypoint = classify_execute(
@@ -1192,7 +1197,7 @@ mod tests {
                 Box::pin(async move { Ok(data) })
             });
 
-        // Any other account (e.g. the destination ATA existence check) is treated as missing.
+        // Any other account data fetch is treated as missing.
         mock_client.expect_get_account_data().returning(|_| {
             Box::pin(async {
                 Err(crate::error::IncluderClientError::GenericError(
@@ -1202,10 +1207,14 @@ mod tests {
         });
 
         // Mock get_account for the token mint (Token-2022, extension-free, for native ITS tokens)
-        mock_client
-            .expect_get_account()
-            .withf(move |pubkey| *pubkey == token_mint_pda)
-            .returning(move |_| Box::pin(async move { Ok(Some(mock_token_2022_mint_account())) }));
+        mock_client.expect_get_account().returning(move |pubkey| {
+            let account = if *pubkey == token_mint_pda {
+                Some(mock_token_2022_mint_account())
+            } else {
+                None
+            };
+            Box::pin(async move { Ok(account) })
+        });
 
         // Default: unknown accounts return None (not a program)
         mock_client
@@ -1322,6 +1331,89 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_build_its_instruction_propagates_destination_ata_rpc_error() {
+        let keypair = Arc::new(Keypair::new());
+        let mock_gas = MockGasCalculatorTrait::new();
+        let mut mock_client = MockIncluderClientTrait::new();
+        let mock_redis = MockRedisConnectionTrait::new();
+
+        let token_id = [1u8; 32];
+        let (its_root_pda, _) = solana_axelar_its::InterchainTokenService::try_find_pda()
+            .expect("Failed to derive ITS root PDA");
+        let (token_manager_pda, _) =
+            solana_axelar_its::TokenManager::try_find_pda(token_id, its_root_pda)
+                .expect("Failed to derive token manager PDA");
+        let (token_mint_pda, _) =
+            solana_axelar_its::TokenManager::find_token_mint(token_id, its_root_pda);
+
+        let mock_token_manager_data = create_mock_token_manager_data(token_id, token_mint_pda);
+
+        mock_client
+            .expect_get_account_data()
+            .withf(move |pubkey| *pubkey == token_manager_pda)
+            .returning(move |_| {
+                let data = mock_token_manager_data.clone();
+                Box::pin(async move { Ok(data) })
+            });
+
+        mock_client.expect_get_account().returning(move |pubkey| {
+            let result = if *pubkey == token_mint_pda {
+                Ok(Some(mock_token_2022_mint_account()))
+            } else {
+                Err(crate::error::IncluderClientError::GenericError(
+                    "RPC timeout".to_string(),
+                ))
+            };
+            Box::pin(async move { result })
+        });
+
+        mock_client
+            .expect_get_account_owner()
+            .returning(move |_| Box::pin(async move { Ok(None) }));
+
+        let builder = TransactionBuilder::new(
+            Arc::clone(&keypair),
+            mock_gas,
+            Arc::new(mock_client),
+            mock_redis,
+        );
+
+        let message = Message {
+            cc_id: CrossChainId {
+                chain: "ethereum".to_string(),
+                id: "test-message-id-ata-rpc-error".to_string(),
+            },
+            source_address: "0x1234567890123456789012345678901234567890".to_string(),
+            destination_chain: "solana".to_string(),
+            destination_address: "test-destination".to_string(),
+            payload_hash: [0u8; 32],
+        };
+
+        let interchain_transfer = InterchainTransfer {
+            token_id,
+            source_address: vec![3u8; 20],
+            destination_address: Pubkey::new_unique().to_bytes().to_vec(),
+            amount: 0u64,
+            data: None,
+        };
+
+        let hub_message = HubMessage::ReceiveFromHub {
+            source_chain: "ethereum".to_string(),
+            message: ItsMessage::InterchainTransfer(interchain_transfer),
+        };
+        let its_payload = borsh::to_vec(&hub_message).expect("Failed to serialize HubMessage");
+
+        let result = builder
+            .build_execute_instruction(&message, &its_payload, solana_axelar_its::ID)
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(TransactionBuilderError::GenericError(error)) if error.contains("RPC timeout")
+        ));
+    }
+
+    #[tokio::test]
     async fn test_build_its_instruction_interchain_transfer_with_executable_payload() {
         let keypair = Arc::new(Keypair::new());
         let mock_gas = MockGasCalculatorTrait::new();
@@ -1351,7 +1443,7 @@ mod tests {
                 Box::pin(async move { Ok(data) })
             });
 
-        // Destination ATA existence check (gas estimator): treat as missing.
+        // Any other account data fetch is treated as missing.
         mock_client.expect_get_account_data().returning(|_| {
             Box::pin(async {
                 Err(crate::error::IncluderClientError::GenericError(
@@ -1360,10 +1452,14 @@ mod tests {
             })
         });
 
-        mock_client
-            .expect_get_account()
-            .withf(move |pubkey| *pubkey == token_mint_pda)
-            .returning(move |_| Box::pin(async move { Ok(Some(mock_token_2022_mint_account())) }));
+        mock_client.expect_get_account().returning(move |pubkey| {
+            let account = if *pubkey == token_mint_pda {
+                Some(mock_token_2022_mint_account())
+            } else {
+                None
+            };
+            Box::pin(async move { Ok(account) })
+        });
 
         mock_client
             .expect_get_account_owner()
@@ -1481,7 +1577,7 @@ mod tests {
                 Box::pin(async move { Ok(data) })
             });
 
-        // Destination ATA existence check (gas estimator): treat as missing.
+        // Any other account data fetch is treated as missing.
         mock_client.expect_get_account_data().returning(|_| {
             Box::pin(async {
                 Err(crate::error::IncluderClientError::GenericError(
@@ -1490,10 +1586,14 @@ mod tests {
             })
         });
 
-        mock_client
-            .expect_get_account()
-            .withf(move |pubkey| *pubkey == token_mint_pda)
-            .returning(move |_| Box::pin(async move { Ok(Some(mock_token_2022_mint_account())) }));
+        mock_client.expect_get_account().returning(move |pubkey| {
+            let account = if *pubkey == token_mint_pda {
+                Some(mock_token_2022_mint_account())
+            } else {
+                None
+            };
+            Box::pin(async move { Ok(account) })
+        });
 
         mock_client
             .expect_get_account_owner()
@@ -1595,7 +1695,7 @@ mod tests {
                 Box::pin(async move { Ok(data) })
             });
 
-        // Destination ATA existence check (gas estimator): treat as missing.
+        // Any other account data fetch is treated as missing.
         mock_client.expect_get_account_data().returning(|_| {
             Box::pin(async {
                 Err(crate::error::IncluderClientError::GenericError(
@@ -1604,10 +1704,14 @@ mod tests {
             })
         });
 
-        mock_client
-            .expect_get_account()
-            .withf(move |pubkey| *pubkey == token_mint_pda)
-            .returning(move |_| Box::pin(async move { Ok(Some(mock_token_2022_mint_account())) }));
+        mock_client.expect_get_account().returning(move |pubkey| {
+            let account = if *pubkey == token_mint_pda {
+                Some(mock_token_2022_mint_account())
+            } else {
+                None
+            };
+            Box::pin(async move { Ok(account) })
+        });
 
         mock_client
             .expect_get_account_owner()
@@ -1803,7 +1907,7 @@ mod tests {
                 Box::pin(async move { Ok(data) })
             });
 
-        // Destination ATA existence check (gas estimator): treat as missing.
+        // Any other account data fetch is treated as missing.
         mock_client.expect_get_account_data().returning(|_| {
             Box::pin(async {
                 Err(crate::error::IncluderClientError::GenericError(
@@ -1814,10 +1918,14 @@ mod tests {
 
         // IMPORTANT: Return a mint owned by the classic SPL Token program (not Token-2022).
         // This simulates a linked canonical token that uses the regular SPL Token program.
-        mock_client
-            .expect_get_account()
-            .withf(move |pubkey| *pubkey == linked_token_mint)
-            .returning(move |_| Box::pin(async move { Ok(Some(mock_spl_mint_account())) }));
+        mock_client.expect_get_account().returning(move |pubkey| {
+            let account = if *pubkey == linked_token_mint {
+                Some(mock_spl_mint_account())
+            } else {
+                None
+            };
+            Box::pin(async move { Ok(account) })
+        });
 
         // Default: unknown accounts return None (not a program)
         mock_client
@@ -2053,7 +2161,7 @@ mod tests {
                 Box::pin(async move { Ok(data) })
             });
 
-        // Destination ATA existence check (gas estimator): treat as missing.
+        // Any other account data fetch is treated as missing.
         mock_client.expect_get_account_data().returning(|_| {
             Box::pin(async {
                 Err(crate::error::IncluderClientError::GenericError(
@@ -2062,10 +2170,14 @@ mod tests {
             })
         });
 
-        mock_client
-            .expect_get_account()
-            .withf(move |pubkey| *pubkey == token_mint_pda)
-            .returning(move |_| Box::pin(async move { Ok(Some(mock_token_2022_mint_account())) }));
+        mock_client.expect_get_account().returning(move |pubkey| {
+            let account = if *pubkey == token_mint_pda {
+                Some(mock_token_2022_mint_account())
+            } else {
+                None
+            };
+            Box::pin(async move { Ok(account) })
+        });
 
         // Default: unknown accounts return None (not a program)
         mock_client
