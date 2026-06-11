@@ -4,57 +4,101 @@
 //! but the fee payer (the relayer) also funds rent for any accounts the destination program
 //! creates. `simulateTransaction` only gives us the compute units; it does not tell us the
 //! rent up front in a way we can rely on across RPC providers. Rent on Solana is, however,
-//! a deterministic function of account size — `(128 + data_len) * 6960` lamports — so for the
-//! ITS GMP entrypoints (whose account layouts are fixed per program version) we can add the
-//! rent as static constants.
+//! a deterministic function of account size, so for the ITS GMP entrypoints we derive the rent
+//! from the on-chain account layouts: the Anchor `INIT_SPACE` of the PDAs we create, the
+//! SPL / Token-2022 account sizes, and — for a Token-2022 ATA — the actual size the
+//! associated-token program allocates given the mint's extensions.
 //!
-//! The constants below were measured on-chain (test validator; identical on devnet/mainnet
-//! since the rent parameters and the Metaplex create fee are protocol-wide) and are locked in
-//! by the `test_approve_and_execute_its_message` integration test, which asserts each created
-//! account's balance against them — so a program upgrade that changes a layout fails CI.
+//! The derived values are confirmed against real on-chain balances by the
+//! `test_approve_and_execute_its_message` integration test, so a program upgrade that changes a
+//! layout fails CI. Only the Metaplex metadata account stays a measured literal — its size and
+//! create fee are owned by an external program and not exposed as constants.
 
+use anchor_lang::{Discriminator, Space};
+use anchor_spl::token::spl_token;
+use anchor_spl::token_2022::spl_token_2022::{
+    extension::{BaseStateWithExtensions, ExtensionType, StateWithExtensions},
+    state::{Account as Token2022Account, Mint as Token2022Mint},
+};
 use borsh::BorshDeserialize;
 use solana_axelar_its::encoding::{HubMessage, Message};
+use solana_axelar_its::state::{TokenManager, UserRoles};
+use solana_sdk::program_error::ProgramError;
+use solana_sdk::program_pack::Pack;
 use solana_sdk::pubkey::Pubkey;
+use solana_sdk::rent::Rent;
 
 use crate::utils::is_valid_pubkey;
 
 /// Base fee per signature (Solana protocol constant).
 pub const LAMPORTS_PER_SIGNATURE: u64 = 5_000;
 
-/// Rent for the `TokenManager` PDA (139 bytes).
-pub const TOKEN_MANAGER_RENT: u64 = 1_858_320;
-/// Rent for a native interchain-token mint — a plain Token-2022 mint, 82 bytes.
-pub const INTERCHAIN_MINT_RENT: u64 = 1_461_600;
-/// Rent for a Token-2022 associated token account (170 bytes = 165 base + the 5-byte
-/// `ImmutableOwner` extension the associated-token program always adds). Native interchain
-/// tokens are Token-2022, so their token-manager and destination ATAs use this.
-pub const TOKEN_2022_ATA_RENT: u64 = 2_074_080;
-/// Rent for a classic SPL associated token account (165 bytes). Used for linked tokens whose
-/// mint is owned by the classic SPL Token program.
-pub const SPL_ATA_RENT: u64 = 2_039_280;
-/// Cost of the Metaplex `mpl_token_metadata` account created on a deploy: 5,115,600 rent
-/// (607 bytes) + the 10,000,000 lamport Metaplex create fee held in the account.
-pub const METADATA_RENT_AND_FEE: u64 = 15_115_600;
-/// Rent for a `UserRoles` PDA (10 bytes) — the minter role on a deploy, the operator role on a
-/// link.
-pub const USER_ROLES_RENT: u64 = 960_480;
+/// Metaplex metadata account layout size (bytes). `mpl-token-metadata` exposes only field
+/// maxes, not a packed-length constant, and the account is allocated by the external Metaplex
+/// program — so this stays a measured literal, locked by the integration test.
+const METADATA_ACCOUNT_LEN: usize = 607;
+/// Flat fee the Metaplex program charges on metadata creation and deposits into the account on
+/// top of rent. Not exposed as a constant by `mpl-token-metadata`.
+const METAPLEX_CREATE_FEE: u64 = 10_000_000;
 
-/// Rent for an associated token account, selected by the owning token program.
-fn ata_rent(is_token_2022: bool) -> u64 {
-    if is_token_2022 {
-        TOKEN_2022_ATA_RENT
-    } else {
-        SPL_ATA_RENT
-    }
+/// Rent-exempt minimum for an account of `data_len` bytes (Solana's standard rent params).
+pub fn rent_exempt_lamports(data_len: usize) -> u64 {
+    Rent::default().minimum_balance(data_len)
 }
 
-/// Rent-exempt minimum for an account of `data_len` bytes on standard Solana clusters:
-/// `(128 + data_len) * 3480 * 2`. (The measured constants above all satisfy this.)
-pub fn rent_exempt_lamports(data_len: usize) -> u64 {
-    const ACCOUNT_STORAGE_OVERHEAD: u64 = 128;
-    const LAMPORTS_PER_BYTE_YEAR_TIMES_THRESHOLD: u64 = 6960; // 3480 lamports/byte/year * 2 years
-    (ACCOUNT_STORAGE_OVERHEAD + data_len as u64) * LAMPORTS_PER_BYTE_YEAR_TIMES_THRESHOLD
+/// Rent for the `TokenManager` PDA, sized from its on-chain Anchor layout.
+pub fn token_manager_rent() -> u64 {
+    rent_exempt_lamports(TokenManager::DISCRIMINATOR.len() + TokenManager::INIT_SPACE)
+}
+
+/// Rent for a `UserRoles` PDA — the minter role on a deploy, the operator role on a link.
+pub fn user_roles_rent() -> u64 {
+    rent_exempt_lamports(UserRoles::DISCRIMINATOR.len() + UserRoles::INIT_SPACE)
+}
+
+/// Rent for a native interchain-token mint — a plain (extension-free) Token-2022 mint.
+pub fn interchain_mint_rent() -> u64 {
+    rent_exempt_lamports(Token2022Mint::LEN)
+}
+
+/// Rent for a classic SPL associated token account.
+pub fn spl_ata_rent() -> u64 {
+    rent_exempt_lamports(spl_token::state::Account::LEN)
+}
+
+/// Rent + Metaplex create fee for the metadata account a deploy creates.
+pub fn metadata_rent_and_fee() -> u64 {
+    rent_exempt_lamports(METADATA_ACCOUNT_LEN) + METAPLEX_CREATE_FEE
+}
+
+/// Account extensions the associated-token program initializes on a Token-2022 ATA: the
+/// `ImmutableOwner` it always adds, plus the account-side extensions the mint's extensions
+/// require (e.g. `TransferFeeConfig` → `TransferFeeAmount`).
+fn token_2022_account_extensions(mint_extensions: &[ExtensionType]) -> Vec<ExtensionType> {
+    let mut extensions = ExtensionType::get_required_init_account_extensions(mint_extensions);
+    if !extensions.contains(&ExtensionType::ImmutableOwner) {
+        extensions.push(ExtensionType::ImmutableOwner);
+    }
+    extensions
+}
+
+/// Data length of the ATA the associated-token program creates for a Token-2022 `mint`. The
+/// size — and thus the rent — depends on the mint's extensions, so a `TransferFeeConfig` (or
+/// `NonTransferable`, `TransferHook`, …) mint yields a larger ATA than a plain one.
+pub fn token_2022_ata_len(mint_data: &[u8]) -> Result<usize, ProgramError> {
+    let mint = StateWithExtensions::<Token2022Mint>::unpack(mint_data)?;
+    let extensions = token_2022_account_extensions(&mint.get_extension_types()?);
+    ExtensionType::try_calculate_account_len::<Token2022Account>(&extensions)
+}
+
+/// Rent for the extension-free Token-2022 ATA the deploy flow creates for the freshly-minted
+/// native interchain token (base account + `ImmutableOwner`).
+pub fn native_interchain_ata_rent() -> u64 {
+    let len = ExtensionType::try_calculate_account_len::<Token2022Account>(&[
+        ExtensionType::ImmutableOwner,
+    ])
+    .expect("a fixed extension set has a known length");
+    rent_exempt_lamports(len)
 }
 
 /// Rent for an address lookup table holding `num_addresses` entries (56-byte meta + 32 bytes per
@@ -73,17 +117,15 @@ pub enum ExecuteEntrypoint {
     /// minter is set — a minter roles PDA.
     DeployInterchainToken { has_minter: bool },
     /// Creates token-manager PDA, token-manager ATA, and — if an operator is provided — an
-    /// operator roles PDA. `ata_is_token_2022` selects the ATA size for the linked token's
-    /// program (a linked classic-SPL token has a smaller ATA).
-    LinkToken {
-        has_operator: bool,
-        ata_is_token_2022: bool,
-    },
+    /// operator roles PDA. `ata_len` is the on-chain byte length of the linked token's ATA
+    /// (classic SPL, or Token-2022 sized for the mint's extensions).
+    LinkToken { has_operator: bool, ata_len: usize },
     /// Creates the destination ATA only when it does not already exist (a repeat transfer to
-    /// the same recipient reuses it and pays no rent). `ata_is_token_2022` selects the ATA size.
+    /// the same recipient reuses it and pays no rent). `ata_len` is the destination ATA's
+    /// on-chain byte length.
     InterchainTransfer {
         creates_destination_ata: bool,
-        ata_is_token_2022: bool,
+        ata_len: usize,
     },
     /// Non-ITS execute (governance, arbitrary executable) — no relayer-funded accounts.
     Other,
@@ -93,26 +135,26 @@ pub enum ExecuteEntrypoint {
 pub fn execute_rent_lamports(entrypoint: ExecuteEntrypoint) -> u64 {
     match entrypoint {
         ExecuteEntrypoint::DeployInterchainToken { has_minter } => {
-            TOKEN_MANAGER_RENT
-                + INTERCHAIN_MINT_RENT
-                + TOKEN_2022_ATA_RENT
-                + METADATA_RENT_AND_FEE
-                + if has_minter { USER_ROLES_RENT } else { 0 }
+            token_manager_rent()
+                + interchain_mint_rent()
+                + native_interchain_ata_rent()
+                + metadata_rent_and_fee()
+                + if has_minter { user_roles_rent() } else { 0 }
         }
         ExecuteEntrypoint::LinkToken {
             has_operator,
-            ata_is_token_2022,
+            ata_len,
         } => {
-            TOKEN_MANAGER_RENT
-                + ata_rent(ata_is_token_2022)
-                + if has_operator { USER_ROLES_RENT } else { 0 }
+            token_manager_rent()
+                + rent_exempt_lamports(ata_len)
+                + if has_operator { user_roles_rent() } else { 0 }
         }
         ExecuteEntrypoint::InterchainTransfer {
             creates_destination_ata,
-            ata_is_token_2022,
+            ata_len,
         } => {
             if creates_destination_ata {
-                ata_rent(ata_is_token_2022)
+                rent_exempt_lamports(ata_len)
             } else {
                 0
             }
@@ -149,14 +191,15 @@ pub fn estimate_execute_cost_lamports(
 
 /// Classifies an execute by decoding its GMP payload. `destination_ata_exists` (consulted only
 /// for interchain transfers) folds in an on-chain check so a transfer to an existing ATA isn't
-/// charged rent it won't pay; `ata_is_token_2022` (consulted for transfers and links) selects
-/// the ATA size for the token's program. Returns [`ExecuteEntrypoint::Other`] for non-ITS
-/// destinations or payloads that do not decode (the consensus fee still applies, no rent added).
+/// charged rent it won't pay; `ata_len` (consulted for transfers and links) is the on-chain byte
+/// length of the token's ATA, used to size its rent. Returns [`ExecuteEntrypoint::Other`] for
+/// non-ITS destinations or payloads that do not decode (the consensus fee still applies, no rent
+/// added).
 pub fn classify_execute(
     destination_address: &Pubkey,
     payload: &[u8],
     destination_ata_exists: bool,
-    ata_is_token_2022: bool,
+    ata_len: usize,
 ) -> ExecuteEntrypoint {
     if *destination_address != solana_axelar_its::ID {
         return ExecuteEntrypoint::Other;
@@ -176,11 +219,11 @@ pub fn classify_execute(
             // The operator role is created from `params` only when it is a valid pubkey — the
             // same check the transaction builder uses.
             has_operator: is_valid_pubkey(link.params.as_deref()),
-            ata_is_token_2022,
+            ata_len,
         },
         Message::InterchainTransfer(_) => ExecuteEntrypoint::InterchainTransfer {
             creates_destination_ata: !destination_ata_exists,
-            ata_is_token_2022,
+            ata_len,
         },
     }
 }
@@ -229,20 +272,68 @@ mod tests {
         }))
     }
 
+    /// On-chain byte length of a plain Token-2022 ATA (base account + `ImmutableOwner`) and a
+    /// classic SPL ATA — the two ATA sizes the cost model uses when no mint extensions apply.
+    const T22_ATA: usize = 170;
+    const SPL_ATA: usize = 165;
+
+    /// A bare (extension-free) Token-2022 mint, as the relayer would read it from the chain.
+    fn bare_token_2022_mint() -> Vec<u8> {
+        let mut data = vec![0u8; Token2022Mint::LEN];
+        Token2022Mint::pack(
+            Token2022Mint {
+                is_initialized: true,
+                ..Default::default()
+            },
+            &mut data,
+        )
+        .unwrap();
+        data
+    }
+
+    /// A Token-2022 mint carrying the given extensions (only `TransferFeeConfig` is supported by
+    /// this helper), packed exactly as the chain stores it.
+    fn token_2022_mint_with(extensions: &[ExtensionType]) -> Vec<u8> {
+        use anchor_spl::token_2022::spl_token_2022::extension::{
+            transfer_fee::TransferFeeConfig, BaseStateWithExtensionsMut, StateWithExtensionsMut,
+        };
+
+        let len = ExtensionType::try_calculate_account_len::<Token2022Mint>(extensions).unwrap();
+        let mut data = vec![0u8; len];
+        let mut state =
+            StateWithExtensionsMut::<Token2022Mint>::unpack_uninitialized(&mut data).unwrap();
+        for extension in extensions {
+            match extension {
+                ExtensionType::TransferFeeConfig => {
+                    state.init_extension::<TransferFeeConfig>(true).unwrap();
+                }
+                other => panic!("test helper does not support {other:?}"),
+            }
+        }
+        state.base = Token2022Mint {
+            is_initialized: true,
+            ..Default::default()
+        };
+        state.pack_base();
+        state.init_account_type().unwrap();
+        data
+    }
+
     #[test]
-    fn rent_formula_reproduces_measured_constants() {
-        // Every measured account constant satisfies (128 + data_len) * 6960 — which is why we can
-        // trust the same formula for ALTs (whose size varies and can't be a single constant).
-        assert_eq!(rent_exempt_lamports(139), TOKEN_MANAGER_RENT);
-        assert_eq!(rent_exempt_lamports(82), INTERCHAIN_MINT_RENT);
-        assert_eq!(rent_exempt_lamports(170), TOKEN_2022_ATA_RENT);
-        assert_eq!(rent_exempt_lamports(165), SPL_ATA_RENT);
-        assert_eq!(rent_exempt_lamports(10), USER_ROLES_RENT);
-        // Metaplex metadata = rent(607 bytes) + the 10,000,000-lamport create fee.
+    fn token_2022_ata_len_grows_with_mint_extensions() {
+        // A plain mint → the ATA carries only ImmutableOwner → the baseline 170 bytes.
         assert_eq!(
-            rent_exempt_lamports(607) + 10_000_000,
-            METADATA_RENT_AND_FEE
+            token_2022_ata_len(&bare_token_2022_mint()).unwrap(),
+            T22_ATA
         );
+
+        // A TransferFeeConfig mint forces a TransferFeeAmount extension on every token account,
+        // so its ATA is larger than the old fixed 170-byte assumption. Charging the baseline
+        // would under-fund the rent the relayer pays on every transfer of such a token.
+        let fee_ata =
+            token_2022_ata_len(&token_2022_mint_with(&[ExtensionType::TransferFeeConfig])).unwrap();
+        assert_eq!(fee_ata, 182);
+        assert!(rent_exempt_lamports(fee_ata) > native_interchain_ata_rent());
     }
 
     #[test]
@@ -251,11 +342,11 @@ mod tests {
         assert_eq!(alt_rent_lamports(0), rent_exempt_lamports(56));
         assert_eq!(alt_rent_lamports(1), rent_exempt_lamports(88));
         assert_eq!(alt_rent_lamports(20), rent_exempt_lamports(696));
-        assert_eq!(alt_rent_lamports(1), 1_503_360); // (128 + 88) * 6960
+        assert_eq!(alt_rent_lamports(1), 1_503_360); // rent of a 216-byte account
     }
 
     #[test]
-    fn rent_per_entrypoint_matches_measured_constants() {
+    fn rent_per_entrypoint_matches_measured_values() {
         // Measured on-chain (test validator; identical on devnet/mainnet) and locked by the
         // `test_approve_and_execute_its_message` integration test.
         assert_eq!(
@@ -271,7 +362,7 @@ mod tests {
         assert_eq!(
             execute_rent_lamports(ExecuteEntrypoint::LinkToken {
                 has_operator: false,
-                ata_is_token_2022: true,
+                ata_len: T22_ATA,
             }),
             3_932_400,
             "link (token-2022) = token_manager + token-2022 ata"
@@ -279,7 +370,7 @@ mod tests {
         assert_eq!(
             execute_rent_lamports(ExecuteEntrypoint::LinkToken {
                 has_operator: false,
-                ata_is_token_2022: false,
+                ata_len: SPL_ATA,
             }),
             3_897_600,
             "link (classic SPL) = token_manager + spl ata"
@@ -287,7 +378,7 @@ mod tests {
         assert_eq!(
             execute_rent_lamports(ExecuteEntrypoint::LinkToken {
                 has_operator: true,
-                ata_is_token_2022: true,
+                ata_len: T22_ATA,
             }),
             4_892_880,
             "link + operator roles"
@@ -295,7 +386,7 @@ mod tests {
         assert_eq!(
             execute_rent_lamports(ExecuteEntrypoint::InterchainTransfer {
                 creates_destination_ata: true,
-                ata_is_token_2022: true,
+                ata_len: T22_ATA,
             }),
             2_074_080,
             "transfer creating a new token-2022 destination ata"
@@ -303,7 +394,7 @@ mod tests {
         assert_eq!(
             execute_rent_lamports(ExecuteEntrypoint::InterchainTransfer {
                 creates_destination_ata: true,
-                ata_is_token_2022: false,
+                ata_len: SPL_ATA,
             }),
             2_039_280,
             "transfer creating a new classic-SPL destination ata"
@@ -311,7 +402,7 @@ mod tests {
         assert_eq!(
             execute_rent_lamports(ExecuteEntrypoint::InterchainTransfer {
                 creates_destination_ata: false,
-                ata_is_token_2022: true,
+                ata_len: T22_ATA,
             }),
             0,
             "transfer reusing an existing destination ata pays no rent"
@@ -324,10 +415,9 @@ mod tests {
         let its = solana_axelar_its::ID;
         let valid_minter = Pubkey::new_unique().to_bytes().to_vec();
         let ata_missing = false; // destination-ata-exists flag
-        let t22 = true; // ata_is_token_2022
 
         assert_eq!(
-            classify_execute(&its, &deploy_payload(None), ata_missing, t22),
+            classify_execute(&its, &deploy_payload(None), ata_missing, T22_ATA),
             ExecuteEntrypoint::DeployInterchainToken { has_minter: false }
         );
         assert_eq!(
@@ -335,50 +425,60 @@ mod tests {
                 &its,
                 &deploy_payload(Some(valid_minter.clone())),
                 ata_missing,
-                t22
+                T22_ATA
             ),
             ExecuteEntrypoint::DeployInterchainToken { has_minter: true }
         );
         // A non-pubkey minter (wrong length) is not counted — matches the builder.
         assert_eq!(
-            classify_execute(&its, &deploy_payload(Some(vec![1, 2, 3])), ata_missing, t22),
+            classify_execute(
+                &its,
+                &deploy_payload(Some(vec![1, 2, 3])),
+                ata_missing,
+                T22_ATA
+            ),
             ExecuteEntrypoint::DeployInterchainToken { has_minter: false }
         );
         assert_eq!(
-            classify_execute(&its, &link_payload(None), ata_missing, t22),
+            classify_execute(&its, &link_payload(None), ata_missing, T22_ATA),
             ExecuteEntrypoint::LinkToken {
                 has_operator: false,
-                ata_is_token_2022: true,
+                ata_len: T22_ATA,
             }
         );
-        // A classic-SPL linked token carries the SPL ata flag through.
+        // A classic-SPL linked token carries its ATA length through.
         assert_eq!(
-            classify_execute(&its, &link_payload(Some(valid_minter)), ata_missing, false),
+            classify_execute(
+                &its,
+                &link_payload(Some(valid_minter)),
+                ata_missing,
+                SPL_ATA
+            ),
             ExecuteEntrypoint::LinkToken {
                 has_operator: true,
-                ata_is_token_2022: false,
+                ata_len: SPL_ATA,
             }
         );
-        // Transfer: the ata-exists flag decides whether rent is added; ata program decides size.
+        // Transfer: the ata-exists flag decides whether rent is added; ata_len sizes it.
         assert_eq!(
-            classify_execute(&its, &transfer_payload(), false, true),
+            classify_execute(&its, &transfer_payload(), false, T22_ATA),
             ExecuteEntrypoint::InterchainTransfer {
                 creates_destination_ata: true,
-                ata_is_token_2022: true,
+                ata_len: T22_ATA,
             }
         );
         assert_eq!(
-            classify_execute(&its, &transfer_payload(), false, false),
+            classify_execute(&its, &transfer_payload(), false, SPL_ATA),
             ExecuteEntrypoint::InterchainTransfer {
                 creates_destination_ata: true,
-                ata_is_token_2022: false,
+                ata_len: SPL_ATA,
             }
         );
         assert_eq!(
-            classify_execute(&its, &transfer_payload(), true, true),
+            classify_execute(&its, &transfer_payload(), true, T22_ATA),
             ExecuteEntrypoint::InterchainTransfer {
                 creates_destination_ata: false,
-                ata_is_token_2022: true,
+                ata_len: T22_ATA,
             }
         );
     }
@@ -387,12 +487,12 @@ mod tests {
     fn classify_returns_other_for_non_its_or_undecodable() {
         // Non-ITS destination → Other even with a valid ITS payload.
         assert_eq!(
-            classify_execute(&Pubkey::new_unique(), &transfer_payload(), false, true),
+            classify_execute(&Pubkey::new_unique(), &transfer_payload(), false, T22_ATA),
             ExecuteEntrypoint::Other
         );
         // Undecodable payload on the ITS program → Other (consensus-only estimate).
         assert_eq!(
-            classify_execute(&solana_axelar_its::ID, b"not a hub message", false, true),
+            classify_execute(&solana_axelar_its::ID, b"not a hub message", false, T22_ATA),
             ExecuteEntrypoint::Other
         );
     }
@@ -423,7 +523,7 @@ mod tests {
         let its = solana_axelar_its::ID;
 
         // Deploy (no minter). units 232,000 → consensus 5,000 + 232 = 5,232.
-        let deploy = classify_execute(&its, &deploy_payload(None), false, true);
+        let deploy = classify_execute(&its, &deploy_payload(None), false, T22_ATA);
         assert_eq!(
             estimate_execute_cost_lamports(1, 232_000, 1000, deploy),
             20_514_832,
@@ -431,7 +531,7 @@ mod tests {
 
         // Transfer #1 — Token-2022 recipient ATA does not exist yet, so it is created.
         // units 159,000 → consensus 5,159; + 2,074,080 Token-2022 ATA rent.
-        let transfer_new = classify_execute(&its, &transfer_payload(), false, true);
+        let transfer_new = classify_execute(&its, &transfer_payload(), false, T22_ATA);
         assert_eq!(
             estimate_execute_cost_lamports(1, 159_000, 1000, transfer_new),
             2_079_239,
@@ -439,7 +539,7 @@ mod tests {
 
         // Transfer #2 — same recipient, ATA already exists → no rent, consensus only.
         // units 134,000 → consensus 5,134.
-        let transfer_reuse = classify_execute(&its, &transfer_payload(), true, true);
+        let transfer_reuse = classify_execute(&its, &transfer_payload(), true, T22_ATA);
         assert_eq!(
             estimate_execute_cost_lamports(1, 134_000, 1000, transfer_reuse),
             5_134,
@@ -447,7 +547,7 @@ mod tests {
 
         // Transfer of a linked classic-SPL token, new ATA (165 bytes).
         // units 212,000 → consensus 5,212; + 2,039,280 SPL ATA rent.
-        let transfer_spl = classify_execute(&its, &transfer_payload(), false, false);
+        let transfer_spl = classify_execute(&its, &transfer_payload(), false, SPL_ATA);
         assert_eq!(
             estimate_execute_cost_lamports(1, 212_000, 1000, transfer_spl),
             2_044_492,
@@ -456,7 +556,7 @@ mod tests {
 
     #[test]
     fn non_its_execute_is_consensus_only() {
-        let other = classify_execute(&Pubkey::new_unique(), b"opaque", false, true);
+        let other = classify_execute(&Pubkey::new_unique(), b"opaque", false, T22_ATA);
         assert_eq!(
             estimate_execute_cost_lamports(1, 100_000, 1000, other),
             5_100

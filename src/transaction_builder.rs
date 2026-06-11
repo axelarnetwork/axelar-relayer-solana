@@ -12,6 +12,7 @@ use crate::{error::TransactionBuilderError, transaction_type::SolanaTransactionT
 use anchor_lang::AccountDeserialize;
 use anchor_lang::InstructionData;
 use anchor_lang::ToAccountMetas;
+use anchor_spl::token::spl_token;
 use anchor_spl::{associated_token::spl_associated_token_account, token_2022::spl_token_2022};
 use async_trait::async_trait;
 use borsh::BorshDeserialize;
@@ -29,6 +30,7 @@ use solana_axelar_its::instructions::{
 };
 use solana_sdk::instruction::{AccountMeta, Instruction};
 use solana_sdk::message::AddressLookupTableAccount;
+use solana_sdk::program_pack::Pack;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signer::keypair::Keypair;
 use solana_sdk::signer::Signer as _;
@@ -143,22 +145,40 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
         }
     }
 
-    /// Determines the token program (SPL Token or Token-2022) for a given mint address
-    /// by checking the account owner on-chain.
-    async fn get_token_program_for_mint(
+    /// Resolves the token program (classic SPL or Token-2022) and the on-chain ATA byte length
+    /// for `mint`, reading the mint account once. A Token-2022 ATA's size depends on the mint's
+    /// extensions (e.g. a `TransferFeeConfig` mint forces a larger ATA); a classic SPL ATA is a
+    /// fixed 165 bytes. The length feeds the rent estimate so the relayer funds the exact rent
+    /// the associated-token program will charge.
+    async fn resolve_token_program_and_ata_len(
         &self,
         mint: &Pubkey,
-    ) -> Result<Pubkey, TransactionBuilderError> {
-        match self.includer_client.get_account_owner(mint).await {
-            Ok(Some(owner)) if owner == spl_token_2022::ID => Ok(spl_token_2022::ID),
-            Ok(Some(_)) => Ok(anchor_spl::token::ID),
-            Ok(None) => Err(TransactionBuilderError::GenericError(format!(
-                "Token mint account {} not found",
-                mint
-            ))),
-            Err(_) => Err(TransactionBuilderError::GenericError(
-                "Failed to get token program owner".to_string(),
-            )),
+    ) -> Result<(Pubkey, usize), TransactionBuilderError> {
+        let account = self
+            .includer_client
+            .get_account(mint)
+            .await
+            .map_err(|e| {
+                TransactionBuilderError::GenericError(format!(
+                    "Failed to fetch token mint account {mint}: {e}"
+                ))
+            })?
+            .ok_or_else(|| {
+                TransactionBuilderError::GenericError(format!(
+                    "Token mint account {mint} not found"
+                ))
+            })?;
+
+        if account.owner == spl_token_2022::ID {
+            let ata_len =
+                crate::gas_estimation::token_2022_ata_len(&account.data).map_err(|e| {
+                    TransactionBuilderError::GenericError(format!(
+                        "Failed to size Token-2022 ATA for mint {mint}: {e}"
+                    ))
+                })?;
+            Ok((spl_token_2022::ID, ata_len))
+        } else {
+            Ok((anchor_spl::token::ID, spl_token::state::Account::LEN))
         }
     }
 }
@@ -357,7 +377,7 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
             TransactionBuilderError::GenericError("Failed to derive token manager PDA".to_string())
         })?;
 
-        let (token_mint, token_program) = match &gmp_decoded_payload {
+        let (token_mint, token_program, ata_len) = match &gmp_decoded_payload {
             HubMessage::ReceiveFromHub {
                 message: solana_axelar_its::encoding::Message::LinkToken(ref link),
                 ..
@@ -371,9 +391,10 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
                         ))
                     })?;
 
-                let token_program_id = self.get_token_program_for_mint(&mint_pubkey).await?;
+                let (token_program_id, ata_len) =
+                    self.resolve_token_program_and_ata_len(&mint_pubkey).await?;
 
-                (mint_pubkey, token_program_id)
+                (mint_pubkey, token_program_id, ata_len)
             }
             HubMessage::ReceiveFromHub {
                 message: solana_axelar_its::encoding::Message::InterchainTransfer(_),
@@ -399,16 +420,20 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
 
                 let mint_pubkey = token_manager.token_address;
 
-                let token_program_id = self.get_token_program_for_mint(&mint_pubkey).await?;
+                let (token_program_id, ata_len) =
+                    self.resolve_token_program_and_ata_len(&mint_pubkey).await?;
 
-                (mint_pubkey, token_program_id)
+                (mint_pubkey, token_program_id, ata_len)
             }
             _ => (
-                // For DeployInterchainToken and other cases, derive the mint PDA
+                // For DeployInterchainToken and other cases, derive the mint PDA. The deploy's
+                // ATA rent is fixed in the cost model (an extension-free Token-2022 ATA), so
+                // `ata_len` is unused here.
                 get_token_mint_pda(&its_root_pda, &token_id)
                     .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?
                     .0,
                 spl_token_2022::ID,
+                0,
             ),
         };
 
@@ -566,12 +591,11 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
             Some(ata) => self.includer_client.get_account_data(&ata).await.is_ok(),
             None => false,
         };
-        let ata_is_token_2022 = token_program == spl_token_2022::ID;
         let entrypoint = classify_execute(
             &solana_axelar_its::ID,
             payload,
             destination_ata_exists,
-            ata_is_token_2022,
+            ata_len,
         );
 
         Ok((instruction, ephemeral_alt_accounts, entrypoint))
@@ -770,6 +794,40 @@ mod tests {
     use solana_sdk::signature::Keypair;
     use solana_sdk::signer::Signer;
     use std::sync::Arc;
+
+    /// Mock mint account for the token-program/ATA-length resolution. A bare (extension-free)
+    /// Token-2022 mint so `resolve_token_program_and_ata_len` reports the 170-byte ATA.
+    fn mock_token_2022_mint_account() -> solana_sdk::account::Account {
+        use anchor_spl::token_2022::spl_token_2022::{self, state::Mint};
+        use solana_sdk::program_pack::Pack;
+        let mut data = vec![0u8; Mint::LEN];
+        Mint::pack(
+            Mint {
+                is_initialized: true,
+                ..Default::default()
+            },
+            &mut data,
+        )
+        .unwrap();
+        solana_sdk::account::Account {
+            lamports: 1,
+            data,
+            owner: spl_token_2022::ID,
+            executable: false,
+            rent_epoch: 0,
+        }
+    }
+
+    /// Mock mint account owned by the classic SPL Token program (a linked canonical token).
+    fn mock_spl_mint_account() -> solana_sdk::account::Account {
+        solana_sdk::account::Account {
+            lamports: 1,
+            data: vec![],
+            owner: anchor_spl::token::ID,
+            executable: false,
+            rent_epoch: 0,
+        }
+    }
 
     /// Helper function to create mock TokenManager account data for tests
     fn create_mock_token_manager_data(token_id: [u8; 32], token_address: Pubkey) -> Vec<u8> {
@@ -1103,8 +1161,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_build_execute_instruction_with_three_addresses() {
-        use anchor_spl::token_2022::spl_token_2022;
-
         let keypair = Arc::new(Keypair::new());
         let mock_gas = MockGasCalculatorTrait::new();
         let mut mock_client = MockIncluderClientTrait::new();
@@ -1145,11 +1201,11 @@ mod tests {
             })
         });
 
-        // Mock get_account_owner for the token mint (return Token-2022 for native ITS tokens)
+        // Mock get_account for the token mint (Token-2022, extension-free, for native ITS tokens)
         mock_client
-            .expect_get_account_owner()
+            .expect_get_account()
             .withf(move |pubkey| *pubkey == token_mint_pda)
-            .returning(move |_| Box::pin(async move { Ok(Some(spl_token_2022::ID)) }));
+            .returning(move |_| Box::pin(async move { Ok(Some(mock_token_2022_mint_account())) }));
 
         // Default: unknown accounts return None (not a program)
         mock_client
@@ -1267,8 +1323,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_build_its_instruction_interchain_transfer_with_executable_payload() {
-        use anchor_spl::token_2022::spl_token_2022;
-
         let keypair = Arc::new(Keypair::new());
         let mock_gas = MockGasCalculatorTrait::new();
         let mut mock_client = MockIncluderClientTrait::new();
@@ -1307,9 +1361,9 @@ mod tests {
         });
 
         mock_client
-            .expect_get_account_owner()
+            .expect_get_account()
             .withf(move |pubkey| *pubkey == token_mint_pda)
-            .returning(move |_| Box::pin(async move { Ok(Some(spl_token_2022::ID)) }));
+            .returning(move |_| Box::pin(async move { Ok(Some(mock_token_2022_mint_account())) }));
 
         mock_client
             .expect_get_account_owner()
@@ -1399,8 +1453,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_build_its_instruction_interchain_transfer_with_malformed_data() {
-        use anchor_spl::token_2022::spl_token_2022;
-
         let keypair = Arc::new(Keypair::new());
         let mock_gas = MockGasCalculatorTrait::new();
         let mut mock_client = MockIncluderClientTrait::new();
@@ -1439,9 +1491,9 @@ mod tests {
         });
 
         mock_client
-            .expect_get_account_owner()
+            .expect_get_account()
             .withf(move |pubkey| *pubkey == token_mint_pda)
-            .returning(move |_| Box::pin(async move { Ok(Some(spl_token_2022::ID)) }));
+            .returning(move |_| Box::pin(async move { Ok(Some(mock_token_2022_mint_account())) }));
 
         mock_client
             .expect_get_account_owner()
@@ -1515,8 +1567,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_build_its_instruction_interchain_transfer_rejects_signer_accounts() {
-        use anchor_spl::token_2022::spl_token_2022;
-
         let keypair = Arc::new(Keypair::new());
         let mock_gas = MockGasCalculatorTrait::new();
         let mut mock_client = MockIncluderClientTrait::new();
@@ -1555,9 +1605,9 @@ mod tests {
         });
 
         mock_client
-            .expect_get_account_owner()
+            .expect_get_account()
             .withf(move |pubkey| *pubkey == token_mint_pda)
-            .returning(move |_| Box::pin(async move { Ok(Some(spl_token_2022::ID)) }));
+            .returning(move |_| Box::pin(async move { Ok(Some(mock_token_2022_mint_account())) }));
 
         mock_client
             .expect_get_account_owner()
@@ -1762,12 +1812,12 @@ mod tests {
             })
         });
 
-        // IMPORTANT: Return regular SPL Token program as the owner (not Token-2022)
-        // This simulates a linked canonical token that uses the regular SPL Token program
+        // IMPORTANT: Return a mint owned by the classic SPL Token program (not Token-2022).
+        // This simulates a linked canonical token that uses the regular SPL Token program.
         mock_client
-            .expect_get_account_owner()
+            .expect_get_account()
             .withf(move |pubkey| *pubkey == linked_token_mint)
-            .returning(move |_| Box::pin(async move { Ok(Some(spl_token::ID)) }));
+            .returning(move |_| Box::pin(async move { Ok(Some(mock_spl_mint_account())) }));
 
         // Default: unknown accounts return None (not a program)
         mock_client
@@ -1978,8 +2028,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_build_its_instruction_rejects_fee_payer_readonly() {
-        use anchor_spl::token_2022::spl_token_2022;
-
         let keypair = Arc::new(Keypair::new());
         let mock_gas = MockGasCalculatorTrait::new();
         let mut mock_client = MockIncluderClientTrait::new();
@@ -2015,9 +2063,9 @@ mod tests {
         });
 
         mock_client
-            .expect_get_account_owner()
+            .expect_get_account()
             .withf(move |pubkey| *pubkey == token_mint_pda)
-            .returning(move |_| Box::pin(async move { Ok(Some(spl_token_2022::ID)) }));
+            .returning(move |_| Box::pin(async move { Ok(Some(mock_token_2022_mint_account())) }));
 
         // Default: unknown accounts return None (not a program)
         mock_client

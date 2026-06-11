@@ -700,9 +700,8 @@ impl<
     ) -> Result<(), IncluderError> {
         let mut retries = 0;
         loop {
-            let alt_account = self.client.get_account(alt_pubkey).await;
-            match alt_account {
-                Ok(account) => {
+            match self.client.get_account(alt_pubkey).await {
+                Ok(Some(account)) => {
                     let alt_state = AddressLookupTable::deserialize(&account.data)
                         .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
@@ -712,6 +711,9 @@ impl<
                         return Ok(());
                     }
                     debug!("ALT not activated yet: {:?}", alt_state);
+                }
+                Ok(None) => {
+                    debug!("ALT account {} not found yet", alt_pubkey);
                 }
                 Err(e) => {
                     warn!("Failed to get ALT account: {}", e);
@@ -2882,7 +2884,7 @@ mod tests {
                     vec![AccountMeta::new(Pubkey::new_unique(), false)],
                     ExecuteEntrypoint::InterchainTransfer {
                         creates_destination_ata: true,
-                        ata_is_token_2022: true,
+                        ata_len: 170,
                     },
                 ))
             });
@@ -3149,13 +3151,13 @@ mod tests {
                                                                                                      // Add one address (32 bytes) to match addresses_len expectations
                     account_data.extend_from_slice(Pubkey::new_unique().as_ref());
 
-                    Ok(Account {
+                    Ok(Some(Account {
                         lamports: 1_000_000,
                         data: account_data,
                         owner: solana_address_lookup_table_interface::program::id(),
                         executable: false,
                         rent_epoch: 0,
-                    })
+                    }))
                 })
             });
 
@@ -3922,13 +3924,13 @@ mod tests {
                                                                                                      // Add one address (32 bytes) to match addresses_len expectations
                     account_data.extend_from_slice(Pubkey::new_unique().as_ref());
 
-                    Ok(Account {
+                    Ok(Some(Account {
                         lamports: 1_000_000,
                         data: account_data,
                         owner: solana_address_lookup_table_interface::program::id(),
                         executable: false,
                         rent_epoch: 0,
-                    })
+                    }))
                 })
             });
 
@@ -6189,13 +6191,13 @@ mod tests {
                     account_data.extend_from_slice(Pubkey::new_unique().as_ref());
                     account_data.extend_from_slice(Pubkey::new_unique().as_ref());
 
-                    Ok(Account {
+                    Ok(Some(Account {
                         lamports: 1_000_000,
                         data: account_data,
                         owner: solana_address_lookup_table_interface::program::id(),
                         executable: false,
                         rent_epoch: 0,
-                    })
+                    }))
                 })
             });
 

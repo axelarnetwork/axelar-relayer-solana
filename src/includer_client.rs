@@ -30,7 +30,7 @@ pub trait IncluderClientTrait: ThreadSafe {
     fn inner(&self) -> &RpcClient;
     async fn get_latest_blockhash(&self) -> Result<Hash, IncluderClientError>;
     async fn get_account_data(&self, pubkey: &Pubkey) -> Result<Vec<u8>, IncluderClientError>;
-    async fn get_account(&self, pubkey: &Pubkey) -> Result<Account, IncluderClientError>;
+    async fn get_account(&self, pubkey: &Pubkey) -> Result<Option<Account>, IncluderClientError>;
     async fn get_account_owner(
         &self,
         pubkey: &Pubkey,
@@ -194,11 +194,35 @@ impl IncluderClientTrait for IncluderClient {
             .map_err(|e| IncluderClientError::GenericError(e.to_string()))
     }
 
-    async fn get_account(&self, pubkey: &Pubkey) -> Result<Account, IncluderClientError> {
-        self.inner()
-            .get_account(pubkey)
-            .await
-            .map_err(|e| IncluderClientError::GenericError(e.to_string()))
+    async fn get_account(&self, pubkey: &Pubkey) -> Result<Option<Account>, IncluderClientError> {
+        let mut last_error = None;
+        for attempt in 0..self.max_retries {
+            match self
+                .inner()
+                .get_account_with_commitment(pubkey, self.commitment)
+                .await
+            {
+                Ok(response) => return Ok(response.value),
+                Err(e) => {
+                    warn!(
+                        "Failed to get account for {} (attempt {}/{}): {}",
+                        pubkey,
+                        attempt + 1,
+                        self.max_retries,
+                        e
+                    );
+                    last_error = Some(e);
+                    if attempt < self.max_retries - 1 {
+                        sleep(Duration::from_millis(500)).await;
+                    }
+                }
+            }
+        }
+
+        Err(last_error.map_or_else(
+            || IncluderClientError::GenericError("Failed to get account".to_string()),
+            |e| IncluderClientError::GenericError(e.to_string()),
+        ))
     }
 
     async fn get_account_owner(
@@ -615,6 +639,25 @@ mod tests {
             return ExpectedError::SlotAlreadyVerified;
         }
         ExpectedError::Generic
+    }
+
+    #[tokio::test]
+    async fn get_account_returns_none_without_retrying_account_not_found() {
+        let client = IncluderClient {
+            client: Arc::new(RpcClient::new_mock("succeeds".to_string())),
+            max_retries: 3,
+            commitment: CommitmentConfig::confirmed(),
+        };
+
+        let result = tokio::time::timeout(
+            Duration::from_millis(100),
+            client.get_account(&Pubkey::new_unique()),
+        )
+        .await
+        .expect("Ok(None) should not enter the retry backoff")
+        .expect("mock RPC call should succeed");
+
+        assert!(result.is_none());
     }
 
     // Tests for error handling flow with execute_data

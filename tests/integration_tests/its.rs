@@ -346,8 +346,8 @@ async fn test_approve_and_execute_its_message() {
     // actually created on-chain. If a program upgrade changes a layout, these fail.
     {
         use axelar_relayer_solana::gas_estimation::{
-            INTERCHAIN_MINT_RENT, METADATA_RENT_AND_FEE, TOKEN_2022_ATA_RENT, TOKEN_MANAGER_RENT,
-            USER_ROLES_RENT,
+            interchain_mint_rent, metadata_rent_and_fee, native_interchain_ata_rent,
+            token_manager_rent, user_roles_rent,
         };
         use axelar_relayer_solana::utils::{
             get_ata_with_program, get_minter_roles_pda, get_token_mint_pda,
@@ -366,11 +366,11 @@ async fn test_approve_and_execute_its_message() {
         let (minter_roles, _) =
             get_minter_roles_pda(&token_manager_pda, &env.payer.pubkey()).unwrap();
         for (name, pk, expected) in [
-            ("token_manager_pda", token_manager_pda, TOKEN_MANAGER_RENT),
-            ("token_mint", mint, INTERCHAIN_MINT_RENT),
-            ("token_manager_ata", tm_ata, TOKEN_2022_ATA_RENT),
-            ("mpl_metadata", metadata, METADATA_RENT_AND_FEE),
-            ("minter_roles", minter_roles, USER_ROLES_RENT),
+            ("token_manager_pda", token_manager_pda, token_manager_rent()),
+            ("token_mint", mint, interchain_mint_rent()),
+            ("token_manager_ata", tm_ata, native_interchain_ata_rent()),
+            ("mpl_metadata", metadata, metadata_rent_and_fee()),
+            ("minter_roles", minter_roles, user_roles_rent()),
         ] {
             let acc = env.rpc_client.get_account(&pk).await.expect("account");
             assert_eq!(
@@ -545,7 +545,7 @@ async fn test_approve_and_execute_its_message() {
 
     // Lock the destination-ATA rent constant against what the transfer actually created.
     {
-        use axelar_relayer_solana::gas_estimation::TOKEN_2022_ATA_RENT;
+        use axelar_relayer_solana::gas_estimation::native_interchain_ata_rent;
         use axelar_relayer_solana::utils::{get_ata_with_program, get_token_mint_pda};
         use std::str::FromStr;
         let token_2022 = Pubkey::from_str("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb").unwrap();
@@ -559,7 +559,7 @@ async fn test_approve_and_execute_its_message() {
             .expect("dest ata");
         assert_eq!(
             acc.lamports,
-            TOKEN_2022_ATA_RENT,
+            native_interchain_ata_rent(),
             "destination ATA rent constant drifted (data_len={})",
             acc.data.len()
         );
@@ -1064,7 +1064,7 @@ async fn test_approve_and_execute_its_message() {
     // Lock the classic-SPL ATA rent constant: the linked-SPL transfer created the recipient's
     // SPL ATA (165 bytes), which is smaller than a Token-2022 ATA.
     {
-        use axelar_relayer_solana::gas_estimation::SPL_ATA_RENT;
+        use axelar_relayer_solana::gas_estimation::spl_ata_rent;
         let dest_spl_ata =
             anchor_spl::associated_token::get_associated_token_address_with_program_id(
                 &link_transfer_destination,
@@ -1078,7 +1078,7 @@ async fn test_approve_and_execute_its_message() {
             .expect("linked SPL destination ATA");
         assert_eq!(
             acc.lamports,
-            SPL_ATA_RENT,
+            spl_ata_rent(),
             "classic-SPL ATA rent constant drifted (data_len={})",
             acc.data.len()
         );
