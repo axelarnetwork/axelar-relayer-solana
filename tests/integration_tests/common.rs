@@ -164,10 +164,22 @@ impl QueueTrait for TestQueue {
 pub fn programs_dir() -> PathBuf {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
         .unwrap_or_else(|_| env!("CARGO_MANIFEST_DIR").to_owned());
+    // Program IDs are baked into each .so at build time (one `declare_id!` per network
+    // feature), so the harness must load the .so set matching the feature the relayer crate
+    // is compiled with. Only devnet-amplifier and mainnet are checked in.
+    #[cfg(feature = "devnet-amplifier")]
+    let network = "devnet-amplifier";
+    #[cfg(feature = "mainnet")]
+    let network = "mainnet";
+    #[cfg(feature = "testnet")]
+    let network = "testnet";
+    #[cfg(feature = "stagenet")]
+    let network = "stagenet";
     PathBuf::from(manifest_dir)
         .join("tests")
         .join("testdata")
         .join("programs")
+        .join(network)
 }
 
 /// Generate a random secp256k1 signer for gateway verification
@@ -203,6 +215,42 @@ pub fn create_mock_redis() -> MockRedisConnectionTrait {
         .times(..)
         .returning(|| Ok(Some(100_000u64)));
     mock_redis
+}
+
+/// Records the cost the includer reports for each message id, keyed exactly like the real
+/// Redis (`write_gas_cost_for_message_id` does a `SET`, so the last write per message id
+/// wins; zero-cost writes are skipped). Returns the mock plus a handle to the recorded costs.
+#[cfg(test)]
+pub fn create_recording_mock_redis() -> (
+    MockRedisConnectionTrait,
+    Arc<std::sync::Mutex<std::collections::HashMap<String, u64>>>,
+) {
+    let costs = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+    let sink = Arc::clone(&costs);
+
+    let mut mock_redis = MockRedisConnectionTrait::new();
+    mock_redis
+        .expect_add_gas_cost_for_task_id()
+        .returning(|_, _, _| ());
+    mock_redis
+        .expect_get_gas_cost_for_task_id()
+        .returning(|_, _| Ok(0u64));
+    mock_redis.expect_write_gas_cost_for_message_id().returning(
+        move |message_id, gas_cost, _tx_type| {
+            if gas_cost != 0 {
+                sink.lock().unwrap().insert(message_id, gas_cost);
+            }
+        },
+    );
+    mock_redis.expect_get_alt_entry().returning(|_| Ok(None));
+    mock_redis
+        .expect_write_alt_entry()
+        .returning(|_, _, _| Ok(()));
+    mock_redis
+        .expect_get_cu_price()
+        .times(..)
+        .returning(|| Ok(Some(100_000u64)));
+    (mock_redis, costs)
 }
 
 #[cfg(test)]

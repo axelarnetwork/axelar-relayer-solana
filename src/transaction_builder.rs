@@ -1,4 +1,5 @@
 use crate::gas_calculator::{GasCalculatorTrait, InstructionKind};
+use crate::gas_estimation::{classify_execute, ExecuteEntrypoint};
 use crate::includer_client::IncluderClientTrait;
 use crate::redis::RedisConnectionTrait;
 use crate::utils::{
@@ -11,6 +12,7 @@ use crate::{error::TransactionBuilderError, transaction_type::SolanaTransactionT
 use anchor_lang::AccountDeserialize;
 use anchor_lang::InstructionData;
 use anchor_lang::ToAccountMetas;
+use anchor_spl::token::spl_token;
 use anchor_spl::{associated_token::spl_associated_token_account, token_2022::spl_token_2022};
 use async_trait::async_trait;
 use borsh::BorshDeserialize;
@@ -28,6 +30,7 @@ use solana_axelar_its::instructions::{
 };
 use solana_sdk::instruction::{AccountMeta, Instruction};
 use solana_sdk::message::AddressLookupTableAccount;
+use solana_sdk::program_pack::Pack;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signer::keypair::Keypair;
 use solana_sdk::signer::Signer as _;
@@ -64,14 +67,14 @@ pub trait TransactionBuilderTrait<IC: IncluderClientTrait, R: RedisConnectionTra
         message: &Message,
         payload: &[u8],
         destination_address: Pubkey,
-    ) -> Result<(Instruction, Vec<AccountMeta>), TransactionBuilderError>;
+    ) -> Result<(Instruction, Vec<AccountMeta>, ExecuteEntrypoint), TransactionBuilderError>;
 
     async fn build_its_instruction(
         &self,
         message: &Message,
         payload: &[u8],
         incoming_message_pda: Pubkey,
-    ) -> Result<(Instruction, Vec<AccountMeta>), TransactionBuilderError>;
+    ) -> Result<(Instruction, Vec<AccountMeta>, ExecuteEntrypoint), TransactionBuilderError>;
 
     async fn build_governance_instruction(
         &self,
@@ -142,22 +145,40 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
         }
     }
 
-    /// Determines the token program (SPL Token or Token-2022) for a given mint address
-    /// by checking the account owner on-chain.
-    async fn get_token_program_for_mint(
+    /// Resolves the token program (classic SPL or Token-2022) and the on-chain ATA byte length
+    /// for `mint`, reading the mint account once. A Token-2022 ATA's size depends on the mint's
+    /// extensions (e.g. a `TransferFeeConfig` mint forces a larger ATA); a classic SPL ATA is a
+    /// fixed 165 bytes. The length feeds the rent estimate so the relayer funds the exact rent
+    /// the associated-token program will charge.
+    async fn resolve_token_program_and_ata_len(
         &self,
         mint: &Pubkey,
-    ) -> Result<Pubkey, TransactionBuilderError> {
-        match self.includer_client.get_account_owner(mint).await {
-            Ok(Some(owner)) if owner == spl_token_2022::ID => Ok(spl_token_2022::ID),
-            Ok(Some(_)) => Ok(anchor_spl::token::ID),
-            Ok(None) => Err(TransactionBuilderError::GenericError(format!(
-                "Token mint account {} not found",
-                mint
-            ))),
-            Err(_) => Err(TransactionBuilderError::GenericError(
-                "Failed to get token program owner".to_string(),
-            )),
+    ) -> Result<(Pubkey, usize), TransactionBuilderError> {
+        let account = self
+            .includer_client
+            .get_account(mint)
+            .await
+            .map_err(|e| {
+                TransactionBuilderError::GenericError(format!(
+                    "Failed to fetch token mint account {mint}: {e}"
+                ))
+            })?
+            .ok_or_else(|| {
+                TransactionBuilderError::GenericError(format!(
+                    "Token mint account {mint} not found"
+                ))
+            })?;
+
+        if account.owner == spl_token_2022::ID {
+            let ata_len =
+                crate::gas_estimation::token_2022_ata_len(&account.data).map_err(|e| {
+                    TransactionBuilderError::GenericError(format!(
+                        "Failed to size Token-2022 ATA for mint {mint}: {e}"
+                    ))
+                })?;
+            Ok((spl_token_2022::ID, ata_len))
+        } else {
+            Ok((anchor_spl::token::ID, spl_token::state::Account::LEN))
         }
     }
 }
@@ -255,7 +276,7 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
         message: &Message,
         payload: &[u8],
         destination_address: Pubkey,
-    ) -> Result<(Instruction, Vec<AccountMeta>), TransactionBuilderError> {
+    ) -> Result<(Instruction, Vec<AccountMeta>, ExecuteEntrypoint), TransactionBuilderError> {
         let (incoming_message_pda, _) =
             solana_axelar_gateway::IncomingMessage::try_find_pda(&message.command_id())
                 .ok_or_else(|| {
@@ -270,17 +291,22 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
                     .await
             }
             x if x == solana_axelar_governance::ID => {
-                self.build_governance_instruction(message, payload, incoming_message_pda)
-                    .await
+                // Governance/arbitrary executes fund no relayer accounts so no rent.
+                let (ix, accounts) = self
+                    .build_governance_instruction(message, payload, incoming_message_pda)
+                    .await?;
+                Ok((ix, accounts, ExecuteEntrypoint::Other))
             }
             _ => {
-                self.build_executable_instruction(
-                    message,
-                    payload,
-                    incoming_message_pda,
-                    destination_address,
-                )
-                .await
+                let (ix, accounts) = self
+                    .build_executable_instruction(
+                        message,
+                        payload,
+                        incoming_message_pda,
+                        destination_address,
+                    )
+                    .await?;
+                Ok((ix, accounts, ExecuteEntrypoint::Other))
             }
         }
     }
@@ -290,7 +316,7 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
         message: &Message,
         payload: &[u8],
         incoming_message_pda: Pubkey,
-    ) -> Result<(Instruction, Vec<AccountMeta>), TransactionBuilderError> {
+    ) -> Result<(Instruction, Vec<AccountMeta>, ExecuteEntrypoint), TransactionBuilderError> {
         // Use a copy for deserialization to preserve the original payload bytes
         let mut payload_reader = payload;
         let gmp_decoded_payload = HubMessage::deserialize(&mut payload_reader)
@@ -351,7 +377,7 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
             TransactionBuilderError::GenericError("Failed to derive token manager PDA".to_string())
         })?;
 
-        let (token_mint, token_program) = match &gmp_decoded_payload {
+        let (token_mint, token_program, ata_len) = match &gmp_decoded_payload {
             HubMessage::ReceiveFromHub {
                 message: solana_axelar_its::encoding::Message::LinkToken(ref link),
                 ..
@@ -365,9 +391,10 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
                         ))
                     })?;
 
-                let token_program_id = self.get_token_program_for_mint(&mint_pubkey).await?;
+                let (token_program_id, ata_len) =
+                    self.resolve_token_program_and_ata_len(&mint_pubkey).await?;
 
-                (mint_pubkey, token_program_id)
+                (mint_pubkey, token_program_id, ata_len)
             }
             HubMessage::ReceiveFromHub {
                 message: solana_axelar_its::encoding::Message::InterchainTransfer(_),
@@ -393,16 +420,20 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
 
                 let mint_pubkey = token_manager.token_address;
 
-                let token_program_id = self.get_token_program_for_mint(&mint_pubkey).await?;
+                let (token_program_id, ata_len) =
+                    self.resolve_token_program_and_ata_len(&mint_pubkey).await?;
 
-                (mint_pubkey, token_program_id)
+                (mint_pubkey, token_program_id, ata_len)
             }
             _ => (
-                // For DeployInterchainToken and other cases, derive the mint PDA
+                // For DeployInterchainToken and other cases, derive the mint PDA. The deploy's
+                // ATA rent is fixed in the cost model (an extension-free Token-2022 ATA), so
+                // `ata_len` is unused here.
                 get_token_mint_pda(&its_root_pda, &token_id)
                     .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?
                     .0,
                 spl_token_2022::ID,
+                0,
             ),
         };
 
@@ -428,6 +459,11 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
 
         debug!("GMP decoded payload: {:?}", gmp_decoded_payload);
 
+        // Set for InterchainTransfer so we can check (after the instruction is built) whether the
+        // recipient ATA already exists. The cost estimate must not charge rent for an ATA that
+        // won't be created.
+        let mut transfer_destination_ata: Option<Pubkey> = None;
+
         match &gmp_decoded_payload {
             HubMessage::ReceiveFromHub { message, .. } => match message {
                 solana_axelar_its::encoding::Message::InterchainTransfer(transfer) => {
@@ -443,6 +479,7 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
                         &token_mint,
                         &token_program,
                     );
+                    transfer_destination_ata = Some(destination_ata);
                     accounts.extend(execute_interchain_transfer_extra_accounts(
                         destination_address,
                         destination_token_authority,
@@ -549,7 +586,24 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
             vec![]
         };
 
-        Ok((instruction, ephemeral_alt_accounts))
+        // For a transfer, the rent depends on whether the recipient ATA already exists.
+        let destination_ata_exists = match transfer_destination_ata {
+            Some(ata) => self
+                .includer_client
+                .get_account(&ata)
+                .await
+                .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?
+                .is_some(),
+            None => false,
+        };
+        let entrypoint = classify_execute(
+            &solana_axelar_its::ID,
+            payload,
+            destination_ata_exists,
+            ata_len,
+        );
+
+        Ok((instruction, ephemeral_alt_accounts, entrypoint))
     }
 
     async fn build_governance_instruction(
@@ -745,6 +799,40 @@ mod tests {
     use solana_sdk::signature::Keypair;
     use solana_sdk::signer::Signer;
     use std::sync::Arc;
+
+    /// Mock mint account for the token-program/ATA-length resolution. A bare (extension-free)
+    /// Token-2022 mint so `resolve_token_program_and_ata_len` reports the 170-byte ATA.
+    fn mock_token_2022_mint_account() -> solana_sdk::account::Account {
+        use anchor_spl::token_2022::spl_token_2022::{self, state::Mint};
+        use solana_sdk::program_pack::Pack;
+        let mut data = vec![0u8; Mint::LEN];
+        Mint::pack(
+            Mint {
+                is_initialized: true,
+                ..Default::default()
+            },
+            &mut data,
+        )
+        .unwrap();
+        solana_sdk::account::Account {
+            lamports: 1,
+            data,
+            owner: spl_token_2022::ID,
+            executable: false,
+            rent_epoch: 0,
+        }
+    }
+
+    /// Mock mint account owned by the classic SPL Token program (a linked canonical token).
+    fn mock_spl_mint_account() -> solana_sdk::account::Account {
+        solana_sdk::account::Account {
+            lamports: 1,
+            data: vec![],
+            owner: anchor_spl::token::ID,
+            executable: false,
+            rent_epoch: 0,
+        }
+    }
 
     /// Helper function to create mock TokenManager account data for tests
     fn create_mock_token_manager_data(token_id: [u8; 32], token_address: Pubkey) -> Vec<u8> {
@@ -1078,8 +1166,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_build_execute_instruction_with_three_addresses() {
-        use anchor_spl::token_2022::spl_token_2022;
-
         let keypair = Arc::new(Keypair::new());
         let mock_gas = MockGasCalculatorTrait::new();
         let mut mock_client = MockIncluderClientTrait::new();
@@ -1111,11 +1197,24 @@ mod tests {
                 Box::pin(async move { Ok(data) })
             });
 
-        // Mock get_account_owner for the token mint (return Token-2022 for native ITS tokens)
-        mock_client
-            .expect_get_account_owner()
-            .withf(move |pubkey| *pubkey == token_mint_pda)
-            .returning(move |_| Box::pin(async move { Ok(Some(spl_token_2022::ID)) }));
+        // Any other account data fetch is treated as missing.
+        mock_client.expect_get_account_data().returning(|_| {
+            Box::pin(async {
+                Err(crate::error::IncluderClientError::GenericError(
+                    "not found".to_string(),
+                ))
+            })
+        });
+
+        // Mock get_account for the token mint (Token-2022, extension-free, for native ITS tokens)
+        mock_client.expect_get_account().returning(move |pubkey| {
+            let account = if *pubkey == token_mint_pda {
+                Some(mock_token_2022_mint_account())
+            } else {
+                None
+            };
+            Box::pin(async move { Ok(account) })
+        });
 
         // Default: unknown accounts return None (not a program)
         mock_client
@@ -1164,7 +1263,7 @@ mod tests {
         // Serialize using borsh
         let its_payload = borsh::to_vec(&hub_message).expect("Failed to serialize HubMessage");
 
-        let (its_instruction, its_accounts) = builder
+        let (its_instruction, its_accounts, _entrypoint) = builder
             .build_execute_instruction(&message, &its_payload, its_destination)
             .await
             .expect("ITS build_execute_instruction should succeed");
@@ -1196,7 +1295,7 @@ mod tests {
         };
         let governance_payload = gmp_payload.abi_encode();
 
-        let (governance_instruction, governance_accounts) = builder
+        let (governance_instruction, governance_accounts, _) = builder
             .build_execute_instruction(&message, &governance_payload, governance_destination)
             .await
             .expect("Governance build_execute_instruction should succeed");
@@ -1219,7 +1318,7 @@ mod tests {
         );
         let executable_payload_bytes = executable_payload.encode().unwrap();
 
-        let (arbitrary_instruction, arbitrary_accounts) = builder
+        let (arbitrary_instruction, arbitrary_accounts, _) = builder
             .build_execute_instruction(&message, &executable_payload_bytes, arbitrary_destination)
             .await
             .expect("Arbitrary program build_execute_instruction should succeed");
@@ -1232,9 +1331,90 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_build_its_instruction_interchain_transfer_with_executable_payload() {
-        use anchor_spl::token_2022::spl_token_2022;
+    async fn test_build_its_instruction_propagates_destination_ata_rpc_error() {
+        let keypair = Arc::new(Keypair::new());
+        let mock_gas = MockGasCalculatorTrait::new();
+        let mut mock_client = MockIncluderClientTrait::new();
+        let mock_redis = MockRedisConnectionTrait::new();
 
+        let token_id = [1u8; 32];
+        let (its_root_pda, _) = solana_axelar_its::InterchainTokenService::try_find_pda()
+            .expect("Failed to derive ITS root PDA");
+        let (token_manager_pda, _) =
+            solana_axelar_its::TokenManager::try_find_pda(token_id, its_root_pda)
+                .expect("Failed to derive token manager PDA");
+        let (token_mint_pda, _) =
+            solana_axelar_its::TokenManager::find_token_mint(token_id, its_root_pda);
+
+        let mock_token_manager_data = create_mock_token_manager_data(token_id, token_mint_pda);
+
+        mock_client
+            .expect_get_account_data()
+            .withf(move |pubkey| *pubkey == token_manager_pda)
+            .returning(move |_| {
+                let data = mock_token_manager_data.clone();
+                Box::pin(async move { Ok(data) })
+            });
+
+        mock_client.expect_get_account().returning(move |pubkey| {
+            let result = if *pubkey == token_mint_pda {
+                Ok(Some(mock_token_2022_mint_account()))
+            } else {
+                Err(crate::error::IncluderClientError::GenericError(
+                    "RPC timeout".to_string(),
+                ))
+            };
+            Box::pin(async move { result })
+        });
+
+        mock_client
+            .expect_get_account_owner()
+            .returning(move |_| Box::pin(async move { Ok(None) }));
+
+        let builder = TransactionBuilder::new(
+            Arc::clone(&keypair),
+            mock_gas,
+            Arc::new(mock_client),
+            mock_redis,
+        );
+
+        let message = Message {
+            cc_id: CrossChainId {
+                chain: "ethereum".to_string(),
+                id: "test-message-id-ata-rpc-error".to_string(),
+            },
+            source_address: "0x1234567890123456789012345678901234567890".to_string(),
+            destination_chain: "solana".to_string(),
+            destination_address: "test-destination".to_string(),
+            payload_hash: [0u8; 32],
+        };
+
+        let interchain_transfer = InterchainTransfer {
+            token_id,
+            source_address: vec![3u8; 20],
+            destination_address: Pubkey::new_unique().to_bytes().to_vec(),
+            amount: 0u64,
+            data: None,
+        };
+
+        let hub_message = HubMessage::ReceiveFromHub {
+            source_chain: "ethereum".to_string(),
+            message: ItsMessage::InterchainTransfer(interchain_transfer),
+        };
+        let its_payload = borsh::to_vec(&hub_message).expect("Failed to serialize HubMessage");
+
+        let result = builder
+            .build_execute_instruction(&message, &its_payload, solana_axelar_its::ID)
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(TransactionBuilderError::GenericError(error)) if error.contains("RPC timeout")
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_build_its_instruction_interchain_transfer_with_executable_payload() {
         let keypair = Arc::new(Keypair::new());
         let mock_gas = MockGasCalculatorTrait::new();
         let mut mock_client = MockIncluderClientTrait::new();
@@ -1263,10 +1443,23 @@ mod tests {
                 Box::pin(async move { Ok(data) })
             });
 
-        mock_client
-            .expect_get_account_owner()
-            .withf(move |pubkey| *pubkey == token_mint_pda)
-            .returning(move |_| Box::pin(async move { Ok(Some(spl_token_2022::ID)) }));
+        // Any other account data fetch is treated as missing.
+        mock_client.expect_get_account_data().returning(|_| {
+            Box::pin(async {
+                Err(crate::error::IncluderClientError::GenericError(
+                    "not found".to_string(),
+                ))
+            })
+        });
+
+        mock_client.expect_get_account().returning(move |pubkey| {
+            let account = if *pubkey == token_mint_pda {
+                Some(mock_token_2022_mint_account())
+            } else {
+                None
+            };
+            Box::pin(async move { Ok(account) })
+        });
 
         mock_client
             .expect_get_account_owner()
@@ -1327,7 +1520,7 @@ mod tests {
         // Serialize using borsh
         let its_payload = borsh::to_vec(&hub_message).expect("Failed to serialize HubMessage");
 
-        let (its_instruction, its_accounts) = builder
+        let (its_instruction, its_accounts, _entrypoint) = builder
             .build_execute_instruction(&message, &its_payload, its_destination)
             .await
             .expect("ITS build_execute_instruction with ExecutablePayload should succeed");
@@ -1356,8 +1549,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_build_its_instruction_interchain_transfer_with_malformed_data() {
-        use anchor_spl::token_2022::spl_token_2022;
-
         let keypair = Arc::new(Keypair::new());
         let mock_gas = MockGasCalculatorTrait::new();
         let mut mock_client = MockIncluderClientTrait::new();
@@ -1386,10 +1577,23 @@ mod tests {
                 Box::pin(async move { Ok(data) })
             });
 
-        mock_client
-            .expect_get_account_owner()
-            .withf(move |pubkey| *pubkey == token_mint_pda)
-            .returning(move |_| Box::pin(async move { Ok(Some(spl_token_2022::ID)) }));
+        // Any other account data fetch is treated as missing.
+        mock_client.expect_get_account_data().returning(|_| {
+            Box::pin(async {
+                Err(crate::error::IncluderClientError::GenericError(
+                    "not found".to_string(),
+                ))
+            })
+        });
+
+        mock_client.expect_get_account().returning(move |pubkey| {
+            let account = if *pubkey == token_mint_pda {
+                Some(mock_token_2022_mint_account())
+            } else {
+                None
+            };
+            Box::pin(async move { Ok(account) })
+        });
 
         mock_client
             .expect_get_account_owner()
@@ -1463,8 +1667,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_build_its_instruction_interchain_transfer_rejects_signer_accounts() {
-        use anchor_spl::token_2022::spl_token_2022;
-
         let keypair = Arc::new(Keypair::new());
         let mock_gas = MockGasCalculatorTrait::new();
         let mut mock_client = MockIncluderClientTrait::new();
@@ -1493,10 +1695,23 @@ mod tests {
                 Box::pin(async move { Ok(data) })
             });
 
-        mock_client
-            .expect_get_account_owner()
-            .withf(move |pubkey| *pubkey == token_mint_pda)
-            .returning(move |_| Box::pin(async move { Ok(Some(spl_token_2022::ID)) }));
+        // Any other account data fetch is treated as missing.
+        mock_client.expect_get_account_data().returning(|_| {
+            Box::pin(async {
+                Err(crate::error::IncluderClientError::GenericError(
+                    "not found".to_string(),
+                ))
+            })
+        });
+
+        mock_client.expect_get_account().returning(move |pubkey| {
+            let account = if *pubkey == token_mint_pda {
+                Some(mock_token_2022_mint_account())
+            } else {
+                None
+            };
+            Box::pin(async move { Ok(account) })
+        });
 
         mock_client
             .expect_get_account_owner()
@@ -1692,12 +1907,25 @@ mod tests {
                 Box::pin(async move { Ok(data) })
             });
 
-        // IMPORTANT: Return regular SPL Token program as the owner (not Token-2022)
-        // This simulates a linked canonical token that uses the regular SPL Token program
-        mock_client
-            .expect_get_account_owner()
-            .withf(move |pubkey| *pubkey == linked_token_mint)
-            .returning(move |_| Box::pin(async move { Ok(Some(spl_token::ID)) }));
+        // Any other account data fetch is treated as missing.
+        mock_client.expect_get_account_data().returning(|_| {
+            Box::pin(async {
+                Err(crate::error::IncluderClientError::GenericError(
+                    "not found".to_string(),
+                ))
+            })
+        });
+
+        // IMPORTANT: Return a mint owned by the classic SPL Token program (not Token-2022).
+        // This simulates a linked canonical token that uses the regular SPL Token program.
+        mock_client.expect_get_account().returning(move |pubkey| {
+            let account = if *pubkey == linked_token_mint {
+                Some(mock_spl_mint_account())
+            } else {
+                None
+            };
+            Box::pin(async move { Ok(account) })
+        });
 
         // Default: unknown accounts return None (not a program)
         mock_client
@@ -1745,7 +1973,7 @@ mod tests {
 
         let its_payload = borsh::to_vec(&hub_message).expect("Failed to serialize HubMessage");
 
-        let (its_instruction, _its_accounts) = builder
+        let (its_instruction, _its_accounts, _entrypoint) = builder
             .build_execute_instruction(&message, &its_payload, its_destination)
             .await
             .expect("ITS build_execute_instruction should succeed for linked SPL token");
@@ -1908,8 +2136,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_build_its_instruction_rejects_fee_payer_readonly() {
-        use anchor_spl::token_2022::spl_token_2022;
-
         let keypair = Arc::new(Keypair::new());
         let mock_gas = MockGasCalculatorTrait::new();
         let mut mock_client = MockIncluderClientTrait::new();
@@ -1935,10 +2161,23 @@ mod tests {
                 Box::pin(async move { Ok(data) })
             });
 
-        mock_client
-            .expect_get_account_owner()
-            .withf(move |pubkey| *pubkey == token_mint_pda)
-            .returning(move |_| Box::pin(async move { Ok(Some(spl_token_2022::ID)) }));
+        // Any other account data fetch is treated as missing.
+        mock_client.expect_get_account_data().returning(|_| {
+            Box::pin(async {
+                Err(crate::error::IncluderClientError::GenericError(
+                    "not found".to_string(),
+                ))
+            })
+        });
+
+        mock_client.expect_get_account().returning(move |pubkey| {
+            let account = if *pubkey == token_mint_pda {
+                Some(mock_token_2022_mint_account())
+            } else {
+                None
+            };
+            Box::pin(async move { Ok(account) })
+        });
 
         // Default: unknown accounts return None (not a program)
         mock_client

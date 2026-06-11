@@ -366,10 +366,16 @@ impl<
         extra_alt_accounts: &[AccountMeta], // Non-empty only for ITS InterchainTransfer with data that overflows
         existing_alt_pubkey: Option<Pubkey>, // Existing ephemeral ALT from a previous attempt (stored in Redis)
         destination_address: Pubkey,
+        entrypoint: crate::gas_estimation::ExecuteEntrypoint, // for the rent estimate
     ) -> Result<Vec<Event>, IncluderError> {
         let mut alt_cost = None;
         let mut available_gas_balance = i64::from_str(&task.task.available_gas_balance.amount)
             .map_err(|e| IncluderError::GenericError(e.to_string()))?;
+
+        // Rent the fee payer will fund for the accounts this execute creates (token manager,
+        // mint, metadata, ATAs, roles). Known up front from the GMP entrypoint, so it's checked
+        // both before creating any ephemeral ALT and against the main tx below.
+        let rent_estimate = crate::gas_estimation::execute_rent_lamports(entrypoint);
 
         let mut address_lookup_tables: Vec<AddressLookupTableAccount> = vec![];
 
@@ -471,18 +477,23 @@ impl<
                 .await
                 .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
-            // Total ALT lifecycle cost: creation tx + deactivation tx + close tx
+            // Total ALT lifecycle cost: creation tx + deactivation tx + close tx.
             // Rent is excluded because it's reclaimed when the ALT is closed.
             let total_alt_lifecycle_cost =
                 estimated_alt_cost + ALT_DEACTIVATE_COST + ALT_CLOSE_COST;
+            // Check the ALT lifecycle fees AND this execute's rent before creating the ALT, so we
+            // don't create (and later have to clean up) a table for a message that would then be
+            // rejected for insufficient gas. The main tx's consensus fee needs the ALT to be
+            // simulated, so it's verified below — a small residual next to the rent.
+            let pre_alt_required = total_alt_lifecycle_cost.saturating_add(rent_estimate);
 
             #[cfg(feature = "devnet-amplifier")]
-            let _ = total_alt_lifecycle_cost;
+            let _ = pre_alt_required;
             #[cfg(not(feature = "devnet-amplifier"))]
-            if total_alt_lifecycle_cost as i64 > available_gas_balance {
+            if pre_alt_required as i64 > available_gas_balance {
                 return Ok(not_enough_gas_event(
                     available_gas_balance,
-                    total_alt_lifecycle_cost,
+                    pre_alt_required,
                     task,
                     Arc::clone(&self.gmp_api),
                 ));
@@ -500,15 +511,22 @@ impl<
             // Wait for ALT to be fully propagated before using it in the main transaction.
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
+            // The ALT account's rent is reclaimed when the table is closed, so we
+            // exclude it from the reported/charged amount. The relayer will still
+            // pay the deactivate + close consensus fees later so we neeed to
+            // estimate for those now even though they haven't happened yet
+            let alt_rent = crate::gas_estimation::alt_rent_lamports(extra_alt_accounts.len());
+            alt_cost = actual_alt_cost
+                .map(|cost| cost.saturating_sub(alt_rent) + ALT_DEACTIVATE_COST + ALT_CLOSE_COST);
+
             self.redis_conn
                 .write_gas_cost_for_message_id(
                     task.task.message.message_id.clone(),
-                    actual_alt_cost.unwrap_or(0),
+                    alt_cost.unwrap_or(0),
                     TransactionType::Execute,
                 )
                 .await;
 
-            alt_cost = actual_alt_cost;
             available_gas_balance =
                 available_gas_balance.saturating_sub(alt_cost.unwrap_or(0) as i64);
 
@@ -547,13 +565,18 @@ impl<
             .await
             .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
+        // `estimated_tx_cost` is consensus-only (base + priority). Add the rent this execute funds
+        // (`rent_estimate`, computed up front and already applied to the pre-ALT check) so the
+        // check reflects the true cost the relayer pays.
+        let total_estimated_cost = estimated_tx_cost.saturating_add(rent_estimate);
+
         #[cfg(feature = "devnet-amplifier")]
-        let _ = (available_gas_balance, estimated_tx_cost);
+        let _ = (available_gas_balance, total_estimated_cost);
         #[cfg(not(feature = "devnet-amplifier"))]
-        if estimated_tx_cost as i64 > available_gas_balance {
+        if total_estimated_cost as i64 > available_gas_balance {
             return Ok(not_enough_gas_event(
                 available_gas_balance,
-                estimated_tx_cost,
+                total_estimated_cost,
                 task,
                 Arc::clone(&self.gmp_api),
             ));
@@ -677,9 +700,8 @@ impl<
     ) -> Result<(), IncluderError> {
         let mut retries = 0;
         loop {
-            let alt_account = self.client.get_account(alt_pubkey).await;
-            match alt_account {
-                Ok(account) => {
+            match self.client.get_account(alt_pubkey).await {
+                Ok(Some(account)) => {
                     let alt_state = AddressLookupTable::deserialize(&account.data)
                         .map_err(|e| IncluderError::GenericError(e.to_string()))?;
 
@@ -689,6 +711,9 @@ impl<
                         return Ok(());
                     }
                     debug!("ALT not activated yet: {:?}", alt_state);
+                }
+                Ok(None) => {
+                    debug!("ALT account {} not found yet", alt_pubkey);
                 }
                 Err(e) => {
                     warn!("Failed to get ALT account: {}", e);
@@ -1261,7 +1286,7 @@ impl<
 
         let existing_alt_pubkey = existing_alt_entry.map(|(pubkey, _)| pubkey);
 
-        let (instruction, accounts) = match self
+        let (instruction, accounts, entrypoint) = match self
             .transaction_builder
             .build_execute_instruction(
                 &message,
@@ -1273,7 +1298,7 @@ impl<
             )
             .await
         {
-            Ok((instruction, accounts)) => (instruction, accounts),
+            Ok((instruction, accounts, entrypoint)) => (instruction, accounts, entrypoint),
             Err(e) => match e {
                 TransactionBuilderError::PayloadDecodeError(e) => {
                     error!(
@@ -1304,6 +1329,7 @@ impl<
             &accounts,
             existing_alt_pubkey,
             destination_address,
+            entrypoint,
         )
         .await
         .map_err(|e| IncluderError::GenericError(e.to_string()))
@@ -1421,6 +1447,7 @@ impl<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gas_estimation::ExecuteEntrypoint;
     use crate::includer_client::MockIncluderClientTrait;
     use crate::models::refunds::MockRefundsModel;
     use crate::redis::MockRedisConnectionTrait;
@@ -2125,6 +2152,7 @@ mod tests {
                 Ok((
                     instruction_for_mock.clone(),
                     vec![], // No ALT for governance
+                    ExecuteEntrypoint::Other,
                 ))
             });
 
@@ -2218,7 +2246,13 @@ mod tests {
         transaction_builder
             .expect_build_execute_instruction()
             .times(1)
-            .returning(move |_, _, _| Ok((instruction_for_mock.clone(), vec![])));
+            .returning(move |_, _, _| {
+                Ok((
+                    instruction_for_mock.clone(),
+                    vec![],
+                    ExecuteEntrypoint::Other,
+                ))
+            });
 
         let mut test_tx =
             solana_sdk::transaction::Transaction::new_with_payer(&[], Some(&keypair.pubkey()));
@@ -2328,6 +2362,7 @@ mod tests {
                 Ok((
                     test_instruction.clone(),
                     vec![], // No ALT for executable
+                    ExecuteEntrypoint::Other,
                 ))
             });
 
@@ -2423,7 +2458,13 @@ mod tests {
         transaction_builder
             .expect_build_execute_instruction()
             .times(1)
-            .returning(move |_, _, _| Ok((instruction_for_mock.clone(), vec![])));
+            .returning(move |_, _, _| {
+                Ok((
+                    instruction_for_mock.clone(),
+                    vec![],
+                    ExecuteEntrypoint::Other,
+                ))
+            });
 
         let mut test_tx =
             solana_sdk::transaction::Transaction::new_with_payer(&[], Some(&keypair.pubkey()));
@@ -2484,6 +2525,127 @@ mod tests {
             &message_id,
             &source_chain,
             &destination_address,
+            available_gas,
+        );
+        let result = includer.handle_execute_task(task).await;
+
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], Event::CannotExecuteMessageV2 { .. }));
+    }
+
+    /// A real `DeployInterchainToken` payload whose prepaid gas covers the consensus fee but not
+    /// the rent for the accounts it creates must be rejected before any transaction is sent. The
+    /// consensus-only estimate (`consensus_fee`) is *below* the available gas, so the pre-fix
+    /// check (consensus only) would have executed this and the relayer would have eaten the PDA
+    /// rent. The static rent the gate adds for a deploy is what tips the total past the available
+    /// gas — so this fails if the gate ever stops adding rent for deploys.
+    #[cfg(not(feature = "devnet-amplifier"))]
+    #[tokio::test]
+    async fn test_handle_execute_task_rejected_when_gas_covers_fee_but_not_rent() {
+        let (
+            mut mock_gmp_api,
+            keypair,
+            chain_name,
+            mut redis_conn,
+            mock_refunds_model,
+            mut mock_client,
+            mut transaction_builder,
+        ) = get_includer_fields();
+
+        let message_id = "test-execute-deploy-rent-001".to_string();
+        let source_chain = "ethereum".to_string();
+        // Sits in the gap the old consensus-only check missed: above the consensus fee, far
+        // below consensus fee + deploy rent (~20.5M).
+        let available_gas = 300_000u64;
+        let consensus_fee = 28_470u64;
+
+        mock_client
+            .expect_incoming_message_already_executed()
+            .times(1)
+            .returning(|_| Box::pin(async move { Ok(false) }));
+
+        let message_id_clone = message_id.clone();
+        redis_conn
+            .expect_get_alt_entry()
+            .withf(move |id| *id == message_id_clone)
+            .times(1)
+            .returning(|_| Ok(None));
+
+        let exec_ix = Instruction::new_with_bytes(
+            solana_axelar_its::ID,
+            &[1, 2, 3, 4],
+            vec![AccountMeta::new(keypair.pubkey(), true)],
+        );
+        let exec_ix_for_builder = exec_ix.clone();
+        // The builder classifies this as a deploy (resolving the entrypoint), so the gate adds
+        // the static deploy rent on top of the consensus fee.
+        transaction_builder
+            .expect_build_execute_instruction()
+            .times(1)
+            .returning(move |_, _, _| {
+                Ok((
+                    exec_ix_for_builder.clone(),
+                    vec![],
+                    ExecuteEntrypoint::DeployInterchainToken { has_minter: false },
+                ))
+            });
+
+        let mut main_tx =
+            Transaction::new_with_payer(std::slice::from_ref(&exec_ix), Some(&keypair.pubkey()));
+        main_tx.sign(&[&keypair], Hash::default());
+        let main_tx_clone = main_tx.clone();
+        transaction_builder
+            .expect_build()
+            .times(1)
+            .returning(move |_, _, _, _| {
+                Ok((
+                    SolanaTransactionType::Legacy(main_tx_clone.clone()),
+                    consensus_fee,
+                ))
+            });
+
+        // Rejected before sending: no transaction, no recorded cost.
+        mock_client.expect_send_transaction().times(0);
+        redis_conn.expect_write_gas_cost_for_message_id().times(0);
+
+        let msg_id_for_event = message_id.clone();
+        mock_gmp_api
+            .expect_cannot_execute_message()
+            .times(1)
+            .withf(move |_id, msg_id, _src, details, reason| {
+                *msg_id == msg_id_for_event
+                    && details.contains("Not enough gas")
+                    && matches!(reason, CannotExecuteMessageReason::InsufficientGas)
+            })
+            .returning(|_, _, _, _, _| Event::CannotExecuteMessageV2 {
+                common: CommonEventFields {
+                    r#type: "CANNOT_EXECUTE_MESSAGE/V2".to_string(),
+                    event_id: "test-event".to_string(),
+                    meta: None,
+                },
+                message_id: "test".to_string(),
+                source_chain: "test".to_string(),
+                reason: CannotExecuteMessageReason::InsufficientGas,
+                details: "test".to_string(),
+            });
+
+        let includer = create_test_includer(
+            mock_client,
+            keypair,
+            chain_name,
+            transaction_builder,
+            mock_gmp_api,
+            redis_conn,
+            mock_refunds_model,
+        );
+
+        let task = create_execute_task(
+            "test-execute-deploy-rent-task-001",
+            &message_id,
+            &source_chain,
+            &solana_axelar_its::ID.to_string(),
             available_gas,
         );
         let result = includer.handle_execute_task(task).await;
@@ -2675,6 +2837,155 @@ mod tests {
         assert!(matches!(events[0], Event::CannotExecuteMessageV2 { .. }));
     }
 
+    /// Regression: an ITS transfer whose payload overflows needs a new ephemeral ALT. If the
+    /// prepaid gas covers the ALT lifecycle fees but NOT the destination-ATA rent, the relayer
+    /// must reject BEFORE creating the ALT — otherwise it pays to create (and later clean up) a
+    /// table for a message that never executes. Asserted by `send_transaction.times(0)`.
+    #[cfg(not(feature = "devnet-amplifier"))]
+    #[tokio::test]
+    async fn handle_execute_its_task_rejects_before_creating_alt_when_gas_below_rent() {
+        let (
+            mut mock_gmp_api,
+            keypair,
+            chain_name,
+            mut redis_conn,
+            mock_refunds_model,
+            mut mock_client,
+            mut transaction_builder,
+        ) = get_includer_fields();
+
+        let message_id = "test-execute-its-alt-rent-001".to_string();
+        // Clears the ALT lifecycle cost (5_000 + 20_400 = 25_400) but is far below that plus the
+        // Token-2022 destination-ATA rent (2_074_080), so the execute must be rejected up front.
+        let available_gas = 100_000u64;
+
+        mock_client
+            .expect_incoming_message_already_executed()
+            .times(1)
+            .returning(|_| Box::pin(async { Ok(false) }));
+        redis_conn
+            .expect_get_alt_entry()
+            .times(1)
+            .returning(|_| Ok(None));
+
+        // Large payload so the tx overflows and an ephemeral ALT is required.
+        let exec_ix = Instruction::new_with_bytes(
+            solana_axelar_its::ID,
+            &[0u8; 1100],
+            vec![AccountMeta::new(keypair.pubkey(), true)],
+        );
+        let exec_ix_for_builder = exec_ix.clone();
+        transaction_builder
+            .expect_build_execute_instruction()
+            .times(1)
+            .returning(move |_, _, _| {
+                Ok((
+                    exec_ix_for_builder.clone(),
+                    vec![AccountMeta::new(Pubkey::new_unique(), false)],
+                    ExecuteEntrypoint::InterchainTransfer {
+                        creates_destination_ata: true,
+                        ata_len: 170,
+                    },
+                ))
+            });
+
+        mock_client
+            .expect_get_slot()
+            .times(1)
+            .returning(|| Box::pin(async { Ok(1000u64) }));
+
+        let authority_keypair_str = Keypair::new().to_base58_string();
+        let alt_pubkey = Pubkey::new_unique();
+        transaction_builder
+            .expect_build_lookup_table_instructions()
+            .times(1)
+            .returning(move |_, _| {
+                Ok((
+                    Instruction::new_with_bytes(solana_sdk_ids::system_program::ID, &[1], vec![]),
+                    Instruction::new_with_bytes(solana_sdk_ids::system_program::ID, &[2], vec![]),
+                    alt_pubkey,
+                    authority_keypair_str.clone(),
+                ))
+            });
+
+        // Only the ALT-creation tx is built (cost 5_000); the pre-ALT check must reject before
+        // the main tx is built or any tx is sent.
+        let mut alt_tx = Transaction::new_with_payer(&[], Some(&keypair.pubkey()));
+        alt_tx.sign(&[&keypair], Hash::default());
+        transaction_builder
+            .expect_build()
+            .times(1)
+            .returning(move |_, _, _, _| {
+                Ok((SolanaTransactionType::Legacy(alt_tx.clone()), 5_000))
+            });
+
+        // The key assertions: no ALT (or any) transaction is sent, and nothing is recorded.
+        mock_client.expect_send_transaction().times(0);
+        redis_conn.expect_write_alt_entry().times(0);
+        redis_conn.expect_write_gas_cost_for_message_id().times(0);
+
+        let msg_id_for_event = message_id.clone();
+        mock_gmp_api
+            .expect_cannot_execute_message()
+            .times(1)
+            .withf(move |_id, msg_id, _src, details, reason| {
+                *msg_id == msg_id_for_event
+                    && details.contains("Not enough gas")
+                    && matches!(reason, CannotExecuteMessageReason::InsufficientGas)
+            })
+            .returning(|_, _, _, _, _| Event::CannotExecuteMessageV2 {
+                common: CommonEventFields {
+                    r#type: "CANNOT_EXECUTE_MESSAGE/V2".to_string(),
+                    event_id: "test-event".to_string(),
+                    meta: None,
+                },
+                message_id: "test".to_string(),
+                source_chain: "test".to_string(),
+                reason: CannotExecuteMessageReason::InsufficientGas,
+                details: "test".to_string(),
+            });
+
+        let includer = create_test_includer(
+            mock_client,
+            keypair,
+            chain_name,
+            transaction_builder,
+            mock_gmp_api,
+            redis_conn,
+            mock_refunds_model,
+        );
+
+        let task = ExecuteTask {
+            common: CommonTaskFields {
+                id: "test-task-alt-rent-001".to_string(),
+                chain: "test-chain".to_string(),
+                timestamp: Utc::now().to_string(),
+                r#type: "execute".to_string(),
+                meta: None,
+            },
+            task: ExecuteTaskFields {
+                message: GatewayV2Message {
+                    message_id: message_id.clone(),
+                    source_chain: "ethereum".to_string(),
+                    destination_address: solana_axelar_its::ID.to_string(),
+                    payload_hash: BASE64_STANDARD.encode([0u8; 32]),
+                    source_address: Pubkey::new_unique().to_string(),
+                },
+                payload: BASE64_STANDARD.encode(b"test-payload"),
+                available_gas_balance: Amount {
+                    amount: available_gas.to_string(),
+                    token_id: None,
+                },
+            },
+        };
+
+        let result = includer.handle_execute_task(task).await;
+        assert!(result.is_ok());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], Event::CannotExecuteMessageV2 { .. }));
+    }
+
     #[tokio::test]
     async fn handle_execute_its_task_happy_path_with_alt() {
         let (
@@ -2688,7 +2999,9 @@ mod tests {
         ) = get_includer_fields();
 
         let message_id = "test-execute-task-its-123".to_string();
-        let available_gas = 15_000u64;
+        // Must clear the ALT lifecycle cost (5_000 + 10_200 + 10_200 = 25_400) and the main
+        // tx cost so the happy path runs under the gas check (enabled on non-devnet features).
+        let available_gas = 50_000u64;
 
         mock_client
             .expect_incoming_message_already_executed()
@@ -2725,7 +3038,11 @@ mod tests {
             .expect_build_execute_instruction()
             .times(1)
             .returning(move |_, _, _| {
-                Ok((exec_ix_for_builder.clone(), alt_accounts_clone.clone()))
+                Ok((
+                    exec_ix_for_builder.clone(),
+                    alt_accounts_clone.clone(),
+                    ExecuteEntrypoint::Other,
+                ))
             });
 
         // Mock get_slot for ALT creation
@@ -2834,16 +3151,22 @@ mod tests {
                                                                                                      // Add one address (32 bytes) to match addresses_len expectations
                     account_data.extend_from_slice(Pubkey::new_unique().as_ref());
 
-                    Ok(Account {
+                    Ok(Some(Account {
                         lamports: 1_000_000,
                         data: account_data,
                         owner: solana_address_lookup_table_interface::program::id(),
                         executable: false,
                         rent_epoch: 0,
-                    })
+                    }))
                 })
             });
 
+        // Realistic costs: the ALT create+extend tx actually pays the lookup-table rent (1 address
+        // here) on top of its consensus fee; the includer must subtract the reclaimable rent and
+        // add the deactivate+close fees, so the reported ALT cost is fee + 20_400.
+        let alt_create_fee = 5_000u64;
+        let alt_send_cost = crate::gas_estimation::alt_rent_lamports(1) + alt_create_fee;
+        let main_tx_fee = 4_000u64;
         mock_client
             .expect_send_transaction()
             .times(2)
@@ -2851,11 +3174,11 @@ mod tests {
                 static CALL: AtomicUsize = AtomicUsize::new(0);
                 let idx = CALL.fetch_add(1, Ordering::SeqCst);
                 if idx == 0 {
-                    // First send is ALT transaction
-                    Box::pin(async { Ok((Signature::default(), Some(5_000))) })
+                    // First send is ALT transaction (consensus fee + reclaimable table rent)
+                    Box::pin(async move { Ok((Signature::default(), Some(alt_send_cost))) })
                 } else {
                     // Second send is main transaction
-                    Box::pin(async { Ok((Signature::default(), Some(4_000))) })
+                    Box::pin(async move { Ok((Signature::default(), Some(main_tx_fee))) })
                 }
             });
 
@@ -2876,6 +3199,9 @@ mod tests {
         let write_gas_cost_for_message_id_calls = Arc::new(AtomicUsize::new(0));
         let write_gas_cost_for_message_id_calls_clone =
             Arc::clone(&write_gas_cost_for_message_id_calls);
+        // ALT reported cost = create fee + deactivate + close (rent excluded); total adds main.
+        let expected_alt_cost = alt_create_fee + ALT_DEACTIVATE_COST + ALT_CLOSE_COST;
+        let expected_total_cost = expected_alt_cost + main_tx_fee;
         redis_conn
             .expect_write_gas_cost_for_message_id()
             .times(2)
@@ -2884,10 +3210,12 @@ mod tests {
             })
             .returning(move |_, cost, _| {
                 let idx = write_gas_cost_for_message_id_calls_clone.fetch_add(1, Ordering::SeqCst);
-                // First call: ALT cost (5_000), Second call: total cost (5_000 + 4_000 = 9_000)
                 assert!(
-                    (idx == 0 && cost == 5_000) || (idx == 1 && cost == 9_000),
-                    "Expected ALT cost 5_000 or total cost 9_000, got {} at idx {}",
+                    (idx == 0 && cost == expected_alt_cost)
+                        || (idx == 1 && cost == expected_total_cost),
+                    "Expected ALT cost {} or total {}, got {} at idx {}",
+                    expected_alt_cost,
+                    expected_total_cost,
                     cost,
                     idx
                 );
@@ -2981,7 +3309,13 @@ mod tests {
         transaction_builder
             .expect_build_execute_instruction()
             .times(1)
-            .returning(move |_, _, _| Ok((exec_ix_for_builder.clone(), vec![])));
+            .returning(move |_, _, _| {
+                Ok((
+                    exec_ix_for_builder.clone(),
+                    vec![],
+                    ExecuteEntrypoint::Other,
+                ))
+            });
 
         // build is called once for the main tx — returns cost > available_gas
         let mut main_tx =
@@ -3118,7 +3452,11 @@ mod tests {
             .expect_build_execute_instruction()
             .times(1)
             .returning(move |_, _, _| {
-                Ok((exec_ix_for_builder.clone(), alt_accounts_clone.clone()))
+                Ok((
+                    exec_ix_for_builder.clone(),
+                    alt_accounts_clone.clone(),
+                    ExecuteEntrypoint::Other,
+                ))
             });
 
         mock_client
@@ -3292,7 +3630,11 @@ mod tests {
             .expect_build_execute_instruction()
             .times(1)
             .returning(move |_, _, _| {
-                Ok((exec_ix_for_builder.clone(), alt_accounts_clone.clone()))
+                Ok((
+                    exec_ix_for_builder.clone(),
+                    alt_accounts_clone.clone(),
+                    ExecuteEntrypoint::Other,
+                ))
             });
 
         mock_client
@@ -3428,7 +3770,9 @@ mod tests {
         ) = get_includer_fields();
 
         let message_id = "test-execute-its-789".to_string();
-        let available_gas = 20_000u64;
+        // Must clear the ALT lifecycle cost (6_000 + 10_200 + 10_200 = 26_400) and the main
+        // tx cost so the tx-error path runs under the gas check (enabled on non-devnet features).
+        let available_gas = 50_000u64;
 
         mock_client
             .expect_incoming_message_already_executed()
@@ -3468,7 +3812,11 @@ mod tests {
             .expect_build_execute_instruction()
             .times(1)
             .returning(move |_, _, _| {
-                Ok((exec_ix_for_builder.clone(), alt_accounts_clone.clone()))
+                Ok((
+                    exec_ix_for_builder.clone(),
+                    alt_accounts_clone.clone(),
+                    ExecuteEntrypoint::Other,
+                ))
             });
 
         // Mock get_slot for ALT creation
@@ -3576,13 +3924,13 @@ mod tests {
                                                                                                      // Add one address (32 bytes) to match addresses_len expectations
                     account_data.extend_from_slice(Pubkey::new_unique().as_ref());
 
-                    Ok(Account {
+                    Ok(Some(Account {
                         lamports: 1_000_000,
                         data: account_data,
                         owner: solana_address_lookup_table_interface::program::id(),
                         executable: false,
                         rent_epoch: 0,
-                    })
+                    }))
                 })
             });
 
@@ -3598,7 +3946,9 @@ mod tests {
             .returning(move |_, _| {
                 let idx = send_calls_clone.fetch_add(1, Ordering::SeqCst);
                 if idx == 0 {
-                    Box::pin(async move { Ok((alt_signature_clone, Some(6_000u64))) })
+                    // ALT create tx: consensus fee (6_000) + reclaimable table rent (1 address).
+                    let alt_send_cost = crate::gas_estimation::alt_rent_lamports(1) + 6_000;
+                    Box::pin(async move { Ok((alt_signature_clone, Some(alt_send_cost))) })
                 } else {
                     Box::pin(async move {
                         Err(IncluderClientError::UnrecoverableTransactionError(
@@ -3633,28 +3983,31 @@ mod tests {
             })
             .returning(|_, _, _| Ok(()));
 
-        // The ALT cost (6000) is written when ALT transaction succeeds
-        // The total cost is NOT written when main transaction fails (only event is sent)
+        // The ALT cost is written when the ALT tx succeeds: create fee (6_000) + deactivate +
+        // close, with the reclaimable table rent excluded → 26_400. The total is NOT written
+        // when the main tx fails (only the REVERTED event is sent).
         let msg_id_for_gas = message_id.clone();
+        let expected_alt_cost = 6_000 + ALT_DEACTIVATE_COST + ALT_CLOSE_COST;
         redis_conn
             .expect_write_gas_cost_for_message_id()
             .times(1)
             .withf(move |id, cost, tx_type| {
                 id == &msg_id_for_gas
-                    && *cost == 6_000u64 // ALT cost only
+                    && *cost == expected_alt_cost
                     && matches!(tx_type, TransactionType::Execute)
             })
             .returning(|_, _, _| ());
 
-        // Expect MessageExecuted(REVERTED) with cost = alt_cost + main_cost_simulated = 11000
+        // REVERTED cost = reverted main tx cost (5_000) + ALT cost (26_400) = 31_400.
         let msg_id_for_event = message_id.clone();
+        let expected_reverted_cost = (main_tx_actual_cost + expected_alt_cost).to_string();
         mock_gmp_api
             .expect_execute_message()
             .times(1)
             .withf(move |msg_id, _src_chain, status, cost| {
                 *msg_id == msg_id_for_event
                     && matches!(status, MessageExecutionStatus::REVERTED)
-                    && cost.amount == "11000"
+                    && cost.amount == expected_reverted_cost
             })
             .returning(|_, _, _, _| Event::MessageExecuted {
                 common: CommonEventFields {
@@ -3767,7 +4120,11 @@ mod tests {
             .expect_build_execute_instruction()
             .times(1)
             .returning(move |_, _, _| {
-                Ok((exec_ix_for_builder.clone(), alt_accounts_clone.clone()))
+                Ok((
+                    exec_ix_for_builder.clone(),
+                    alt_accounts_clone.clone(),
+                    ExecuteEntrypoint::Other,
+                ))
             });
 
         let lookup_account = AddressLookupTableAccount {
@@ -5498,7 +5855,7 @@ mod tests {
         transaction_builder
             .expect_build_execute_instruction()
             .times(1)
-            .returning(move |_, _, _| Ok((exec_ix.clone(), vec![])));
+            .returning(move |_, _, _| Ok((exec_ix.clone(), vec![], ExecuteEntrypoint::Other)));
 
         // Build transaction - will be called and return estimated cost
         let mut test_tx = Transaction::new_with_payer(&[], Some(&keypair.pubkey()));
@@ -5615,7 +5972,7 @@ mod tests {
         transaction_builder
             .expect_build_execute_instruction()
             .times(1)
-            .returning(move |_, _, _| Ok((exec_ix.clone(), vec![])));
+            .returning(move |_, _, _| Ok((exec_ix.clone(), vec![], ExecuteEntrypoint::Other)));
 
         let includer = create_test_includer(
             mock_client,
@@ -5679,9 +6036,12 @@ mod tests {
 
         let message_id = "revert-with-alt-cost-001".to_string();
         let available_gas = 50_000u64;
-        let alt_cost = 8_000u64;
+        let alt_cost = 8_000u64; // ALT create+extend consensus fee (the fee portion of the tx)
         let main_tx_estimated_cost = 12_000u64;
-        let expected_total_reverted_cost = alt_cost + main_tx_estimated_cost; // 20_000
+        // Reported ALT cost excludes the reclaimable table rent but adds the deactivate + close
+        // fees; the reverted event reports that plus the reverted main tx's cost.
+        let expected_alt_reported = alt_cost + ALT_DEACTIVATE_COST + ALT_CLOSE_COST;
+        let expected_total_reverted_cost = expected_alt_reported + main_tx_estimated_cost;
 
         mock_client
             .expect_incoming_message_already_executed()
@@ -5721,7 +6081,11 @@ mod tests {
             .expect_build_execute_instruction()
             .times(1)
             .returning(move |_, _, _| {
-                Ok((exec_ix_for_builder.clone(), alt_accounts_clone.clone()))
+                Ok((
+                    exec_ix_for_builder.clone(),
+                    alt_accounts_clone.clone(),
+                    ExecuteEntrypoint::Other,
+                ))
             });
 
         // Mock get_slot for ALT creation
@@ -5827,13 +6191,13 @@ mod tests {
                     account_data.extend_from_slice(Pubkey::new_unique().as_ref());
                     account_data.extend_from_slice(Pubkey::new_unique().as_ref());
 
-                    Ok(Account {
+                    Ok(Some(Account {
                         lamports: 1_000_000,
                         data: account_data,
                         owner: solana_address_lookup_table_interface::program::id(),
                         executable: false,
                         rent_epoch: 0,
-                    })
+                    }))
                 })
             });
 
@@ -5848,7 +6212,9 @@ mod tests {
             .returning(move |_, _| {
                 let idx = send_calls_clone.fetch_add(1, Ordering::SeqCst);
                 if idx == 0 {
-                    Box::pin(async move { Ok((alt_signature, Some(alt_cost))) })
+                    // Actual ALT cost = consensus fee + reclaimable table rent (2 addresses).
+                    let alt_send_cost = crate::gas_estimation::alt_rent_lamports(2) + alt_cost;
+                    Box::pin(async move { Ok((alt_signature, Some(alt_send_cost))) })
                 } else {
                     Box::pin(async move {
                         Err(IncluderClientError::UnrecoverableTransactionError(
@@ -5894,12 +6260,12 @@ mod tests {
             .times(1)
             .withf(move |id, cost, tx_type| {
                 id == &msg_id_for_gas
-                    && *cost == alt_cost
+                    && *cost == expected_alt_reported
                     && matches!(tx_type, TransactionType::Execute)
             })
             .returning(|_, _, _| ());
 
-        // The key assertion: reverted event should include ALT cost + estimated main tx cost
+        // The key assertion: reverted event should include ALT cost + reverted main tx cost
         let msg_id_for_event = message_id.clone();
         let expected_cost_str = expected_total_reverted_cost.to_string();
         let expected_cost_str_clone = expected_cost_str.clone();
