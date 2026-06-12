@@ -459,10 +459,11 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
 
         debug!("GMP decoded payload: {:?}", gmp_decoded_payload);
 
-        // Set for InterchainTransfer so we can check (after the instruction is built) whether the
-        // recipient ATA already exists. The cost estimate must not charge rent for an ATA that
-        // won't be created.
-        let mut transfer_destination_ata: Option<Pubkey> = None;
+        // The ATA this execute may create — the recipient ATA for a transfer, the token-manager
+        // ATA for a link. Probed (after the instruction is built) to check whether it already
+        // exists, so the cost estimate doesn't charge rent for an ATA that won't be created.
+        // Both are `init_if_needed` on-chain and permissionlessly creatable.
+        let mut created_ata: Option<Pubkey> = None;
 
         match &gmp_decoded_payload {
             HubMessage::ReceiveFromHub { message, .. } => match message {
@@ -479,7 +480,7 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
                         &token_mint,
                         &token_program,
                     );
-                    transfer_destination_ata = Some(destination_ata);
+                    created_ata = Some(destination_ata);
                     accounts.extend(execute_interchain_transfer_extra_accounts(
                         destination_address,
                         destination_token_authority,
@@ -546,6 +547,11 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
                         })
                         .transpose()?;
 
+                    // The link creates the token-manager ATA only if it doesn't already exist
+                    // (it's permissionlessly creatable and `init_if_needed` on-chain), so probe it
+                    // to avoid charging rent the relayer won't pay.
+                    created_ata = Some(token_manager_ata);
+
                     accounts.extend(execute_link_token_extra_accounts(minter, minter_roles_pda))
                 }
             },
@@ -586,8 +592,8 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
             vec![]
         };
 
-        // For a transfer, the rent depends on whether the recipient ATA already exists.
-        let destination_ata_exists = match transfer_destination_ata {
+        // The rent depends on whether the ATA this execute would create already exists.
+        let ata_exists = match created_ata {
             Some(ata) => self
                 .includer_client
                 .get_account(&ata)
@@ -596,12 +602,7 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
                 .is_some(),
             None => false,
         };
-        let entrypoint = classify_execute(
-            &solana_axelar_its::ID,
-            payload,
-            destination_ata_exists,
-            ata_len,
-        );
+        let entrypoint = classify_execute(&solana_axelar_its::ID, payload, ata_exists, ata_len);
 
         Ok((instruction, ephemeral_alt_accounts, entrypoint))
     }

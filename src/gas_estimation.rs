@@ -116,10 +116,16 @@ pub enum ExecuteEntrypoint {
     /// Creates token-manager PDA, mint, token-manager ATA, Metaplex metadata, and — if a
     /// minter is set — a minter roles PDA.
     DeployInterchainToken { has_minter: bool },
-    /// Creates token-manager PDA, token-manager ATA, and — if an operator is provided — an
-    /// operator roles PDA. `ata_len` is the on-chain byte length of the linked token's ATA
-    /// (classic SPL, or Token-2022 sized for the mint's extensions).
-    LinkToken { has_operator: bool, ata_len: usize },
+    /// Creates token-manager PDA, the token-manager ATA (only when it doesn't already exist —
+    /// the ATA is permissionlessly creatable, and the on-chain instruction is `init_if_needed`),
+    /// and — if an operator is provided — an operator roles PDA. `ata_len` is the on-chain byte
+    /// length of the linked token's ATA (classic SPL, or Token-2022 sized for the mint's
+    /// extensions).
+    LinkToken {
+        has_operator: bool,
+        creates_ata: bool,
+        ata_len: usize,
+    },
     /// Creates the destination ATA only when it does not already exist (a repeat transfer to
     /// the same recipient reuses it and pays no rent). `ata_len` is the destination ATA's
     /// on-chain byte length.
@@ -143,10 +149,15 @@ pub fn execute_rent_lamports(entrypoint: ExecuteEntrypoint) -> u64 {
         }
         ExecuteEntrypoint::LinkToken {
             has_operator,
+            creates_ata,
             ata_len,
         } => {
             token_manager_rent()
-                + rent_exempt_lamports(ata_len)
+                + if creates_ata {
+                    rent_exempt_lamports(ata_len)
+                } else {
+                    0
+                }
                 + if has_operator { user_roles_rent() } else { 0 }
         }
         ExecuteEntrypoint::InterchainTransfer {
@@ -189,16 +200,11 @@ pub fn estimate_execute_cost_lamports(
         .saturating_add(execute_rent_lamports(entrypoint))
 }
 
-/// Classifies an execute by decoding its GMP payload. `destination_ata_exists` (consulted only
-/// for interchain transfers) folds in an on-chain check so a transfer to an existing ATA isn't
-/// charged rent it won't pay; `ata_len` (consulted for transfers and links) is the on-chain byte
-/// length of the token's ATA, used to size its rent. Returns [`ExecuteEntrypoint::Other`] for
-/// non-ITS destinations or payloads that do not decode (the consensus fee still applies, no rent
-/// added).
+/// Classifies an execute by decoding its GMP payload.
 pub fn classify_execute(
     destination_address: &Pubkey,
     payload: &[u8],
-    destination_ata_exists: bool,
+    ata_exists: bool,
     ata_len: usize,
 ) -> ExecuteEntrypoint {
     if *destination_address != solana_axelar_its::ID {
@@ -219,10 +225,11 @@ pub fn classify_execute(
             // The operator role is created from `params` only when it is a valid pubkey — the
             // same check the transaction builder uses.
             has_operator: is_valid_pubkey(link.params.as_deref()),
+            creates_ata: !ata_exists,
             ata_len,
         },
         Message::InterchainTransfer(_) => ExecuteEntrypoint::InterchainTransfer {
-            creates_destination_ata: !destination_ata_exists,
+            creates_destination_ata: !ata_exists,
             ata_len,
         },
     }
@@ -362,6 +369,7 @@ mod tests {
         assert_eq!(
             execute_rent_lamports(ExecuteEntrypoint::LinkToken {
                 has_operator: false,
+                creates_ata: true,
                 ata_len: T22_ATA,
             }),
             3_932_400,
@@ -370,6 +378,7 @@ mod tests {
         assert_eq!(
             execute_rent_lamports(ExecuteEntrypoint::LinkToken {
                 has_operator: false,
+                creates_ata: true,
                 ata_len: SPL_ATA,
             }),
             3_897_600,
@@ -378,10 +387,20 @@ mod tests {
         assert_eq!(
             execute_rent_lamports(ExecuteEntrypoint::LinkToken {
                 has_operator: true,
+                creates_ata: true,
                 ata_len: T22_ATA,
             }),
             4_892_880,
             "link + operator roles"
+        );
+        assert_eq!(
+            execute_rent_lamports(ExecuteEntrypoint::LinkToken {
+                has_operator: false,
+                creates_ata: false,
+                ata_len: T22_ATA,
+            }),
+            1_858_320,
+            "link reusing a pre-existing token-manager ata pays only the token_manager rent"
         );
         assert_eq!(
             execute_rent_lamports(ExecuteEntrypoint::InterchainTransfer {
@@ -443,6 +462,7 @@ mod tests {
             classify_execute(&its, &link_payload(None), ata_missing, T22_ATA),
             ExecuteEntrypoint::LinkToken {
                 has_operator: false,
+                creates_ata: true,
                 ata_len: T22_ATA,
             }
         );
@@ -456,7 +476,17 @@ mod tests {
             ),
             ExecuteEntrypoint::LinkToken {
                 has_operator: true,
+                creates_ata: true,
                 ata_len: SPL_ATA,
+            }
+        );
+        // A link whose token-manager ATA already exists pays no ATA rent.
+        assert_eq!(
+            classify_execute(&its, &link_payload(None), true, T22_ATA),
+            ExecuteEntrypoint::LinkToken {
+                has_operator: false,
+                creates_ata: false,
+                ata_len: T22_ATA,
             }
         );
         // Transfer: the ata-exists flag decides whether rent is added; ata_len sizes it.
