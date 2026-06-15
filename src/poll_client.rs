@@ -168,9 +168,13 @@ impl SolanaRpcClientTrait for SolanaRpcClient {
                         let rpc_response: RpcGetTransactionResponse =
                             serde_json::from_value(entry)?;
 
-                        let tx = SolanaTransaction::from_rpc_response(rpc_response)?;
-                        txs.push(tx.clone());
-                        debug!("Pushed tx to vector: {:?}", tx.signature);
+                        match SolanaTransaction::from_rpc_response(rpc_response) {
+                            Ok(tx) => {
+                                debug!("Pushed tx to vector: {:?}", tx.signature);
+                                txs.push(tx);
+                            }
+                            Err(e) => debug!("Skipping transaction in batch: {e}"),
+                        }
                     }
 
                     // If we have less than LIMIT txs, we can return since there are no more pages
