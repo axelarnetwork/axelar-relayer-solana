@@ -602,7 +602,13 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
                 .is_some(),
             None => false,
         };
-        let entrypoint = classify_execute(&solana_axelar_its::ID, payload, ata_exists, ata_len);
+        let entrypoint = match &gmp_decoded_payload {
+            HubMessage::ReceiveFromHub { message, .. } => {
+                classify_execute(message, ata_exists, ata_len)
+            }
+            // build_its_instruction only reaches here for ReceiveFromHub; other variants errored.
+            _ => ExecuteEntrypoint::Other,
+        };
 
         Ok((instruction, ephemeral_alt_accounts, entrypoint))
     }
