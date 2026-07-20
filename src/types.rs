@@ -37,6 +37,13 @@ impl SolanaTransaction {
             .transaction
             .meta
             .ok_or_else(|| anyhow!("No meta found"))?;
+
+        if let Some(err) = &meta.err {
+            return Err(anyhow!(
+                "Skipping failed transaction (on-chain error: {err:?})"
+            ));
+        }
+
         let (signature, mut account_keys) = match &tx.transaction.transaction {
             EncodedTransaction::LegacyBinary(_) => {
                 Err(anyhow!("Legacy binary transactions are not supported"))
@@ -227,6 +234,27 @@ mod tests {
             assert!(transaction.slot > 0);
             assert!(transaction.cost_units > 0);
         }
+    }
+
+    #[test]
+    fn test_failed_transaction_is_rejected() {
+        let mut fixtures = crate::test_utils::fixtures::encoded_confirmed_tx_with_meta_fixtures();
+        let mut fixture = fixtures.remove(0);
+
+        // Mark the transaction as failed on-chain; it must be dropped even though it still carries
+        // valid logs/inner instructions.
+        if let Some(meta) = fixture.transaction.meta.as_mut() {
+            meta.err = Some(solana_sdk::transaction::TransactionError::AccountNotFound.into());
+        }
+
+        let result =
+            SolanaTransaction::from_encoded_confirmed_transaction_with_status_meta(fixture);
+
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("failed transaction"));
     }
 
     #[test]

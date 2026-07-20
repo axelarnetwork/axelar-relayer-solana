@@ -433,6 +433,24 @@ impl<
                 key: existing_alt_pubkey,
                 addresses: alt_state.addresses.to_vec(),
             });
+
+            // The attempt that created this ALT already paid (and recorded) its lifecycle cost.
+            // Recover it so the final success write and any REVERTED report still include it —
+            // otherwise the SET below would overwrite it with the main-tx cost alone, erasing the
+            // ALT create/deactivate/close lamports the relayer actually paid.
+            alt_cost = self
+                .redis_conn
+                .get_gas_cost_for_message_id(
+                    task.task.message.message_id.clone(),
+                    TransactionType::Execute,
+                )
+                .await
+                .unwrap_or(None);
+
+            // This ALT cost was already spent in the prior attempt but is NOT yet reflected in
+            // `available_gas_balance`. Case reached by retries of tasks.
+            available_gas_balance =
+                available_gas_balance.saturating_sub(alt_cost.unwrap_or(0) as i64);
         } else if needs_ephemeral_alt {
             // Remove accounts already in the global ALT, signers, and the program_id
             let extra_alt_accounts: Vec<AccountMeta> = extra_alt_accounts
@@ -4100,6 +4118,14 @@ mod tests {
                 )))
             });
 
+        // The previous attempt recorded the ALT lifecycle cost under this message id; the reuse
+        // path recovers it so it isn't erased from the final charged amount.
+        let recovered_alt_cost = 25_000u64;
+        redis_conn
+            .expect_get_gas_cost_for_message_id()
+            .times(1)
+            .returning(move |_, _| Ok(Some(recovered_alt_cost)));
+
         let alt_addresses = vec![Pubkey::new_unique()];
 
         let exec_ix = Instruction::new_with_bytes(
@@ -4198,13 +4224,15 @@ mod tests {
 
         redis_conn.expect_write_alt_entry().times(0);
 
+        // Final charged cost must be the main-tx cost (5,000) PLUS the recovered ALT lifecycle
+        // cost (25,000) — not the main-tx cost alone (the bug this guards against).
         let msg_id_for_cost = message_id.clone();
         redis_conn
             .expect_write_gas_cost_for_message_id()
             .times(1)
             .withf(move |id, cost, tx_type| {
                 id == &msg_id_for_cost
-                    && *cost == 5_000u64
+                    && *cost == 30_000u64
                     && matches!(tx_type, TransactionType::Execute)
             })
             .returning(|_, _, _| ());

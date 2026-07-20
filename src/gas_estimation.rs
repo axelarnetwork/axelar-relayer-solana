@@ -20,12 +20,10 @@ use anchor_spl::token_2022::spl_token_2022::{
     extension::{BaseStateWithExtensions, ExtensionType, StateWithExtensions},
     state::{Account as Token2022Account, Mint as Token2022Mint},
 };
-use borsh::BorshDeserialize;
-use solana_axelar_its::encoding::{HubMessage, Message};
+use solana_axelar_its::encoding::Message;
 use solana_axelar_its::state::{TokenManager, UserRoles};
 use solana_sdk::program_error::ProgramError;
 use solana_sdk::program_pack::Pack;
-use solana_sdk::pubkey::Pubkey;
 use solana_sdk::rent::Rent;
 
 use crate::utils::is_valid_pubkey;
@@ -116,10 +114,16 @@ pub enum ExecuteEntrypoint {
     /// Creates token-manager PDA, mint, token-manager ATA, Metaplex metadata, and — if a
     /// minter is set — a minter roles PDA.
     DeployInterchainToken { has_minter: bool },
-    /// Creates token-manager PDA, token-manager ATA, and — if an operator is provided — an
-    /// operator roles PDA. `ata_len` is the on-chain byte length of the linked token's ATA
-    /// (classic SPL, or Token-2022 sized for the mint's extensions).
-    LinkToken { has_operator: bool, ata_len: usize },
+    /// Creates token-manager PDA, the token-manager ATA (only when it doesn't already exist —
+    /// the ATA is permissionlessly creatable, and the on-chain instruction is `init_if_needed`),
+    /// and — if an operator is provided — an operator roles PDA. `ata_len` is the on-chain byte
+    /// length of the linked token's ATA (classic SPL, or Token-2022 sized for the mint's
+    /// extensions).
+    LinkToken {
+        has_operator: bool,
+        creates_ata: bool,
+        ata_len: usize,
+    },
     /// Creates the destination ATA only when it does not already exist (a repeat transfer to
     /// the same recipient reuses it and pays no rent). `ata_len` is the destination ATA's
     /// on-chain byte length.
@@ -143,10 +147,15 @@ pub fn execute_rent_lamports(entrypoint: ExecuteEntrypoint) -> u64 {
         }
         ExecuteEntrypoint::LinkToken {
             has_operator,
+            creates_ata,
             ata_len,
         } => {
             token_manager_rent()
-                + rent_exempt_lamports(ata_len)
+                + if creates_ata {
+                    rent_exempt_lamports(ata_len)
+                } else {
+                    0
+                }
                 + if has_operator { user_roles_rent() } else { 0 }
         }
         ExecuteEntrypoint::InterchainTransfer {
@@ -189,28 +198,8 @@ pub fn estimate_execute_cost_lamports(
         .saturating_add(execute_rent_lamports(entrypoint))
 }
 
-/// Classifies an execute by decoding its GMP payload. `destination_ata_exists` (consulted only
-/// for interchain transfers) folds in an on-chain check so a transfer to an existing ATA isn't
-/// charged rent it won't pay; `ata_len` (consulted for transfers and links) is the on-chain byte
-/// length of the token's ATA, used to size its rent. Returns [`ExecuteEntrypoint::Other`] for
-/// non-ITS destinations or payloads that do not decode (the consensus fee still applies, no rent
-/// added).
-pub fn classify_execute(
-    destination_address: &Pubkey,
-    payload: &[u8],
-    destination_ata_exists: bool,
-    ata_len: usize,
-) -> ExecuteEntrypoint {
-    if *destination_address != solana_axelar_its::ID {
-        return ExecuteEntrypoint::Other;
-    }
-
-    let mut reader = payload;
-    let message = match HubMessage::deserialize(&mut reader) {
-        Ok(HubMessage::ReceiveFromHub { message, .. }) => message,
-        _ => return ExecuteEntrypoint::Other,
-    };
-
+/// Classifies an already-decoded ITS execute message into the entrypoint whose rent the fee payer funds.
+pub fn classify_execute(message: &Message, ata_exists: bool, ata_len: usize) -> ExecuteEntrypoint {
     match message {
         Message::DeployInterchainToken(deploy) => ExecuteEntrypoint::DeployInterchainToken {
             has_minter: is_valid_pubkey(deploy.minter.as_deref()),
@@ -219,10 +208,11 @@ pub fn classify_execute(
             // The operator role is created from `params` only when it is a valid pubkey — the
             // same check the transaction builder uses.
             has_operator: is_valid_pubkey(link.params.as_deref()),
+            creates_ata: !ata_exists,
             ata_len,
         },
         Message::InterchainTransfer(_) => ExecuteEntrypoint::InterchainTransfer {
-            creates_destination_ata: !destination_ata_exists,
+            creates_destination_ata: !ata_exists,
             ata_len,
         },
     }
@@ -232,44 +222,36 @@ pub fn classify_execute(
 mod tests {
     use super::*;
     use solana_axelar_its::encoding::{DeployInterchainToken, InterchainTransfer, LinkToken};
+    use solana_sdk::pubkey::Pubkey;
 
-    // Borsh-encode a ReceiveFromHub payload exactly as the relayer receives it on the wire.
-    fn receive_from_hub(message: Message) -> Vec<u8> {
-        borsh::to_vec(&HubMessage::ReceiveFromHub {
-            source_chain: "axelar".to_string(),
-            message,
-        })
-        .unwrap()
-    }
-
-    fn deploy_payload(minter: Option<Vec<u8>>) -> Vec<u8> {
-        receive_from_hub(Message::DeployInterchainToken(DeployInterchainToken {
+    fn deploy_msg(minter: Option<Vec<u8>>) -> Message {
+        Message::DeployInterchainToken(DeployInterchainToken {
             token_id: [1u8; 32],
             name: "Test Token".to_string(),
             symbol: "TEST".to_string(),
             decimals: 9,
             minter,
-        }))
+        })
     }
 
-    fn link_payload(params: Option<Vec<u8>>) -> Vec<u8> {
-        receive_from_hub(Message::LinkToken(LinkToken {
+    fn link_msg(params: Option<Vec<u8>>) -> Message {
+        Message::LinkToken(LinkToken {
             token_id: [2u8; 32],
             token_manager_type: 4,
             source_token_address: vec![1, 2, 3],
             destination_token_address: Pubkey::new_unique().to_bytes().to_vec(),
             params,
-        }))
+        })
     }
 
-    fn transfer_payload() -> Vec<u8> {
-        receive_from_hub(Message::InterchainTransfer(InterchainTransfer {
+    fn transfer_msg() -> Message {
+        Message::InterchainTransfer(InterchainTransfer {
             token_id: [3u8; 32],
             source_address: b"ethereum_addr".to_vec(),
             destination_address: Pubkey::new_unique().to_bytes().to_vec(),
             amount: 1_000_000,
             data: None,
-        }))
+        })
     }
 
     /// On-chain byte length of a plain Token-2022 ATA (base account + `ImmutableOwner`) and a
@@ -362,6 +344,7 @@ mod tests {
         assert_eq!(
             execute_rent_lamports(ExecuteEntrypoint::LinkToken {
                 has_operator: false,
+                creates_ata: true,
                 ata_len: T22_ATA,
             }),
             3_932_400,
@@ -370,6 +353,7 @@ mod tests {
         assert_eq!(
             execute_rent_lamports(ExecuteEntrypoint::LinkToken {
                 has_operator: false,
+                creates_ata: true,
                 ata_len: SPL_ATA,
             }),
             3_897_600,
@@ -378,10 +362,20 @@ mod tests {
         assert_eq!(
             execute_rent_lamports(ExecuteEntrypoint::LinkToken {
                 has_operator: true,
+                creates_ata: true,
                 ata_len: T22_ATA,
             }),
             4_892_880,
             "link + operator roles"
+        );
+        assert_eq!(
+            execute_rent_lamports(ExecuteEntrypoint::LinkToken {
+                has_operator: false,
+                creates_ata: false,
+                ata_len: T22_ATA,
+            }),
+            1_858_320,
+            "link reusing a pre-existing token-manager ata pays only the token_manager rent"
         );
         assert_eq!(
             execute_rent_lamports(ExecuteEntrypoint::InterchainTransfer {
@@ -412,88 +406,69 @@ mod tests {
 
     #[test]
     fn classify_decodes_real_payloads() {
-        let its = solana_axelar_its::ID;
         let valid_minter = Pubkey::new_unique().to_bytes().to_vec();
-        let ata_missing = false; // destination-ata-exists flag
+        let ata_exists = false;
 
         assert_eq!(
-            classify_execute(&its, &deploy_payload(None), ata_missing, T22_ATA),
+            classify_execute(&deploy_msg(None), ata_exists, T22_ATA),
             ExecuteEntrypoint::DeployInterchainToken { has_minter: false }
         );
         assert_eq!(
-            classify_execute(
-                &its,
-                &deploy_payload(Some(valid_minter.clone())),
-                ata_missing,
-                T22_ATA
-            ),
+            classify_execute(&deploy_msg(Some(valid_minter.clone())), ata_exists, T22_ATA),
             ExecuteEntrypoint::DeployInterchainToken { has_minter: true }
         );
         // A non-pubkey minter (wrong length) is not counted — matches the builder.
         assert_eq!(
-            classify_execute(
-                &its,
-                &deploy_payload(Some(vec![1, 2, 3])),
-                ata_missing,
-                T22_ATA
-            ),
+            classify_execute(&deploy_msg(Some(vec![1, 2, 3])), ata_exists, T22_ATA),
             ExecuteEntrypoint::DeployInterchainToken { has_minter: false }
         );
         assert_eq!(
-            classify_execute(&its, &link_payload(None), ata_missing, T22_ATA),
+            classify_execute(&link_msg(None), ata_exists, T22_ATA),
             ExecuteEntrypoint::LinkToken {
                 has_operator: false,
+                creates_ata: true,
                 ata_len: T22_ATA,
             }
         );
         // A classic-SPL linked token carries its ATA length through.
         assert_eq!(
-            classify_execute(
-                &its,
-                &link_payload(Some(valid_minter)),
-                ata_missing,
-                SPL_ATA
-            ),
+            classify_execute(&link_msg(Some(valid_minter)), ata_exists, SPL_ATA),
             ExecuteEntrypoint::LinkToken {
                 has_operator: true,
+                creates_ata: true,
                 ata_len: SPL_ATA,
+            }
+        );
+        // A link whose token-manager ATA already exists pays no ATA rent.
+        assert_eq!(
+            classify_execute(&link_msg(None), true, T22_ATA),
+            ExecuteEntrypoint::LinkToken {
+                has_operator: false,
+                creates_ata: false,
+                ata_len: T22_ATA,
             }
         );
         // Transfer: the ata-exists flag decides whether rent is added; ata_len sizes it.
         assert_eq!(
-            classify_execute(&its, &transfer_payload(), false, T22_ATA),
+            classify_execute(&transfer_msg(), false, T22_ATA),
             ExecuteEntrypoint::InterchainTransfer {
                 creates_destination_ata: true,
                 ata_len: T22_ATA,
             }
         );
         assert_eq!(
-            classify_execute(&its, &transfer_payload(), false, SPL_ATA),
+            classify_execute(&transfer_msg(), false, SPL_ATA),
             ExecuteEntrypoint::InterchainTransfer {
                 creates_destination_ata: true,
                 ata_len: SPL_ATA,
             }
         );
         assert_eq!(
-            classify_execute(&its, &transfer_payload(), true, T22_ATA),
+            classify_execute(&transfer_msg(), true, T22_ATA),
             ExecuteEntrypoint::InterchainTransfer {
                 creates_destination_ata: false,
                 ata_len: T22_ATA,
             }
-        );
-    }
-
-    #[test]
-    fn classify_returns_other_for_non_its_or_undecodable() {
-        // Non-ITS destination → Other even with a valid ITS payload.
-        assert_eq!(
-            classify_execute(&Pubkey::new_unique(), &transfer_payload(), false, T22_ATA),
-            ExecuteEntrypoint::Other
-        );
-        // Undecodable payload on the ITS program → Other (consensus-only estimate).
-        assert_eq!(
-            classify_execute(&solana_axelar_its::ID, b"not a hub message", false, T22_ATA),
-            ExecuteEntrypoint::Other
         );
     }
 
@@ -520,10 +495,8 @@ mod tests {
     ///   - transfer (SPL)     5tkwsAUC… →  2,044,492 (meta.fee 5,212, new classic-SPL ATA)
     #[test]
     fn precalculates_deploy_then_two_transfers() {
-        let its = solana_axelar_its::ID;
-
         // Deploy (no minter). units 232,000 → consensus 5,000 + 232 = 5,232.
-        let deploy = classify_execute(&its, &deploy_payload(None), false, T22_ATA);
+        let deploy = classify_execute(&deploy_msg(None), false, T22_ATA);
         assert_eq!(
             estimate_execute_cost_lamports(1, 232_000, 1000, deploy),
             20_514_832,
@@ -531,7 +504,7 @@ mod tests {
 
         // Transfer #1 — Token-2022 recipient ATA does not exist yet, so it is created.
         // units 159,000 → consensus 5,159; + 2,074,080 Token-2022 ATA rent.
-        let transfer_new = classify_execute(&its, &transfer_payload(), false, T22_ATA);
+        let transfer_new = classify_execute(&transfer_msg(), false, T22_ATA);
         assert_eq!(
             estimate_execute_cost_lamports(1, 159_000, 1000, transfer_new),
             2_079_239,
@@ -539,7 +512,7 @@ mod tests {
 
         // Transfer #2 — same recipient, ATA already exists → no rent, consensus only.
         // units 134,000 → consensus 5,134.
-        let transfer_reuse = classify_execute(&its, &transfer_payload(), true, T22_ATA);
+        let transfer_reuse = classify_execute(&transfer_msg(), true, T22_ATA);
         assert_eq!(
             estimate_execute_cost_lamports(1, 134_000, 1000, transfer_reuse),
             5_134,
@@ -547,7 +520,7 @@ mod tests {
 
         // Transfer of a linked classic-SPL token, new ATA (165 bytes).
         // units 212,000 → consensus 5,212; + 2,039,280 SPL ATA rent.
-        let transfer_spl = classify_execute(&its, &transfer_payload(), false, SPL_ATA);
+        let transfer_spl = classify_execute(&transfer_msg(), false, SPL_ATA);
         assert_eq!(
             estimate_execute_cost_lamports(1, 212_000, 1000, transfer_spl),
             2_044_492,
@@ -556,9 +529,9 @@ mod tests {
 
     #[test]
     fn non_its_execute_is_consensus_only() {
-        let other = classify_execute(&Pubkey::new_unique(), b"opaque", false, T22_ATA);
+        // A non-ITS execute funds no relayer accounts, so its estimate is consensus-only.
         assert_eq!(
-            estimate_execute_cost_lamports(1, 100_000, 1000, other),
+            estimate_execute_cost_lamports(1, 100_000, 1000, ExecuteEntrypoint::Other),
             5_100
         );
     }

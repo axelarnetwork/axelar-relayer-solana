@@ -49,6 +49,11 @@ pub trait RedisConnectionTrait: ThreadSafe {
         gas_cost: u64,
         transaction_type: TransactionType,
     );
+    async fn get_gas_cost_for_message_id(
+        &self,
+        message_id: String,
+        transaction_type: TransactionType,
+    ) -> Result<Option<u64>, RedisInterfaceError>;
     async fn write_alt_entry(
         &self,
         message_id: String,
@@ -215,6 +220,26 @@ impl RedisConnectionTrait for RedisConnection {
             Err(e) => {
                 warn!("Failed to write gas cost to Redis: {}", e);
             }
+        }
+    }
+
+    async fn get_gas_cost_for_message_id(
+        &self,
+        message_id: String,
+        transaction_type: TransactionType,
+    ) -> Result<Option<u64>, RedisInterfaceError> {
+        let key = format!("cost:{}:{}", transaction_type, message_id);
+        let mut conn = self.conn.clone();
+        match redis::AsyncCommands::get::<_, Option<String>>(&mut conn, &key).await {
+            Ok(Some(serialized)) => serialized.parse::<u64>().map(Some).map_err(|e| {
+                RedisInterfaceError::GenericError(format!(
+                    "Failed to parse cost for key {key}: {e}"
+                ))
+            }),
+            Ok(None) => Ok(None),
+            Err(e) => Err(RedisInterfaceError::GenericError(format!(
+                "Failed to get cost for key {key}: {e}"
+            ))),
         }
     }
 
@@ -668,6 +693,30 @@ mod tests {
         let stored_value: Option<String> = redis::AsyncCommands::get(&mut conn, key).await.unwrap();
 
         assert_eq!(stored_value, Some(gas_cost.to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_get_gas_cost_for_message_id_round_trip_and_missing() {
+        let (_container, redis_conn) = create_redis_connection().await;
+
+        let message_id = "test-message-cost-getter".to_string();
+
+        // Missing key → None (so the ALT-reuse recovery degrades gracefully, not an error).
+        let missing = redis_conn
+            .get_gas_cost_for_message_id(message_id.clone(), TransactionType::Execute)
+            .await
+            .unwrap();
+        assert_eq!(missing, None);
+
+        // After a write, the getter returns the stored value.
+        redis_conn
+            .write_gas_cost_for_message_id(message_id.clone(), 25_000, TransactionType::Execute)
+            .await;
+        let stored = redis_conn
+            .get_gas_cost_for_message_id(message_id, TransactionType::Execute)
+            .await
+            .unwrap();
+        assert_eq!(stored, Some(25_000));
     }
 
     #[tokio::test]

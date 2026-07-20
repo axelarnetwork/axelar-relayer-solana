@@ -33,12 +33,15 @@ pub trait SolanaRpcClientTrait: ThreadSafe {
         signature: Signature,
     ) -> Result<SolanaTransaction, anyhow::Error>;
 
+    /// Returns the successfully-parsed transactions in `(until, tip]`, together with the newest
+    /// signature actually fetched (the range tip). The tip is reported even when its transaction
+    /// failed on-chain and was dropped from the returned vec, so callers can advance their cursor.
     async fn get_transactions_for_account(
         &self,
         address: &Pubkey,
         before: Option<Signature>,
         until: Option<Signature>,
-    ) -> Result<Vec<SolanaTransaction>, anyhow::Error>;
+    ) -> Result<(Vec<SolanaTransaction>, Option<Signature>), anyhow::Error>;
 }
 
 pub struct SolanaRpcClient {
@@ -125,12 +128,15 @@ impl SolanaRpcClientTrait for SolanaRpcClient {
         address: &Pubkey,
         before: Option<Signature>,
         until: Option<Signature>,
-    ) -> Result<Vec<SolanaTransaction>, anyhow::Error> {
+    ) -> Result<(Vec<SolanaTransaction>, Option<Signature>), anyhow::Error> {
         let mut retries = 0;
         let mut delay = Duration::from_millis(500);
         let mut txs: Vec<SolanaTransaction> = vec![];
         let mut before_sig = before;
         let until_sig = until;
+        // Newest signature fetched across all pages. Recorded from the first page regardless of whether
+        // its transaction parsed, so the caller can advance past failures.
+        let mut newest_signature: Option<Signature> = None;
 
         loop {
             // Config needs to be inside the loop because it does not implement clone
@@ -150,7 +156,14 @@ impl SolanaRpcClientTrait for SolanaRpcClient {
                     // edge case where last page had exactly LIMIT txs and we did one extra request
                     if response.is_empty() {
                         debug!("No more signatures to fetch, empty response");
-                        return Ok(txs);
+                        return Ok((txs, newest_signature));
+                    }
+
+                    if newest_signature.is_none() {
+                        newest_signature = response
+                            .first()
+                            .map(|s| Signature::from_str(&s.signature))
+                            .transpose()?;
                     }
 
                     debug!("Fetched {} signatures", response.len());
@@ -168,9 +181,13 @@ impl SolanaRpcClientTrait for SolanaRpcClient {
                         let rpc_response: RpcGetTransactionResponse =
                             serde_json::from_value(entry)?;
 
-                        let tx = SolanaTransaction::from_rpc_response(rpc_response)?;
-                        txs.push(tx.clone());
-                        debug!("Pushed tx to vector: {:?}", tx.signature);
+                        match SolanaTransaction::from_rpc_response(rpc_response) {
+                            Ok(tx) => {
+                                debug!("Pushed tx to vector: {:?}", tx.signature);
+                                txs.push(tx);
+                            }
+                            Err(e) => debug!("Skipping transaction in batch: {e}"),
+                        }
                     }
 
                     // If we have less than LIMIT txs, we can return since there are no more pages
@@ -180,7 +197,7 @@ impl SolanaRpcClientTrait for SolanaRpcClient {
                             response.len(),
                             SIGNATURE_PAGE_LIMIT
                         );
-                        return Ok(txs);
+                        return Ok((txs, newest_signature));
                     }
 
                     let maybe_earliest_signature = response.last();

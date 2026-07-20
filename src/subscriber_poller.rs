@@ -23,11 +23,12 @@ pub trait TransactionPoller {
     type Transaction;
     type Account;
 
+    /// Returns the transactions to process and the newest signature seen
     async fn poll_account(
         &self,
         account: Self::Account,
         account_type: AccountPollerEnum,
-    ) -> Result<Vec<Self::Transaction>, anyhow::Error>;
+    ) -> Result<(Vec<Self::Transaction>, Option<Signature>), anyhow::Error>;
 
     async fn poll_tx(&self, tx_hash: String) -> Result<Self::Transaction, anyhow::Error>;
 }
@@ -117,13 +118,14 @@ impl<RPC: SolanaRpcClientTrait, SC: SubscriberCursor, SM: SolanaTransactionModel
                 warn!("Cancellation requested; no longer polling account");
                 break;
             }
-            let transactions = match self.poll_account(account, account_type.clone()).await {
-                Ok(transactions) => transactions,
-                Err(e) => {
-                    error!("Error polling account: {:?}", e);
-                    continue;
-                }
-            };
+            let (transactions, newest_signature) =
+                match self.poll_account(account, account_type.clone()).await {
+                    Ok(result) => result,
+                    Err(e) => {
+                        error!("Error polling account: {:?}", e);
+                        continue;
+                    }
+                };
 
             for tx in transactions.clone() {
                 match upsert_and_publish(
@@ -146,10 +148,9 @@ impl<RPC: SolanaRpcClientTrait, SC: SubscriberCursor, SM: SolanaTransactionModel
                     }
                 }
             }
-            let maybe_transaction_with_max_slot = transactions.iter().max_by_key(|tx| tx.slot);
-            if let Some(transaction) = maybe_transaction_with_max_slot {
+            if let Some(tip) = newest_signature {
                 if let Err(err) = self
-                    .store_last_transaction_checked(transaction.signature, account_type.clone())
+                    .store_last_transaction_checked(tip, account_type.clone())
                     .await
                 {
                     error!("{:?}", err);
@@ -183,7 +184,7 @@ impl<RPC: SolanaRpcClientTrait, SC: SubscriberCursor, SM: SolanaTransactionModel
         &self,
         account_id: Pubkey,
         account_type: AccountPollerEnum,
-    ) -> Result<Vec<Self::Transaction>, anyhow::Error> {
+    ) -> Result<(Vec<Self::Transaction>, Option<Signature>), anyhow::Error> {
         let last_signature_checked = match self
             .cursor_model
             .get_latest_signature(self.context.clone(), account_type.clone())
@@ -204,12 +205,12 @@ impl<RPC: SolanaRpcClientTrait, SC: SubscriberCursor, SM: SolanaTransactionModel
             None => None,
         };
 
-        let transactions = self
+        let (transactions, newest_signature) = self
             .client
             .get_transactions_for_account(&account_id, None, last_signature_checked)
             .await?;
 
-        Ok(transactions)
+        Ok((transactions, newest_signature))
     }
 
     async fn poll_tx(&self, signature: String) -> Result<Self::Transaction, anyhow::Error> {
@@ -253,15 +254,18 @@ mod tests {
             })
             .returning(|_, _, _| {
                 Box::pin(async {
-                    Ok(vec![SolanaTransaction {
-                        signature: Signature::default(),
-                        slot: 1,
-                        logs: vec![],
-                        ixs: vec![],
-                        account_keys: vec![],
-                        cost_units: 0,
-                        timestamp: None,
-                    }])
+                    Ok((
+                        vec![SolanaTransaction {
+                            signature: Signature::default(),
+                            slot: 1,
+                            logs: vec![],
+                            ixs: vec![],
+                            account_keys: vec![],
+                            cost_units: 0,
+                            timestamp: None,
+                        }],
+                        Some(Signature::default()),
+                    ))
                 })
             });
 
@@ -282,7 +286,7 @@ mod tests {
         .await
         .unwrap();
 
-        let transactions = subscriber_poller
+        let (transactions, newest_signature) = subscriber_poller
             .poll_account(
                 Pubkey::from_str("DaejccUfXqoAFTiDTxDuMQfQ9oa6crjtR9cT52v1AvGK").unwrap(),
                 AccountPollerEnum::GasService,
@@ -291,6 +295,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(transactions.len(), 1);
+        assert_eq!(newest_signature, Some(Signature::default()));
         assert_eq!(
             transactions[0],
             SolanaTransaction {
