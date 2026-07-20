@@ -446,6 +446,11 @@ impl<
                 )
                 .await
                 .unwrap_or(None);
+
+            // This ALT cost was already spent in the prior attempt but is NOT yet reflected in
+            // `available_gas_balance`. Case reached by retries of tasks.
+            available_gas_balance =
+                available_gas_balance.saturating_sub(alt_cost.unwrap_or(0) as i64);
         } else if needs_ephemeral_alt {
             // Remove accounts already in the global ALT, signers, and the program_id
             let extra_alt_accounts: Vec<AccountMeta> = extra_alt_accounts
