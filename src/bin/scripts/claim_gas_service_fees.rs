@@ -11,12 +11,17 @@ use relayer_core::logging::setup_logging;
 use relayer_core::redis::connection_manager;
 use solana_sdk::instruction::Instruction;
 use solana_sdk::signer::Signer;
+use std::io::{self, BufRead, Write};
 use std::sync::Arc;
 use tracing::info;
 
 // Amount of lamports to claim from the gas service treasury to the operator's wallet
 // Note: 1 SOL = 1_000_000_000
 const CLAIM_AMOUNT_LAMPORTS: u64 = 100_000_000;
+
+// Refunds are paid out of the treasury, so draining it below this level risks failing
+// pending refunds. Claims that would cross it require explicit confirmation.
+const TREASURY_LOW_WATERMARK_LAMPORTS: u64 = 200_000_000;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -56,6 +61,19 @@ async fn main() -> anyhow::Result<()> {
     let (treasury, _) = solana_axelar_gas_service::Treasury::try_find_pda()
         .ok_or_else(|| anyhow::anyhow!("Failed to derive treasury PDA"))?;
     let (event_authority, _) = get_gas_service_event_authority_pda()?;
+
+    let treasury_balance = client
+        .get_account(&treasury)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to fetch treasury account: {}", e))?
+        .map_or(0, |account| account.lamports);
+    let remaining_balance = treasury_balance.saturating_sub(CLAIM_AMOUNT_LAMPORTS);
+    if remaining_balance < TREASURY_LOW_WATERMARK_LAMPORTS
+        && !confirm_low_treasury(treasury_balance, remaining_balance)?
+    {
+        info!("Aborting collect_fees, treasury would fall below the low watermark");
+        return Ok(());
+    }
 
     let accounts = solana_axelar_gas_service::accounts::CollectFees {
         operator,
@@ -99,4 +117,17 @@ async fn main() -> anyhow::Result<()> {
     info!(%signature, "collect_fees transaction confirmed");
 
     Ok(())
+}
+
+fn confirm_low_treasury(treasury_balance: u64, remaining_balance: u64) -> anyhow::Result<bool> {
+    print!(
+        "WARNING: the treasury holds {} lamports; claiming {} leaves {} lamports, below the \
+         {} lamport low watermark. Pending refunds are paid from the treasury and might not \
+         complete. Continue anyway? [y/N] ",
+        treasury_balance, CLAIM_AMOUNT_LAMPORTS, remaining_balance, TREASURY_LOW_WATERMARK_LAMPORTS
+    );
+    io::stdout().flush()?;
+    let mut answer = String::new();
+    io::stdin().lock().read_line(&mut answer)?;
+    Ok(answer.trim().eq_ignore_ascii_case("y"))
 }
