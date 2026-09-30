@@ -191,6 +191,12 @@ const ALT_DEACTIVATE_COST: u64 = 10_200;
 /// Measured with 1000 CU price, 200k CU limit: 10,200 lamports.
 const ALT_CLOSE_COST: u64 = 10_200;
 
+/// Estimated consensus fee for the main execute tx: 1 signer x 5,000 base + priority fee.
+/// Measured over the relayer's mainnet executes: CU price 1,000, CU limit 135,652 to 178,011,
+/// priority fee 136 to 179 lamports, total fee rounded up to 5200. Reserved in the pre-ALT check
+/// so we don't create a table for a message that the post-ALT check would then reject.
+const EXECUTE_TX_COST_ESTIMATE: u64 = 5_200;
+
 #[derive(Clone)]
 pub struct SolanaIncluder<
     G: GmpApiTrait + Clone,
@@ -499,11 +505,13 @@ impl<
             // Rent is excluded because it's reclaimed when the ALT is closed.
             let total_alt_lifecycle_cost =
                 estimated_alt_cost + ALT_DEACTIVATE_COST + ALT_CLOSE_COST;
-            // Check the ALT lifecycle fees AND this execute's rent before creating the ALT, so we
-            // don't create (and later have to clean up) a table for a message that would then be
-            // rejected for insufficient gas. The main tx's consensus fee needs the ALT to be
-            // simulated, so it's verified below — a small residual next to the rent.
-            let pre_alt_required = total_alt_lifecycle_cost.saturating_add(rent_estimate);
+            // Check the ALT lifecycle fees, this execute's rent AND an estimate of the main tx's
+            // consensus fee before creating the ALT, so we don't create (and later have to clean
+            // up) a table for a message that would then be rejected for insufficient gas. The main
+            // tx's real fee needs the ALT to be simulated, so it is re-verified below.
+            let pre_alt_required = total_alt_lifecycle_cost
+                .saturating_add(rent_estimate)
+                .saturating_add(EXECUTE_TX_COST_ESTIMATE);
 
             #[cfg(feature = "devnet-amplifier")]
             let _ = pre_alt_required;
