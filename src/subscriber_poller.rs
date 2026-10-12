@@ -127,11 +127,11 @@ impl<RPC: SolanaRpcClientTrait, SC: SubscriberCursor, SM: SolanaTransactionModel
                     }
                 };
 
-            for tx in transactions.clone() {
+            for tx in &transactions {
                 match upsert_and_publish(
                     &self.transaction_model,
                     &self.queue,
-                    &tx,
+                    tx,
                     "recovery_poller".to_string(),
                     false,
                 )
@@ -195,9 +195,7 @@ impl<RPC: SolanaRpcClientTrait, SC: SubscriberCursor, SM: SolanaTransactionModel
                 Err(e) => {
                     warn!(
                         "Malformed signature '{}' for {:?} — ignoring (error: {:?})",
-                        sig_str,
-                        account_type.clone(),
-                        e
+                        sig_str, account_type, e
                     );
                     None
                 }

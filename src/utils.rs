@@ -124,12 +124,13 @@ pub async fn upsert_and_publish<SM: SolanaTransactionModel>(
     if inserted || force_publish {
         let chain_transaction = serde_json::to_string(&tx)?;
 
-        let item = &QueueItem::Transaction(Box::new(chain_transaction.clone()));
         debug!(
             "Publishing transaction from {}: {:?}",
             from_service, chain_transaction
         );
-        queue.publish(item.clone()).await;
+        queue
+            .publish(QueueItem::Transaction(Box::new(chain_transaction)))
+            .await;
     } else {
         debug!("Transaction already exists: {:?}", tx.signature);
     }

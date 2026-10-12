@@ -291,7 +291,7 @@ impl RedisConnectionTrait for RedisConnection {
     ) -> Result<Option<(Pubkey, String)>, RedisInterfaceError> {
         let mut redis_conn = self.conn.clone();
         let key = self.create_alt_key(message_id.clone());
-        let result: Result<Option<String>, redis::RedisError> = redis_conn.get(key.clone()).await;
+        let result: Result<Option<String>, redis::RedisError> = redis_conn.get(key).await;
 
         match result {
             Ok(Some(value_str)) => {
@@ -436,7 +436,7 @@ impl RedisConnectionTrait for RedisConnection {
             })?;
 
             redis_conn
-                .set_options(key.clone(), entry_json.clone(), set_opts)
+                .set_options(key.clone(), entry_json, set_opts)
                 .await
                 .map_err(|e| {
                     RedisInterfaceError::UpdateAltRetryCountError(format!(
@@ -492,7 +492,7 @@ impl RedisConnectionTrait for RedisConnection {
             })?;
 
             redis_conn
-                .set_options(key.clone(), entry_json.clone(), set_opts)
+                .set_options(key.clone(), entry_json, set_opts)
                 .await
                 .map_err(|e| {
                     RedisInterfaceError::SetAltInactiveError(format!(
@@ -519,7 +519,7 @@ impl RedisConnectionTrait for RedisConnection {
     ) -> Result<(), RedisInterfaceError> {
         let mut redis_conn = self.conn.clone();
         let alt_key = self.create_alt_key(message_id.clone());
-        let failed_key = self.create_failed_alt_key(message_id.clone());
+        let failed_key = self.create_failed_alt_key(message_id);
 
         // Store the full AltEntry so the authority keypair is preserved for retries
         let entry = AltEntry {
