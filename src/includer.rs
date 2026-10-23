@@ -487,7 +487,7 @@ impl<
             let (alt_tx_build, estimated_alt_cost) = self
                 .transaction_builder
                 .build(
-                    &[alt_ix_create.clone(), alt_ix_extend.clone()],
+                    &[alt_ix_create, alt_ix_extend],
                     vec![],
                     Some(vec![authority_keypair]),
                     InstructionKind::AltCreateExtend,
@@ -559,7 +559,7 @@ impl<
                 .write_alt_entry(
                     task.task.message.message_id.clone(),
                     alt_pubkey,
-                    authority_keypair_str.clone(),
+                    authority_keypair_str,
                 )
                 .await
             {
@@ -1368,7 +1368,7 @@ impl<
             return Ok(());
         }
 
-        let receiver = Pubkey::from_str(&task.task.refund_recipient_address.clone())
+        let receiver = Pubkey::from_str(&task.task.refund_recipient_address)
             .map_err(|e| IncluderError::GenericError(e.to_string()))?;
         let (operator_pda, _) =
             solana_axelar_operators::OperatorAccount::try_find_pda(&self.keypair.pubkey())
@@ -1437,7 +1437,7 @@ impl<
         // re processing it if we do not capture the success/failure response
         self.refunds_model
             .upsert(
-                refund_id.clone(),
+                refund_id,
                 tx.get_signature()
                     .ok_or_else(|| {
                         IncluderError::GenericError("Failed to get signature".to_string())

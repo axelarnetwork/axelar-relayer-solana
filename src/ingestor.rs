@@ -68,7 +68,7 @@ where
 
         if !event_summaries.is_empty() {
             self.solana_transaction_model
-                .update_events(transaction.clone().signature.to_string(), event_summaries)
+                .update_events(transaction.signature.to_string(), event_summaries)
                 .await
                 .map_err(|e| IngestorError::GenericError(e.to_string()))?;
 

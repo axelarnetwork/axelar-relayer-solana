@@ -248,7 +248,7 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
         // For hardcoded kinds (init/verify) `proto_transaction` is unused inside `compute_budget`.
         let compute_budget = self
             .gas_calculator
-            .compute_budget(proto_transaction.clone(), kind)
+            .compute_budget(proto_transaction, kind)
             .await
             .map_err(|e| TransactionBuilderError::ClientError(e.to_string()))?;
 
