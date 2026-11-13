@@ -1,7 +1,7 @@
 # Example usage docker build --build-arg BINARY_NAME=cu_price_calculator --build-arg FEATURES=mainnet .
 
 # Builder Stage
-FROM rust:1.89-bookworm AS builder
+FROM rust:1.98-bookworm AS builder
 
 # Build argument to decide which binary to include in this image
 ARG BINARY_NAME

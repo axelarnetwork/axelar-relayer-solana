@@ -7,16 +7,23 @@ use axelar_relayer_solana::includer::SolanaIncluder;
 use axelar_relayer_solana::ingestor::SolanaIngestor;
 use axelar_relayer_solana::mocks::{MockRefundsModel, MockUpdateEvents};
 use axelar_relayer_solana::models::refunds::RefundsModel;
+use axelar_relayer_solana::poll_client::{SolanaRpcClient, SolanaRpcClientTrait};
+use axelar_relayer_solana::types::SolanaTransaction;
+use base64::prelude::{Engine as _, BASE64_STANDARD};
 use relayer_core::gmp_api::gmp_types::{Event, MessageExecutionStatus, PostEventResult};
 use relayer_core::gmp_api::{GmpApiTrait, MockGmpApiTrait};
 use relayer_core::includer_worker::IncluderTrait;
 use relayer_core::ingestor::IngestorTrait;
 use relayer_core::queue::{QueueItem, QueueTrait};
 use solana_axelar_std::PayloadType;
+use solana_commitment_config::CommitmentConfig;
+use solana_sdk::hash::Hash;
 use solana_sdk::instruction::Instruction;
+use solana_sdk::message::v1::{self, TransactionConfig};
+use solana_sdk::message::{v0, VersionedMessage};
 use solana_sdk::native_token::LAMPORTS_PER_SOL;
 use solana_sdk::signature::{Keypair, Signer};
-use solana_sdk::transaction::Transaction;
+use solana_sdk::transaction::{Transaction, VersionedTransaction};
 use solana_transaction_parser::parser::TransactionParser;
 use solana_transaction_parser::redis::MockCostCacheTrait;
 
@@ -238,6 +245,275 @@ async fn test_call_contract_picked_up_and_sent_to_gmp() {
 
     println!("Test completed successfully!");
     test_queue.clear().await;
+    env.cleanup().await;
+}
+
+/// Builds and signs a v1 (SIMD-0385) transaction. v1 carries its compute budget in the
+/// message header instead of ComputeBudget instructions, and a limit left unset is zero.
+fn build_v1_transaction(
+    payer: &Keypair,
+    instructions: &[Instruction],
+    recent_blockhash: Hash,
+) -> VersionedTransaction {
+    let config = TransactionConfig::empty()
+        .with_compute_unit_limit(400_000)
+        .with_loaded_accounts_data_size_limit(16 * 1024 * 1024);
+    let message = v1::Message::try_compile_with_config(
+        &payer.pubkey(),
+        instructions,
+        recent_blockhash,
+        config,
+    )
+    .expect("Failed to compile v1 message");
+
+    VersionedTransaction::try_new(VersionedMessage::V1(message), &[payer])
+        .expect("Failed to sign v1 transaction")
+}
+
+/// A gateway call_contract instruction sent by the test payer.
+fn call_contract_instruction(env: &TestEnvironment, payload: Vec<u8>) -> Instruction {
+    let (event_authority_pda, _) = solana_sdk::pubkey::Pubkey::find_program_address(
+        &[b"__event_authority"],
+        &GATEWAY_PROGRAM_ID,
+    );
+
+    let mut accounts = solana_axelar_gateway::accounts::CallContract {
+        caller: env.payer.pubkey(),
+        signing_pda: None,
+        gateway_root_pda: env.gateway_root_pda,
+        event_authority: event_authority_pda,
+        program: GATEWAY_PROGRAM_ID,
+    }
+    .to_account_metas(None);
+    accounts
+        .first_mut()
+        .expect("call_contract has a caller account")
+        .is_signer = true;
+
+    Instruction {
+        program_id: GATEWAY_PROGRAM_ID,
+        accounts,
+        data: solana_axelar_gateway::instruction::CallContract {
+            destination_chain: "ethereum".to_string(),
+            destination_contract_address: "0xDestinationContract".to_string(),
+            payload,
+            signing_pda_bump: 0,
+        }
+        .data(),
+    }
+}
+
+/// The transactions published to the queue so far.
+async fn queued_transactions(queue: &TestQueue) -> Vec<SolanaTransaction> {
+    queue
+        .get_items()
+        .await
+        .into_iter()
+        .filter_map(|item| match item {
+            QueueItem::Transaction(tx_data) => serde_json::from_str(&tx_data).ok(),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Test that a call_contract sent in a v1 transaction, with a payload too large for a
+/// legacy transaction, is captured by the poller and parsed by the ingestor, and that
+/// the fetch by signature used by the listener and by recovery returns it as well.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_v1_call_contract_picked_up_and_parsed() {
+    let env = TestEnvironment::new().await;
+
+    let test_queue = Arc::new(TestQueue::new());
+    let events_queue: Arc<dyn QueueTrait> = Arc::clone(&test_queue) as Arc<dyn QueueTrait>;
+
+    let poller_handle = spawn_poller(
+        &env.rpc_url,
+        "test_v1_call_contract_poller",
+        &env.transaction_model,
+        &env.postgres_db,
+        events_queue,
+    )
+    .await;
+    let poller = Arc::clone(&poller_handle.poller);
+
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    // A legacy transaction is capped at 1232 bytes in total
+    let payload = vec![7u8; 2_000];
+
+    let recent_blockhash = env
+        .rpc_client
+        .get_latest_blockhash()
+        .await
+        .expect("blockhash");
+    let transaction = build_v1_transaction(
+        &env.payer,
+        &[call_contract_instruction(&env, payload.clone())],
+        recent_blockhash,
+    );
+
+    let signature = env
+        .rpc_client
+        .send_and_confirm_transaction(&transaction)
+        .await
+        .expect("Failed to send v1 call_contract transaction");
+
+    let mut polled_transaction = None;
+    let start_time = std::time::Instant::now();
+    let timeout = std::time::Duration::from_secs(30);
+
+    while polled_transaction.is_none() && start_time.elapsed() < timeout {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        polled_transaction = queued_transactions(&test_queue)
+            .await
+            .into_iter()
+            .find(|transaction| transaction.signature == signature);
+    }
+
+    poller_handle.stop().await;
+
+    let polled_transaction =
+        polled_transaction.expect("Poller should have picked up the v1 transaction within timeout");
+
+    // The listener and recovery fetch one transaction by signature instead of going
+    // through the poller's batch request
+    let poll_client = SolanaRpcClient::new(&env.rpc_url, CommitmentConfig::confirmed(), 3)
+        .expect("Failed to create poll client");
+    let fetched_transaction = poll_client
+        .get_transaction_by_signature(signature)
+        .await
+        .expect("Fetching the v1 transaction by signature should succeed");
+    assert_eq!(fetched_transaction, polled_transaction);
+
+    test_queue.clear().await;
+    poller
+        .recover_txs(vec![signature])
+        .await
+        .expect("Recovering the v1 transaction should succeed");
+    assert_eq!(
+        queued_transactions(&test_queue).await,
+        vec![polled_transaction.clone()]
+    );
+
+    let parser = TransactionParser::new(
+        "solana".to_string(),
+        solana_axelar_gas_service::ID,
+        solana_axelar_gateway::ID,
+        solana_axelar_its::ID,
+        Arc::new(MockCostCacheTrait::new()),
+    );
+
+    let mut mock_update_events = MockUpdateEvents::new();
+    mock_update_events
+        .expect_update_events()
+        .returning(|_, _| Box::pin(async { Ok(()) }));
+
+    let events = SolanaIngestor::new(parser, mock_update_events)
+        .handle_transaction(
+            serde_json::to_string(&polled_transaction).expect("serialize transaction"),
+        )
+        .await
+        .expect("Ingestor should successfully parse the v1 transaction");
+
+    let [Event::Call {
+        message,
+        destination_chain,
+        payload: event_payload,
+        ..
+    }] = events.as_slice()
+    else {
+        panic!("expected exactly one Call event, got {events:?}");
+    };
+
+    // A v1 transaction has no ComputeBudget instructions, so the call is instruction 1
+    assert_eq!(message.message_id, format!("{signature}-1.1"));
+    assert_eq!(destination_chain, "ethereum");
+    assert_eq!(
+        BASE64_STANDARD
+            .decode(event_payload)
+            .expect("payload should be base64"),
+        payload
+    );
+
+    test_queue.clear().await;
+    env.cleanup().await;
+}
+
+/// Test that one batch request returns legacy, v0 and v1 transactions together, as the
+/// poller fetches them when it catches up on an account.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_legacy_v0_and_v1_transactions_fetched_in_one_batch() {
+    let env = TestEnvironment::new().await;
+    let payer = &env.payer;
+
+    let recent_blockhash = env
+        .rpc_client
+        .get_latest_blockhash()
+        .await
+        .expect("blockhash");
+
+    let legacy_transaction = Transaction::new_signed_with_payer(
+        &[call_contract_instruction(&env, b"legacy".to_vec())],
+        Some(&payer.pubkey()),
+        &[payer],
+        recent_blockhash,
+    );
+
+    let v0_message = v0::Message::try_compile(
+        &payer.pubkey(),
+        &[call_contract_instruction(&env, b"v0".to_vec())],
+        &[],
+        recent_blockhash,
+    )
+    .expect("Failed to compile v0 message");
+    let v0_transaction = VersionedTransaction::try_new(VersionedMessage::V0(v0_message), &[payer])
+        .expect("Failed to sign v0 transaction");
+
+    let v1_transaction = build_v1_transaction(
+        payer,
+        &[call_contract_instruction(&env, b"v1".to_vec())],
+        recent_blockhash,
+    );
+
+    let legacy_signature = env
+        .rpc_client
+        .send_and_confirm_transaction(&legacy_transaction)
+        .await
+        .expect("Failed to send legacy transaction");
+    let v0_signature = env
+        .rpc_client
+        .send_and_confirm_transaction(&v0_transaction)
+        .await
+        .expect("Failed to send v0 transaction");
+    let v1_signature = env
+        .rpc_client
+        .send_and_confirm_transaction(&v1_transaction)
+        .await
+        .expect("Failed to send v1 transaction");
+
+    let poll_client = SolanaRpcClient::new(&env.rpc_url, CommitmentConfig::confirmed(), 3)
+        .expect("Failed to create poll client");
+    let (transactions, _) = poll_client
+        .get_transactions_for_account(&GATEWAY_PROGRAM_ID, None, None)
+        .await
+        .expect("Failed to fetch gateway transactions");
+
+    let fetched_signatures: Vec<_> = transactions
+        .iter()
+        .map(|transaction| transaction.signature)
+        .collect();
+    for (version, signature) in [
+        ("legacy", legacy_signature),
+        ("v0", v0_signature),
+        ("v1", v1_signature),
+    ] {
+        assert!(
+            fetched_signatures.contains(&signature),
+            "batch is missing the {version} transaction {signature}"
+        );
+    }
+
     env.cleanup().await;
 }
 

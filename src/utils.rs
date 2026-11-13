@@ -29,13 +29,17 @@ use crate::{
     solana_transaction::SolanaTransactionData, solana_transaction::SolanaTransactionModel,
 };
 
+/// Highest transaction version we ask RPC nodes to return (v1 = SIMD-0385). A node
+/// answers with an error instead of the transaction when its version is above this.
+pub const MAX_SUPPORTED_TRANSACTION_VERSION: u8 = 1;
+
 pub fn get_tx_batch_command(
     txs: Vec<RpcConfirmedTransactionStatusWithSignature>,
     commitment: CommitmentConfig,
 ) -> String {
     let cfg = json!({
         "commitment": get_commitment_str(commitment),
-        "maxSupportedTransactionVersion": 0,
+        "maxSupportedTransactionVersion": MAX_SUPPORTED_TRANSACTION_VERSION,
         "encoding": "json",
     });
 
@@ -487,6 +491,26 @@ mod tests {
     };
     use solana_sdk::instruction::AccountMeta;
     use solana_sdk::signature::Keypair;
+
+    #[test]
+    fn test_get_tx_batch_command_requests_v1_transactions() {
+        let status: RpcConfirmedTransactionStatusWithSignature = serde_json::from_value(json!({
+            "signature": Signature::default().to_string(),
+            "slot": 1,
+        }))
+        .unwrap();
+
+        let batch = get_tx_batch_command(vec![status], CommitmentConfig::confirmed());
+        let parsed: serde_json::Value = serde_json::from_str(&batch).unwrap();
+
+        assert_eq!(parsed[0]["method"], "getTransaction");
+        // With a max version below 1 the node returns an error for v1 transactions
+        // and the poller silently skips them.
+        let max_version = parsed[0]["params"][1]["maxSupportedTransactionVersion"]
+            .as_u64()
+            .unwrap();
+        assert!(max_version >= 1);
+    }
 
     fn create_test_execute_data_single_message(
         payload_merkle_root: [u8; 32],

@@ -19,7 +19,7 @@ use solana_sdk::signature::Signature;
 use solana_transaction_status::UiTransactionEncoding;
 use tracing::{debug, info};
 
-use crate::utils::get_tx_batch_command;
+use crate::utils::{get_tx_batch_command, MAX_SUPPORTED_TRANSACTION_VERSION};
 
 const SIGNATURE_PAGE_LIMIT: usize = 100;
 
@@ -77,7 +77,7 @@ impl SolanaRpcClientTrait for SolanaRpcClient {
         let config = RpcTransactionConfig {
             encoding: Some(UiTransactionEncoding::Json),
             commitment: Some(self.client.commitment()),
-            max_supported_transaction_version: Some(0),
+            max_supported_transaction_version: Some(MAX_SUPPORTED_TRANSACTION_VERSION),
         };
 
         let mut retries = 0;
