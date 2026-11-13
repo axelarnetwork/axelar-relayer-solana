@@ -19,6 +19,7 @@ use crate::{
     transaction_type::SolanaTransactionType,
     utils::{
         check_if_error_includes_an_expected_account, is_recoverable, is_slot_already_verified,
+        MAX_SUPPORTED_TRANSACTION_VERSION,
     },
 };
 
@@ -507,7 +508,7 @@ impl IncluderClientTrait for IncluderClient {
                     RpcTransactionConfig {
                         encoding: Some(UiTransactionEncoding::Json),
                         commitment: Some(self.commitment),
-                        max_supported_transaction_version: Some(0),
+                        max_supported_transaction_version: Some(MAX_SUPPORTED_TRANSACTION_VERSION),
                     },
                 )
                 .await

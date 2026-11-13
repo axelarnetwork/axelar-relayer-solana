@@ -123,7 +123,13 @@ pub struct RpcGetTransactionResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use solana_sdk::pubkey::Pubkey;
+    use solana_sdk::transaction::TransactionVersion;
+    use solana_transaction_parser::gmp_types::Event;
+    use solana_transaction_parser::parser::{TransactionParser, TransactionParserTrait};
+    use solana_transaction_parser::redis::MockCostCacheTrait;
     use std::str::FromStr;
+    use std::sync::Arc;
 
     #[test]
     fn test_from_rpc_response_with_test_data() {
@@ -180,6 +186,73 @@ mod tests {
             assert!(!transaction.signature.to_string().is_empty());
             assert!(transaction.slot > 0);
             assert!(transaction.cost_units > 0);
+        }
+    }
+
+    #[test]
+    fn test_from_rpc_response_v1_transaction() {
+        let fixture = crate::test_utils::fixtures::v1_rpc_response_fixture();
+        let encoded = &fixture.result.as_ref().unwrap().transaction;
+        assert_eq!(encoded.version, Some(TransactionVersion::Number(1)));
+
+        let transaction = SolanaTransaction::from_rpc_response(fixture).unwrap();
+
+        let expected_signature = Signature::from_str("4ZgiEc7dM6CUzeDKKvdPbT1WiotDn1VJyVD4UASshsb1gSZPyiDUND6b9Y5616Kc4vGYRwvVdJPniCrYbD6SLGFN").unwrap();
+        assert_eq!(transaction.signature, expected_signature);
+        assert_eq!(transaction.slot, 495666450);
+        assert_eq!(transaction.logs.len(), 16);
+        // v1 messages carry every account inline: nothing is loaded from lookup tables
+        assert_eq!(transaction.account_keys.len(), 8);
+        // CallContract and PayGas each emit one event via CPI
+        assert_eq!(transaction.ixs.len(), 2);
+        // 5000 base fee + 10000 absolute priority fee from the v1 transaction config
+        assert_eq!(transaction.cost_units, 15000);
+    }
+
+    #[tokio::test]
+    async fn test_v1_transaction_parses_into_call_and_gas_credit_events() {
+        let fixture = crate::test_utils::fixtures::v1_rpc_response_fixture();
+        let transaction = SolanaTransaction::from_rpc_response(fixture).unwrap();
+        let signature = transaction.signature.to_string();
+
+        // devnet-amplifier program ids, matching the fixture regardless of the build feature
+        let parser = TransactionParser::new(
+            "solana-18".to_string(),
+            Pubkey::from_str("gasUBnVr9GZon2cp8X5gyFrUsQFhzrprjy734Ci6Bmn").unwrap(),
+            Pubkey::from_str("gtwT4uGVTYSPnTGv6rSpMheyFyczUicxVWKqdtxNGw9").unwrap(),
+            Pubkey::from_str("itsYxmqAxNKUL5zaj3fD1K1whuVhqpxKVoiLGie1reF").unwrap(),
+            Arc::new(MockCostCacheTrait::new()),
+        );
+        let events = parser
+            .parse_transaction(serde_json::to_string(&transaction).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(events.len(), 2);
+        match &events[0] {
+            Event::Call {
+                message,
+                destination_chain,
+                payload,
+                ..
+            } => {
+                assert_eq!(message.message_id, format!("{signature}-1.1"));
+                assert_eq!(destination_chain, "avalanche-fuji");
+                // base64 of the 2400-byte payload
+                assert_eq!(payload.len(), 3200);
+            }
+            other => panic!("expected Call event, got {other:?}"),
+        }
+        match &events[1] {
+            Event::GasCredit {
+                message_id,
+                payment,
+                ..
+            } => {
+                assert_eq!(message_id, &format!("{signature}-1.1"));
+                assert_eq!(payment.amount, "5000000");
+            }
+            other => panic!("expected GasCredit event, got {other:?}"),
         }
     }
 

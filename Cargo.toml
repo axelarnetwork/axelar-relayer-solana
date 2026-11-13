@@ -35,37 +35,40 @@ tracing = "0.1.40"
 uuid = { version = "1.0", features = ["v4"] }
 
 # Anchor
-anchor-lang = "1.0.0"
-anchor-spl = "1.0.0"
+anchor-lang = "1.2.0"
+anchor-spl = "1.2.0"
 
 # Solana
+# The Agave client crates are pinned to one exact release: their `agave-unstable-api`
+# surface may change between patch versions. The SDK stays on 4.0, like the
+# solana-axelar program crates.
 mpl-token-metadata = "^5.1.2-alpha.2"
-solana-address-lookup-table-interface = "~3.0"
-solana-client = "~3.1"
+solana-address-lookup-table-interface = "~3.1"
+solana-client = "=4.2.2"
 solana-commitment-config = "~3.1"
 solana-compute-budget-interface = "~3.0"
-solana-program = "~3.0"
-solana-pubsub-client = "~3.1"
-solana-rpc-client = "~3.1"
-solana-rpc-client-api = "~3.1"
-solana-sdk = "~3.0"
+solana-program = "~4.0.0"
+solana-pubsub-client = "=4.2.2"
+solana-rpc-client = "=4.2.2"
+solana-rpc-client-api = "=4.2.2"
+solana-sdk = "~4.0.1"
 solana-sdk-ids = "~3.1"
-solana-transaction-status = "~3.1"
-solana-transaction-status-client-types = "~3.1"
+solana-transaction-status = { version = "=4.2.2", features = ["agave-unstable-api"] }
+solana-transaction-status-client-types = { version = "=4.2.2", features = ["agave-unstable-api"] }
 solana-loader-v3-interface = "6.1.0"
-solana-rpc = "~3.1"
+solana-rpc = { version = "=4.2.2", features = ["agave-unstable-api"] }
 solana-system-interface = { version = "3.0.0", features = ["bincode"] }
-solana-test-validator = "~3.1"
+solana-test-validator = { version = "=4.2.2", features = ["agave-unstable-api"] }
 
 # Solana Axelar
-governance-gmp = "0.1.4"
-solana-axelar-gas-service = { version = "1.1.0", default-features = false, features = ["no-entrypoint"] }
-solana-axelar-gateway = { version = "1.1.0", default-features = false, features = ["no-entrypoint"] }
-solana-axelar-governance = { version = "1.1.0", default-features = false, features = ["no-entrypoint"] }
-solana-axelar-its = { version = "1.1.0", default-features = false, features = ["no-entrypoint"] }
-solana-axelar-memo = { version = "1.1.0", default-features = false, features = ["no-entrypoint"] }
-solana-axelar-operators = { version = "1.1.0", default-features = false, features = ["no-entrypoint"] }
-solana-axelar-std = "1.1.0"
+governance-gmp = "0.1.5"
+solana-axelar-gas-service = { version = "1.1.2", default-features = false, features = ["no-entrypoint"] }
+solana-axelar-gateway = { version = "1.1.2", default-features = false, features = ["no-entrypoint"] }
+solana-axelar-governance = { version = "1.1.2", default-features = false, features = ["no-entrypoint"] }
+solana-axelar-its = { version = "1.1.2", default-features = false, features = ["no-entrypoint"] }
+solana-axelar-memo = { version = "1.1.2", default-features = false, features = ["no-entrypoint"] }
+solana-axelar-operators = { version = "1.1.2", default-features = false, features = ["no-entrypoint"] }
+solana-axelar-std = "1.1.2"
 
 # Relayer
 relayer-core = { git = "https://github.com/commonprefix/axelar-relayer-core", tag = "v1.0.3", features = ["mocks"] }
@@ -233,9 +236,6 @@ solana-test-validator.workspace = true
 testcontainers.workspace = true
 testcontainers-modules.workspace = true
 tracing-test.workspace = true
-
-[patch.crates-io]
-solana-gossip = { git = "https://github.com/Deiadara/solana-gossip", branch = "master" }
 
 [lints.clippy]
 uninlined_format_args = "allow"
