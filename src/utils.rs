@@ -369,10 +369,7 @@ pub fn is_preflight_failure(error: &RpcClientError) -> bool {
 }
 
 /// Checks if a transaction error is Anchor's `AccountOwnedByWrongProgram` (code 3007).
-/// In preflight simulation this is the signature of RPC replica lag: the node has not
-/// yet replayed the slot that created a PDA the instruction reads (e.g. the verification
-/// session right after init, or the IncomingMessage PDA right after approval), so it
-/// still sees the account owned by the System Program.
+/// In preflight simulation this signifies an RPC issue
 pub fn is_account_owned_by_wrong_program(transaction_error: &TransactionError) -> bool {
     matches!(
         transaction_error,

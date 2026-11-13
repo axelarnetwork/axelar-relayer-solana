@@ -25,6 +25,9 @@ use crate::{
 
 const MAX_GET_TRANSACTION_COST_ATTEMPTS: usize = 3;
 
+/// Backoff schedule for waiting out RPC replica lag: 3 retries, 14s worst case.
+const REPLICA_LAG_BACKOFFS_SEC: [u64; 3] = [2, 4, 8];
+
 #[async_trait]
 #[cfg_attr(test, mockall::automock)]
 pub trait IncluderClientTrait: ThreadSafe {
@@ -88,8 +91,6 @@ impl IncluderClient {
         &self,
         transaction: &SolanaTransactionType,
     ) -> Result<RpcSimulateTransactionResult, IncluderClientError> {
-        const RETRY_BACKOFFS_SEC: [u64; 3] = [2, 4, 8];
-
         // First attempt mirrors the pre-existing default config (no blockhash replacement).
         let first_cfg = RpcSimulateTransactionConfig {
             commitment: Some(self.commitment),
@@ -104,9 +105,12 @@ impl IncluderClient {
 
         let mut last_err: Option<IncluderClientError> = None;
 
-        for attempt in 0..=RETRY_BACKOFFS_SEC.len() {
+        for attempt in 0..=REPLICA_LAG_BACKOFFS_SEC.len() {
             if attempt > 0 {
-                let delay = RETRY_BACKOFFS_SEC.get(attempt - 1).copied().unwrap_or(8);
+                let delay = REPLICA_LAG_BACKOFFS_SEC
+                    .get(attempt - 1)
+                    .copied()
+                    .unwrap_or(8);
                 warn!(
                     attempt,
                     delay_sec = delay,
@@ -137,7 +141,7 @@ impl IncluderClient {
                 }
                 Ok(resp) => {
                     if let Some(sim_err) = resp.value.err {
-                        let is_last_attempt = attempt == RETRY_BACKOFFS_SEC.len();
+                        let is_last_attempt = attempt == REPLICA_LAG_BACKOFFS_SEC.len();
                         if is_last_attempt {
                             error!(
                                 attempt,
@@ -281,12 +285,7 @@ impl IncluderClientTrait for IncluderClient {
         transaction: SolanaTransactionType,
         execute_data: Option<&ExecuteData>,
     ) -> Result<(Signature, Option<u64>), IncluderClientError> {
-        // Dedicated budget for AccountOwnedByWrongProgram preflight failures
-        // (RPC replica lag; see the check below). 3 retries → 4 attempts total,
-        // worst case 2 + 4 + 8 = 14s; mirrors the IncomingMessage backoff in
-        // `incoming_message_already_executed`.
-        const REPLICA_LAG_BACKOFFS_SEC: [u64; 3] = [2, 4, 8];
-        let mut replica_lag_retries = 0;
+        let mut replica_lag_backoffs = REPLICA_LAG_BACKOFFS_SEC.iter();
 
         let mut retries = 0;
         let mut delay = Duration::from_millis(500);
@@ -372,12 +371,8 @@ impl IncluderClientTrait for IncluderClient {
                         if is_preflight_failure(&e)
                             && is_account_owned_by_wrong_program(&transaction_error)
                         {
-                            if let Some(&delay_sec) =
-                                REPLICA_LAG_BACKOFFS_SEC.get(replica_lag_retries)
-                            {
-                                replica_lag_retries += 1;
+                            if let Some(&delay_sec) = replica_lag_backoffs.next() {
                                 warn!(
-                                    attempt = replica_lag_retries,
                                     delay_sec,
                                     signature = %expected_signature,
                                     "AccountOwnedByWrongProgram in preflight (likely RPC replica lag); retrying after backoff"
@@ -439,13 +434,12 @@ impl IncluderClientTrait for IncluderClient {
         //
         // 3 retries → 4 attempts total. Worst-case wall time on persistent
         // not-found: 2 + 4 + 8 = 14s, then propagate to RabbitMQ requeue.
-        const NOT_FOUND_BACKOFFS_SEC: [u64; 3] = [2, 4, 8];
 
         let mut last_err: Option<IncluderClientError> = None;
 
-        for attempt in 0..=NOT_FOUND_BACKOFFS_SEC.len() {
+        for attempt in 0..=REPLICA_LAG_BACKOFFS_SEC.len() {
             if attempt > 0 {
-                let delay = NOT_FOUND_BACKOFFS_SEC
+                let delay = REPLICA_LAG_BACKOFFS_SEC
                     .get(attempt - 1)
                     .copied()
                     .unwrap_or(8);
