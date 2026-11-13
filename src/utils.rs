@@ -14,6 +14,10 @@ use std::str::FromStr;
 use tracing::{debug, error};
 
 use solana_commitment_config::{CommitmentConfig, CommitmentLevel};
+use solana_rpc_client_api::client_error::{
+    Error as RpcClientError, ErrorKind as RpcClientErrorKind,
+};
+use solana_rpc_client_api::request::{RpcError, RpcResponseErrorData};
 use solana_rpc_client_api::response::RpcConfirmedTransactionStatusWithSignature;
 use solana_sdk::{
     instruction::{Instruction, InstructionError},
@@ -351,6 +355,32 @@ pub fn is_recoverable(transaction_error: &TransactionError) -> bool {
     )
 }
 
+/// Checks if the RPC node rejected the transaction in preflight simulation, i.e. before
+/// broadcasting it: nothing landed and no fee was paid. A transaction error of any other
+/// kind comes from a transaction that was processed on-chain.
+pub fn is_preflight_failure(error: &RpcClientError) -> bool {
+    matches!(
+        error.kind(),
+        RpcClientErrorKind::RpcError(RpcError::RpcResponseError {
+            data: RpcResponseErrorData::SendTransactionPreflightFailure(_),
+            ..
+        })
+    )
+}
+
+/// Checks if a transaction error is Anchor's `AccountOwnedByWrongProgram` (code 3007).
+/// In preflight simulation this is the signature of RPC replica lag: the node has not
+/// yet replayed the slot that created a PDA the instruction reads (e.g. the verification
+/// session right after init, or the IncomingMessage PDA right after approval), so it
+/// still sees the account owned by the System Program.
+pub fn is_account_owned_by_wrong_program(transaction_error: &TransactionError) -> bool {
+    matches!(
+        transaction_error,
+        TransactionError::InstructionError(_, InstructionError::Custom(code))
+            if *code == anchor_lang::error::ErrorCode::AccountOwnedByWrongProgram as u32
+    )
+}
+
 /// Checks if a string contains the "account already in use" error pattern.
 /// Matches: "Allocate: account Address { address: <address>, base: None } already in use"
 /// Returns true only if the extracted address matches the expected_address exactly.
@@ -485,6 +515,7 @@ mod tests {
     use solana_axelar_std::{
         CrossChainId, MerklizedMessage, Message, PublicKey, Signature as AxelarSignature,
     };
+    use solana_rpc_client_api::response::RpcSimulateTransactionResult;
     use solana_sdk::instruction::AccountMeta;
     use solana_sdk::signature::Keypair;
 
@@ -1097,6 +1128,62 @@ mod tests {
         let transaction_error =
             TransactionError::InstructionError(0, InstructionError::ComputationalBudgetExceeded);
         assert!(is_recoverable(&transaction_error));
+    }
+
+    #[test]
+    fn test_is_account_owned_by_wrong_program() {
+        // Pin the on-wire value: Anchor's AccountOwnedByWrongProgram must stay 3007 (0xbbf)
+        assert_eq!(
+            anchor_lang::error::ErrorCode::AccountOwnedByWrongProgram as u32,
+            3007
+        );
+
+        let transaction_error =
+            TransactionError::InstructionError(0, InstructionError::Custom(3007));
+        assert!(is_account_owned_by_wrong_program(&transaction_error));
+
+        // Other Anchor account errors are not the replica-lag signature
+        let transaction_error =
+            TransactionError::InstructionError(0, InstructionError::Custom(3012));
+        assert!(!is_account_owned_by_wrong_program(&transaction_error));
+
+        let transaction_error =
+            TransactionError::InstructionError(0, InstructionError::ComputationalBudgetExceeded);
+        assert!(!is_account_owned_by_wrong_program(&transaction_error));
+
+        let transaction_error = TransactionError::AccountInUse;
+        assert!(!is_account_owned_by_wrong_program(&transaction_error));
+    }
+
+    #[test]
+    fn test_is_preflight_failure() {
+        let wrong_owner = TransactionError::InstructionError(0, InstructionError::Custom(3007));
+
+        // Rejected by preflight simulation: the transaction was never broadcast
+        let mut simulation: RpcSimulateTransactionResult =
+            serde_json::from_value(json!({})).unwrap();
+        simulation.err = Some(wrong_owner.clone().into());
+        let preflight_error =
+            RpcClientError::from(RpcClientErrorKind::RpcError(RpcError::RpcResponseError {
+                code: -32002,
+                message: "Transaction simulation failed".to_string(),
+                data: RpcResponseErrorData::SendTransactionPreflightFailure(simulation),
+            }));
+        assert!(is_preflight_failure(&preflight_error));
+        assert_eq!(
+            preflight_error.get_transaction_error(),
+            Some(wrong_owner.clone())
+        );
+
+        // The same error from a transaction that landed and reverted on-chain
+        let onchain_error = RpcClientError::from(RpcClientErrorKind::TransactionError(wrong_owner));
+        assert!(!is_preflight_failure(&onchain_error));
+
+        // Other RPC errors carry no simulation result
+        let rpc_error = RpcClientError::from(RpcClientErrorKind::RpcError(RpcError::ForUser(
+            "unable to confirm transaction".to_string(),
+        )));
+        assert!(!is_preflight_failure(&rpc_error));
     }
 
     #[test]

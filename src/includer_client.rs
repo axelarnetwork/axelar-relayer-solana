@@ -18,7 +18,8 @@ use crate::{
     error::IncluderClientError,
     transaction_type::SolanaTransactionType,
     utils::{
-        check_if_error_includes_an_expected_account, is_recoverable, is_slot_already_verified,
+        check_if_error_includes_an_expected_account, is_account_owned_by_wrong_program,
+        is_preflight_failure, is_recoverable, is_slot_already_verified,
     },
 };
 
@@ -280,6 +281,13 @@ impl IncluderClientTrait for IncluderClient {
         transaction: SolanaTransactionType,
         execute_data: Option<&ExecuteData>,
     ) -> Result<(Signature, Option<u64>), IncluderClientError> {
+        // Dedicated budget for AccountOwnedByWrongProgram preflight failures
+        // (RPC replica lag; see the check below). 3 retries → 4 attempts total,
+        // worst case 2 + 4 + 8 = 14s; mirrors the IncomingMessage backoff in
+        // `incoming_message_already_executed`.
+        const REPLICA_LAG_BACKOFFS_SEC: [u64; 3] = [2, 4, 8];
+        let mut replica_lag_retries = 0;
+
         let mut retries = 0;
         let mut delay = Duration::from_millis(500);
 
@@ -354,6 +362,30 @@ impl IncluderClientTrait for IncluderClient {
                         return Err(IncluderClientError::SlotAlreadyVerifiedError(e.to_string()));
                     }
                     if let Some(transaction_error) = e.get_transaction_error() {
+                        // AccountOwnedByWrongProgram (Anchor 3007) in preflight usually
+                        // means the simulating node has not yet replayed the slot that
+                        // created a PDA this instruction reads. Nothing was broadcast,
+                        // so resending is safe: retry with bounded backoff, and fall
+                        // through to the unrecoverable path once the budget is spent.
+                        // The same code from a transaction that landed is a real
+                        // revert and must keep its classification, so it is not retried.
+                        if is_preflight_failure(&e)
+                            && is_account_owned_by_wrong_program(&transaction_error)
+                        {
+                            if let Some(&delay_sec) =
+                                REPLICA_LAG_BACKOFFS_SEC.get(replica_lag_retries)
+                            {
+                                replica_lag_retries += 1;
+                                warn!(
+                                    attempt = replica_lag_retries,
+                                    delay_sec,
+                                    signature = %expected_signature,
+                                    "AccountOwnedByWrongProgram in preflight (likely RPC replica lag); retrying after backoff"
+                                );
+                                sleep(Duration::from_secs(delay_sec)).await;
+                                continue;
+                            }
+                        }
                         if is_recoverable(&transaction_error) {
                             error!("Recoverable transaction error: {}", transaction_error);
                             return Err(IncluderClientError::RecoverableTransactionError(
