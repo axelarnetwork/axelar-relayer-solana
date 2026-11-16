@@ -89,18 +89,6 @@ pub enum TransactionBuilderError {
 
 #[derive(Error, Debug)]
 pub enum RedisInterfaceError {
-    #[error("GetAltEntryError: {0}")]
-    GetAltEntryError(String),
-    #[error("WriteAltEntryError: {0}")]
-    WriteAltEntryError(String),
-    #[error("SetAltInactiveError: {0}")]
-    SetAltInactiveError(String),
-    #[error("SetAltFailedError: {0}")]
-    SetAltFailedError(String),
-    #[error("RemoveAltKeyError: {0}")]
-    RemoveAltKeyError(String),
-    #[error("UpdateAltRetryCountError: {0}")]
-    UpdateAltRetryCountError(String),
     #[error("GenericError: {0}")]
     GenericError(String),
 }

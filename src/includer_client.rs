@@ -36,7 +36,6 @@ pub trait IncluderClientTrait: ThreadSafe {
         &self,
         pubkey: &Pubkey,
     ) -> Result<Option<Pubkey>, IncluderClientError>;
-    async fn get_slot(&self) -> Result<u64, IncluderClientError>;
     async fn get_recent_prioritization_fees(
         &self,
     ) -> Result<Vec<RpcPrioritizationFee>, IncluderClientError>;
@@ -258,13 +257,6 @@ impl IncluderClientTrait for IncluderClient {
             || IncluderClientError::GenericError("Failed to get account owner".to_string()),
             |e| IncluderClientError::GenericError(e.to_string()),
         ))
-    }
-
-    async fn get_slot(&self) -> Result<u64, IncluderClientError> {
-        self.inner()
-            .get_slot_with_commitment(self.commitment)
-            .await
-            .map_err(|e| IncluderClientError::GenericError(e.to_string()))
     }
 
     async fn get_recent_prioritization_fees(

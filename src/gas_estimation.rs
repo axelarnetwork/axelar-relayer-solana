@@ -99,14 +99,6 @@ pub fn native_interchain_ata_rent() -> u64 {
     rent_exempt_lamports(len)
 }
 
-/// Rent for an address lookup table holding `num_addresses` entries (56-byte meta + 32 bytes per
-/// address). This rent is reclaimed when the table is closed, so it must be excluded from a
-/// message's reported cost. Only the create/extend consensus fee is a real cost.
-pub fn alt_rent_lamports(num_addresses: usize) -> u64 {
-    const LOOKUP_TABLE_META_SIZE: usize = 56;
-    rent_exempt_lamports(LOOKUP_TABLE_META_SIZE + 32 * num_addresses)
-}
-
 /// Which ITS GMP entrypoint an execute transaction drives. Determines which accounts the fee
 /// payer funds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -172,18 +164,22 @@ pub fn execute_rent_lamports(entrypoint: ExecuteEntrypoint) -> u64 {
     }
 }
 
-/// Consensus fee: base signature fee + priority fee (`ceil(micro_lamports_per_cu * units / 1e6)`).
+/// Priority fee: `ceil(micro_lamports_per_cu * units / 1e6)`. A v1 transaction carries this
+/// absolute amount in its config instead of a compute unit price.
+pub fn priority_fee_lamports(compute_units: u64, micro_lamports_per_cu: u64) -> u64 {
+    let total_micro = u128::from(micro_lamports_per_cu).saturating_mul(u128::from(compute_units));
+    u64::try_from(total_micro.div_ceil(1_000_000)).unwrap_or(u64::MAX)
+}
+
+/// Consensus fee: base signature fee + priority fee.
 pub fn consensus_fee_lamports(
     num_signatures: u64,
     compute_units: u64,
     micro_lamports_per_cu: u64,
 ) -> u64 {
-    let total_micro = u128::from(micro_lamports_per_cu).saturating_mul(u128::from(compute_units));
-    let priority = total_micro.div_ceil(1_000_000);
-    let priority = u64::try_from(priority).unwrap_or(u64::MAX);
     LAMPORTS_PER_SIGNATURE
         .saturating_mul(num_signatures)
-        .saturating_add(priority)
+        .saturating_add(priority_fee_lamports(compute_units, micro_lamports_per_cu))
 }
 
 /// Full pre-flight estimate the relayer compares against the user's prepaid gas:
@@ -316,15 +312,6 @@ mod tests {
             token_2022_ata_len(&token_2022_mint_with(&[ExtensionType::TransferFeeConfig])).unwrap();
         assert_eq!(fee_ata, 182);
         assert!(rent_exempt_lamports(fee_ata) > native_interchain_ata_rent());
-    }
-
-    #[test]
-    fn alt_rent_scales_with_address_count() {
-        // ALT account = 56-byte meta + 32 bytes per address.
-        assert_eq!(alt_rent_lamports(0), rent_exempt_lamports(56));
-        assert_eq!(alt_rent_lamports(1), rent_exempt_lamports(88));
-        assert_eq!(alt_rent_lamports(20), rent_exempt_lamports(696));
-        assert_eq!(alt_rent_lamports(1), 1_503_360); // rent of a 216-byte account
     }
 
     #[test]

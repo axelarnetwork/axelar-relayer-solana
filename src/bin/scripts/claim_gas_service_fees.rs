@@ -97,7 +97,7 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let (tx, estimated_tx_cost) = transaction_builder
-        .build(&[ix], vec![], None, InstructionKind::Other)
+        .build(&[ix], InstructionKind::Other)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to build collect_fees transaction: {}", e))?;
 

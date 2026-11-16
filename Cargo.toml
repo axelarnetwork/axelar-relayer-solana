@@ -8,7 +8,6 @@ alloy-sol-types = "0.7"
 anyhow = "1.0.93"
 async-trait = "0.1.88"
 base64 = "0.22.1"
-bincode = "1"
 borsh = "1.6.0"
 bs58 = "0.5"
 bytemuck = "1.24.0"
@@ -43,10 +42,8 @@ anchor-spl = "1.2.0"
 # surface may change between patch versions. The SDK stays on 4.0, like the
 # solana-axelar program crates.
 mpl-token-metadata = "^5.1.2-alpha.2"
-solana-address-lookup-table-interface = "~3.1"
 solana-client = "=4.2.2"
 solana-commitment-config = "~3.1"
-solana-compute-budget-interface = "~3.0"
 solana-program = "~4.0.0"
 solana-pubsub-client = "=4.2.2"
 solana-rpc-client = "=4.2.2"
@@ -97,10 +94,6 @@ path = "src/bin/ingestor.rs"
 [[bin]]
 name = "includer"
 path = "src/bin/includer.rs"
-
-[[bin]]
-name = "alt_manager"
-path = "src/bin/alt_manager.rs"
 
 [[bin]]
 name = "subscriber_recovery"
@@ -166,9 +159,7 @@ alloy-sol-types.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 base64.workspace = true
-bincode.workspace = true
 borsh.workspace = true
-bs58.workspace = true
 bytemuck.workspace = true
 chrono.workspace = true
 dotenv.workspace = true
@@ -197,10 +188,8 @@ anchor-spl.workspace = true
 
 # Solana
 mpl-token-metadata.workspace = true
-solana-address-lookup-table-interface.workspace = true
 solana-client.workspace = true
 solana-commitment-config.workspace = true
-solana-compute-budget-interface.workspace = true
 solana-program.workspace = true
 solana-pubsub-client.workspace = true
 solana-rpc-client.workspace = true

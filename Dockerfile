@@ -28,7 +28,6 @@ RUN mkdir -p src/bin/recovery src/bin/scripts && \
     echo 'fn main() {}' > src/bin/includer.rs && \
     echo 'fn main() {}' > src/bin/subscriber.rs && \
     echo 'fn main() {}' > src/bin/recovery/subscriber.rs && \
-    echo 'fn main() {}' > src/bin/alt_manager.rs && \
     echo 'fn main() {}' > src/bin/cu_price_calculator.rs && \
     echo 'fn main() {}' > src/bin/wallet_balance_monitor.rs && \
     echo 'fn main() {}' > src/bin/scripts/claim_gas_service_fees.rs && \

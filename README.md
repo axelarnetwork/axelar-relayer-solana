@@ -120,7 +120,7 @@ The Includer consumes tasks from RabbitMQ and sends corresponding messages to th
 
 - **Refund Task**: Refunds any excess amount that was paid by the user but not used as fees. Only performs the refund if it has not been issued previously, and the balance to refund is more than the cost of issuing the refund.
 
-The includer makes use of Address Lookup Tables ([ALTs](https://solana.com/developers/guides/advanced/lookup-tables)) in order to reduce the transaction size by replacing the full 32-byte accounts with indices. This allows for bigger payloads to be accepted, as Solana's upper limit on transaction size is quite restrictive (1232 bytes). The cost of deploying the ALT (excluding the rent, as that is reclaimed), deactivating and closing it is considered part of the transaction cost. For now, the ALTs are only used in the `Execute` task when the destination address is ITS, due to the large amount of accounts that are usually included in the transaction. 
+The includer sends every transaction as a v1 transaction (SIMD-0385). This raises Solana's upper limit on transaction size from 1232 to 4096 bytes, so bigger payloads are accepted, and the compute budget is carried in the message itself instead of in separate instructions. 
 
 # Setup
 
@@ -209,12 +209,6 @@ Chains are run using separate binaries, so adjust the following commands accordi
     ```
 
 ### Auxiliary Binaries
-
-- **ALT Manager** – Background service that manages the lifecycle of Solana Address Lookup Tables (ALTs). It periodically deactivates and closes ALTs that are no longer needed, reclaiming rent.
-
-    ```bash
-    cargo run --bin alt_manager
-    ```
 
 - **CU Price Calculator** – Background service that periodically samples recent Solana transaction fees and caches a compute unit price estimate in Redis for use by other components.
 

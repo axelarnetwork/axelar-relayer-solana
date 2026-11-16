@@ -31,16 +31,6 @@ services:
       - .env
     restart: always
 
-  alt_manager:
-    build:
-      context: .
-      args:
-        BINARY_NAME: alt_manager
-        FEATURES: ${NETWORK}
-    env_file:
-      - .env
-    restart: always
-
   cu_price_calculator:
     build:
       context: .
