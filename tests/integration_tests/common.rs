@@ -245,6 +245,43 @@ pub fn create_recording_mock_redis() -> (
     (mock_redis, costs)
 }
 
+/// Keeps the approve cost of a gateway task the way Redis does: the costs added for a task
+/// id accumulate and are read back as the overhead. Returns the mock plus a handle to the
+/// cost written for each message id.
+#[cfg(test)]
+pub fn create_cost_tracking_mock_redis() -> (
+    MockRedisConnectionTrait,
+    Arc<std::sync::Mutex<std::collections::HashMap<String, u64>>>,
+) {
+    let task_costs = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+    let message_costs = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+
+    let mut mock_redis = MockRedisConnectionTrait::new();
+    let costs = Arc::clone(&task_costs);
+    mock_redis
+        .expect_add_gas_cost_for_task_id()
+        .returning(move |task_id, gas_cost, _tx_type| {
+            *costs.lock().unwrap().entry(task_id).or_insert(0u64) += gas_cost;
+        });
+    mock_redis
+        .expect_get_gas_cost_for_task_id()
+        .returning(move |task_id, _tx_type| {
+            Ok(task_costs
+                .lock()
+                .unwrap()
+                .get(&task_id)
+                .copied()
+                .unwrap_or(0))
+        });
+    let sink = Arc::clone(&message_costs);
+    mock_redis.expect_write_gas_cost_for_message_id().returning(
+        move |message_id, gas_cost, _tx_type| {
+            sink.lock().unwrap().insert(message_id, gas_cost);
+        },
+    );
+    (mock_redis, message_costs)
+}
+
 #[cfg(test)]
 pub fn create_mock_gmp_api_for_execute() -> MockGmpApiTrait {
     use relayer_core::gmp_api::gmp_types::Event;
@@ -437,6 +474,12 @@ pub struct TestEnvironment {
 
 impl TestEnvironment {
     pub async fn new() -> Self {
+        Self::with_verifier_set(2, 50, 100).await
+    }
+
+    /// Like `new`, with a gateway verifier set of `set_size` verifiers of `signer_weight`
+    /// each, of which `quorum` weight has to sign.
+    pub async fn with_verifier_set(set_size: u16, signer_weight: u128, quorum: u128) -> Self {
         // Allocate unique ports for this test to enable parallel execution
         let (test_ports, port_slot_guard) = allocate_slot_with_retry().await;
         println!(
@@ -726,32 +769,23 @@ impl TestEnvironment {
         let program_data =
             solana_loader_v3_interface::get_program_data_address(&solana_axelar_gateway::ID);
 
-        let (secret_key_1, compressed_pubkey_1) = generate_random_signer();
-        let (secret_key_2, compressed_pubkey_2) = generate_random_signer();
-
         let domain_separator = [2u8; 32];
-        let quorum_threshold = 100;
 
-        let verifier_leaves = vec![
-            VerifierSetLeaf {
-                nonce: 0,
-                quorum: quorum_threshold,
-                signer_pubkey: PublicKey(compressed_pubkey_1),
-                signer_weight: 50,
-                position: 0,
-                set_size: 2,
-                domain_separator,
-            },
-            VerifierSetLeaf {
-                nonce: 0,
-                quorum: quorum_threshold,
-                signer_pubkey: PublicKey(compressed_pubkey_2),
-                signer_weight: 50,
-                position: 1,
-                set_size: 2,
-                domain_separator,
-            },
-        ];
+        let (verifier_secret_keys, verifier_leaves): (Vec<_>, Vec<_>) = (0..set_size)
+            .map(|position| {
+                let (secret_key, compressed_pubkey) = generate_random_signer();
+                let leaf = VerifierSetLeaf {
+                    nonce: 0,
+                    quorum,
+                    signer_pubkey: PublicKey(compressed_pubkey),
+                    signer_weight,
+                    position,
+                    set_size,
+                    domain_separator,
+                };
+                (secret_key, leaf)
+            })
+            .unzip();
 
         let verifier_leaf_hashes: Vec<[u8; 32]> =
             verifier_leaves.iter().map(VerifierSetLeaf::hash).collect();
@@ -812,7 +846,7 @@ impl TestEnvironment {
             gateway_root_pda,
             verifier_set_hash,
             domain_separator,
-            verifier_secret_keys: vec![secret_key_1, secret_key_2],
+            verifier_secret_keys,
             verifier_leaves,
             verifier_merkle_tree,
             postgres_db,

@@ -1,4 +1,4 @@
-use crate::gas_calculator::{GasCalculatorTrait, InstructionKind};
+use crate::gas_calculator::{GasCalculatorTrait, InstructionKind, MAX_COMPUTE_UNIT_LIMIT};
 use crate::gas_estimation::{classify_execute, consensus_fee_lamports, ExecuteEntrypoint};
 use crate::includer_client::IncluderClientTrait;
 use crate::redis::RedisConnectionTrait;
@@ -32,9 +32,6 @@ use solana_sdk::signer::keypair::Keypair;
 use solana_sdk::signer::Signer as _;
 use std::sync::Arc;
 use tracing::{debug, error};
-
-/// Most compute units a transaction may request (protocol limit).
-const MAX_COMPUTE_UNIT_LIMIT: u64 = 1_400_000;
 
 #[derive(Clone)]
 pub struct TransactionBuilder<
@@ -228,7 +225,7 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
         .map_err(|e| TransactionBuilderError::CreateTransactionError(e.to_string()))?;
 
         // Compute the actual compute budget required for the transaction.
-        // For hardcoded kinds (init/verify) `proto_transaction` is unused inside `compute_budget`.
+        // For hardcoded kinds (init/verify) `proto_transaction` is not simulated inside `compute_budget`.
         let compute_budget = self
             .gas_calculator
             .compute_budget(proto_transaction, kind)

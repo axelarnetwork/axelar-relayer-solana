@@ -1,7 +1,7 @@
 use crate::config::SolanaConfig;
 use crate::error::{IncluderClientError, SolanaIncluderError, TransactionBuilderError};
 use crate::gas_calculator::GasCalculator;
-use crate::gas_calculator::InstructionKind;
+use crate::gas_calculator::{InstructionKind, MAX_VERIFY_SIGNATURES_PER_TX};
 use crate::includer_client::{IncluderClient, IncluderClientTrait};
 use crate::models::refunds::RefundsModel;
 use crate::redis::RedisConnectionTrait;
@@ -201,11 +201,11 @@ impl<
 
     async fn build_and_send_transaction(
         &self,
-        ixs: Vec<Instruction>,
+        ixs: &[Instruction],
         execute_data: Option<&ExecuteData>,
         kind: InstructionKind,
     ) -> Result<(Signature, Option<u64>), SolanaIncluderError> {
-        let (tx, _) = match self.transaction_builder.build(&ixs, kind).await {
+        let (tx, _) = match self.transaction_builder.build(ixs, kind).await {
             Ok((tx, cost)) => (tx, cost),
             Err(e) => {
                 return Err(SolanaIncluderError::GenericError(e.to_string()));
@@ -234,7 +234,6 @@ impl<
         }
     }
 
-    // TODO: do a pass on fee calculation here
     async fn build_execute_transaction_and_send(
         &self,
         instruction: Instruction,
@@ -459,7 +458,7 @@ impl<
         }
     }
 
-    // verify each signature in the signing session
+    /// verify the signatures of the signing session, up to MAX_VERIFY_SIGNATURES_PER_TX per transaction
     async fn verify_signatures(
         &self,
         execute_data: &ExecuteData,
@@ -501,9 +500,8 @@ impl<
                 )
             })?;
 
-        // Build and submit verification txs
         let signing_verifier_set_leaves = execute_data.signing_verifier_set_leaves.clone();
-        let mut verifier_set_verification_futures = signing_verifier_set_leaves
+        let instructions: Vec<Instruction> = signing_verifier_set_leaves
             .into_iter()
             .map(|verifier_info| {
                 let ix_data = solana_axelar_gateway::instruction::VerifySignature {
@@ -518,36 +516,99 @@ impl<
                     verifier_set_tracker_pda,
                 };
 
-                let ix = Instruction {
+                Instruction {
                     program_id: solana_axelar_gateway::ID,
                     accounts: accounts.to_account_metas(None),
                     data: ix_data,
-                };
-
-                self.build_and_send_transaction(vec![ix], None, InstructionKind::VerifySignature)
+                }
             })
+            .collect();
+
+        // Build and submit verification txs
+        let mut verification_futures = instructions
+            .chunks(MAX_VERIFY_SIGNATURES_PER_TX)
+            .map(|batch| self.verify_signature_batch(batch))
             .collect::<FuturesUnordered<_>>();
 
         // Wait for all verification txs to complete and collect the results
-        while let Some(result) = verifier_set_verification_futures.next().await {
-            let (signature, gas_cost) = match result {
-                Ok((signature, gas_cost)) => (signature, gas_cost),
-                Err(e) => match e {
-                    SolanaIncluderError::SlotAlreadyVerifiedError(e) => {
-                        debug!("Signature already verified: {}", e);
-                        continue;
-                    }
-                    _ => return Err(e),
-                },
-            };
-            total_cost += gas_cost.unwrap_or(0);
-            debug!(
-                "Transaction for verifying signature successfully: {}. Cost: {:?}",
-                signature, gas_cost
-            );
+        while let Some(batch_cost) = verification_futures.next().await {
+            total_cost += batch_cost?;
         }
 
         Ok(total_cost)
+    }
+
+    /// Verifies the signatures in one transaction and returns what it cost. A transaction
+    /// is all or nothing, so if it fails (for example because an earlier attempt already
+    /// verified one of them) each signature is verified in a transaction of its own.
+    async fn verify_signature_batch(
+        &self,
+        instructions: &[Instruction],
+    ) -> Result<u64, SolanaIncluderError> {
+        if let [instruction] = instructions {
+            return self.verify_signature(instruction).await;
+        }
+
+        match self
+            .build_and_send_transaction(instructions, None, InstructionKind::VerifySignature)
+            .await
+        {
+            Ok((signature, gas_cost)) => {
+                debug!(
+                    "Transaction for verifying {} signatures successfully: {}. Cost: {:?}",
+                    instructions.len(),
+                    signature,
+                    gas_cost
+                );
+                Ok(gas_cost.unwrap_or(0))
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to verify {} signatures in one transaction, verifying them separately: {}",
+                    instructions.len(),
+                    e
+                );
+                let mut verification_futures = instructions
+                    .iter()
+                    .map(|instruction| self.verify_signature(instruction))
+                    .collect::<FuturesUnordered<_>>();
+
+                let mut total_cost = 0;
+                while let Some(cost) = verification_futures.next().await {
+                    total_cost += cost?;
+                }
+                Ok(total_cost)
+            }
+        }
+    }
+
+    /// Verifies one signature in a transaction of its own and returns what it cost, which
+    /// is nothing if the signature was already verified.
+    async fn verify_signature(
+        &self,
+        instruction: &Instruction,
+    ) -> Result<u64, SolanaIncluderError> {
+        match self
+            .build_and_send_transaction(
+                std::slice::from_ref(instruction),
+                None,
+                InstructionKind::VerifySignature,
+            )
+            .await
+        {
+            Ok((signature, gas_cost)) => {
+                debug!(
+                    "Transaction for verifying signature successfully: {}. Cost: {:?}",
+                    signature, gas_cost
+                );
+                Ok(gas_cost.unwrap_or(0))
+            }
+            Err(SolanaIncluderError::SlotAlreadyVerifiedError(e)) => {
+                debug!("Signature already verified: {}", e);
+                Ok(0)
+            }
+            Err(e) => Err(e),
+        }
     }
 
     async fn rotate_signers(
@@ -622,7 +683,7 @@ impl<
 
         // Build and send RotateSigners transaction
         let (signature, gas_cost) = self
-            .build_and_send_transaction(vec![ix], None, InstructionKind::Other)
+            .build_and_send_transaction(&[ix], None, InstructionKind::Other)
             .await?;
         debug!(
             "Rotated signers transaction sent successfully: {}. Cost: {:?}",
@@ -697,7 +758,7 @@ impl<
                     (
                         cc_id,
                         self.build_and_send_transaction(
-                            vec![ix],
+                            &[ix],
                             Some(execute_data),
                             InstructionKind::ApproveMessage,
                         )
@@ -1079,6 +1140,7 @@ mod tests {
     use crate::redis::MockRedisConnectionTrait;
     use crate::transaction_builder::MockTransactionBuilderTrait;
     use crate::transaction_type::SolanaTransactionType;
+    use crate::utils::create_transaction;
     use base64::prelude::BASE64_STANDARD;
 
     use relayer_core::gmp_api::MockGmpApiTrait;
@@ -1097,7 +1159,7 @@ mod tests {
     use solana_transaction_parser::gmp_types::{GatewayTxTaskFields, RefundTaskFields};
     use std::str::FromStr;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     impl Clone for MockIncluderClientTrait {
         fn clone(&self) -> Self {
@@ -2771,13 +2833,10 @@ mod tests {
         init_tx.sign(&[&keypair], Hash::default());
         let init_sig = init_tx.signatures[0];
 
-        let mut verify_tx_1 = Transaction::new_with_payer(&[], Some(&keypair.pubkey()));
-        verify_tx_1.sign(&[&keypair], Hash::default());
-        let verify_sig_1 = verify_tx_1.signatures[0];
-
-        let mut verify_tx_2 = Transaction::new_with_payer(&[], Some(&keypair.pubkey()));
-        verify_tx_2.sign(&[&keypair], Hash::default());
-        let verify_sig_2 = verify_tx_2.signatures[0];
+        // Both signatures are verified in one transaction
+        let mut verify_tx = Transaction::new_with_payer(&[], Some(&keypair.pubkey()));
+        verify_tx.sign(&[&keypair], Hash::default());
+        let verify_sig = verify_tx.signatures[0];
 
         let mut approve_tx_1 = Transaction::new_with_payer(&[], Some(&keypair.pubkey()));
         approve_tx_1.sign(&[&keypair], Hash::default());
@@ -2788,8 +2847,7 @@ mod tests {
         let approve_sig_2 = approve_tx_2.signatures[0];
 
         let init_tx_clone = init_tx.clone();
-        let verify_tx_1_clone = verify_tx_1.clone();
-        let verify_tx_2_clone = verify_tx_2.clone();
+        let verify_tx_clone = verify_tx.clone();
         let approve_tx_1_clone = approve_tx_1.clone();
         let approve_tx_2_clone = approve_tx_2.clone();
 
@@ -2797,8 +2855,8 @@ mod tests {
         let build_calls_clone = Arc::clone(&build_calls);
         transaction_builder
             .expect_build()
-            .times(5)
-            .returning(move |_, _| {
+            .times(4)
+            .returning(move |ixs, _| {
                 let idx = build_calls_clone.fetch_add(1, Ordering::SeqCst);
                 match idx {
                     0 => Ok((
@@ -2807,25 +2865,22 @@ mod tests {
                         ),
                         100_000u64,
                     )),
-                    1 => Ok((
-                        crate::transaction_type::SolanaTransactionType::Legacy(
-                            verify_tx_1_clone.clone(),
-                        ),
-                        100_000u64,
-                    )),
+                    1 => {
+                        assert_eq!(ixs.len(), 2);
+                        Ok((
+                            crate::transaction_type::SolanaTransactionType::Legacy(
+                                verify_tx_clone.clone(),
+                            ),
+                            100_000u64,
+                        ))
+                    }
                     2 => Ok((
-                        crate::transaction_type::SolanaTransactionType::Legacy(
-                            verify_tx_2_clone.clone(),
-                        ),
-                        100_000u64,
-                    )),
-                    3 => Ok((
                         crate::transaction_type::SolanaTransactionType::Legacy(
                             approve_tx_1_clone.clone(),
                         ),
                         100_000u64,
                     )),
-                    4 => Ok((
+                    3 => Ok((
                         crate::transaction_type::SolanaTransactionType::Legacy(
                             approve_tx_2_clone.clone(),
                         ),
@@ -2835,23 +2890,22 @@ mod tests {
                 }
             });
 
-        // total_overhead = 10 + 20 + 20 = 50
-        // per-message overhead = 50 / 2 = 25
-        // msg1_cost = 30 + 25 = 55
-        // msg2_cost = 40 + 25 = 65
+        // total_overhead = 10 + 20 = 30
+        // per-message overhead = 30 / 2 = 15
+        // msg1_cost = 30 + 15 = 45
+        // msg2_cost = 40 + 15 = 55
         let send_calls = Arc::new(AtomicUsize::new(0));
         let send_calls_clone = Arc::clone(&send_calls);
         let send_responses = [
             (init_sig, 10u64),
-            (verify_sig_1, 20u64),
-            (verify_sig_2, 20u64),
+            (verify_sig, 20u64),
             (approve_sig_1, 30u64),
             (approve_sig_2, 40u64),
         ];
 
         mock_client
             .expect_send_transaction()
-            .times(5)
+            .times(4)
             .returning(move |_, _| {
                 let idx = send_calls_clone.fetch_add(1, Ordering::SeqCst);
                 let (sig, cost) = send_responses[idx];
@@ -2860,7 +2914,7 @@ mod tests {
 
         // add_gas_cost_for_task_id is called twice:
         // 1. init cost: 10
-        // 2. total verify cost: 20 + 20 = 40 (verify_signatures returns TOTAL, not individual)
+        // 2. verify cost: 20 (one transaction for both signatures)
         let add_calls = Arc::new(AtomicUsize::new(0));
         let add_calls_clone = Arc::clone(&add_calls);
         redis_conn
@@ -2872,13 +2926,13 @@ mod tests {
                     && matches!(tx_type, TransactionType::Approve)
                     && match idx {
                         0 => *cost == 10, // init cost
-                        1 => *cost == 40, // total verify cost (20 + 20)
+                        1 => *cost == 20, // verify cost
                         _ => false,
                     }
             })
             .returning(|_, _, _| ());
 
-        // get_gas_cost_for_task_id returns overhead (10 + 40 = 50)
+        // get_gas_cost_for_task_id returns overhead (10 + 20 = 30)
         redis_conn
             .expect_get_gas_cost_for_task_id()
             .times(1)
@@ -2886,10 +2940,10 @@ mod tests {
                 *task_id == "approve-message-two-msgs-two-sigs"
                     && matches!(tx_type, TransactionType::Approve)
             })
-            .returning(|_, _| Ok(50u64));
+            .returning(|_, _| Ok(30u64));
 
-        // Expect write_gas_cost_for_message_id with overhead per message (50/2 = 25) + approve cost
-        // msg1: 25 + 30 = 55, msg2: 25 + 40 = 65
+        // Expect write_gas_cost_for_message_id with overhead per message (30/2 = 15) + approve cost
+        // msg1: 15 + 30 = 45, msg2: 15 + 40 = 55
         let expected_id_1 = msg_id_1.clone();
         let expected_id_2 = msg_id_2.clone();
         redis_conn
@@ -2897,9 +2951,9 @@ mod tests {
             .times(2)
             .withf(move |msg_id, cost, tx_type| {
                 if msg_id == &expected_id_1 {
-                    *cost == 55 && matches!(tx_type, TransactionType::Approve)
+                    *cost == 45 && matches!(tx_type, TransactionType::Approve)
                 } else if msg_id == &expected_id_2 {
-                    *cost == 65 && matches!(tx_type, TransactionType::Approve)
+                    *cost == 55 && matches!(tx_type, TransactionType::Approve)
                 } else {
                     false
                 }
@@ -2919,6 +2973,231 @@ mod tests {
         let result = includer.handle_gateway_tx_task(task).await;
 
         assert!(result.is_ok());
+    }
+
+    /// A Merkle proof as long as mainnet's: 5 levels for a set of 18 verifiers.
+    const MERKLE_PROOF_LEN: usize = 5 * 32;
+
+    /// Execute data signed by `signatures` verifiers.
+    fn execute_data_with_signatures(signatures: u16, merkle_proof_len: usize) -> ExecuteData {
+        let signing_verifier_set_leaves = (0..signatures)
+            .map(|position| SigningVerifierSetInfo {
+                payload_type: PayloadType::ApproveMessages,
+                leaf: VerifierSetLeaf {
+                    nonce: 0,
+                    quorum: 0,
+                    signer_pubkey: PublicKey([1; 33]),
+                    signer_weight: 0,
+                    position,
+                    set_size: 0,
+                    domain_separator: [0; 32],
+                },
+                merkle_proof: vec![0; merkle_proof_len],
+                signature: solana_axelar_std::Signature([1; 65]),
+            })
+            .collect();
+
+        ExecuteData {
+            payload_merkle_root: [1; 32],
+            signing_verifier_set_merkle_root: [2; 32],
+            signing_verifier_set_leaves,
+            payload_items: MerklizedPayload::NewMessages { messages: vec![] },
+        }
+    }
+
+    /// Makes the mocked builder put the verify instructions it is given in a real v1
+    /// transaction, and the mocked client answer each transaction through `respond`.
+    /// Returns how many signatures each transaction handed to the client carried.
+    fn mock_verify_transactions(
+        transaction_builder: &mut MockTransactionBuilderTrait<
+            MockIncluderClientTrait,
+            MockRedisConnectionTrait,
+        >,
+        mock_client: &mut MockIncluderClientTrait,
+        mut respond: impl FnMut(u64) -> Result<u64, IncluderClientError> + Send + 'static,
+    ) -> Arc<Mutex<Vec<u64>>> {
+        let payer = Keypair::new();
+        transaction_builder
+            .expect_build()
+            .returning(move |ixs, kind| {
+                assert_eq!(kind, InstructionKind::VerifySignature);
+                create_transaction(ixs, 0, 0, &payer, &[&payer], Hash::default())
+                    .map(|tx| (tx, 0))
+                    .map_err(|e| TransactionBuilderError::CreateTransactionError(e.to_string()))
+            });
+
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let sent_clone = Arc::clone(&sent);
+        mock_client
+            .expect_send_transaction()
+            .returning(move |tx, _| {
+                let signatures = tx.get_num_instructions();
+                sent_clone.lock().unwrap().push(signatures);
+                let response = respond(signatures).map(|cost| (Signature::default(), Some(cost)));
+                Box::pin(async move { response })
+            });
+        sent
+    }
+
+    #[tokio::test]
+    async fn test_verify_signatures_sends_six_signatures_per_transaction() {
+        let (
+            mock_gmp_api,
+            keypair,
+            chain_name,
+            redis_conn,
+            mock_refunds_model,
+            mut mock_client,
+            mut transaction_builder,
+        ) = get_includer_fields();
+
+        let sent =
+            mock_verify_transactions(&mut transaction_builder, &mut mock_client, |signatures| {
+                Ok(if signatures == 1 { 5_220 } else { 6_320 })
+            });
+
+        let includer = create_test_includer(
+            mock_client,
+            keypair,
+            chain_name,
+            transaction_builder,
+            mock_gmp_api,
+            redis_conn,
+            mock_refunds_model,
+        );
+
+        let total_cost = includer
+            .verify_signatures(&execute_data_with_signatures(13, MERKLE_PROOF_LEN))
+            .await
+            .unwrap();
+
+        let mut sent = sent.lock().unwrap().clone();
+        sent.sort_unstable();
+        assert_eq!(sent, vec![1, 6, 6]);
+        // The cost is what the three transactions cost
+        assert_eq!(total_cost, 6_320 + 6_320 + 5_220);
+    }
+
+    #[tokio::test]
+    async fn test_verify_signatures_falls_back_to_one_signature_per_transaction() {
+        let (
+            mock_gmp_api,
+            keypair,
+            chain_name,
+            redis_conn,
+            mock_refunds_model,
+            mut mock_client,
+            mut transaction_builder,
+        ) = get_includer_fields();
+
+        // An earlier attempt verified one of the six signatures, so the transaction with all
+        // of them fails; sent on their own, that one is reported as verified and five land.
+        let mut sent_on_their_own = 0;
+        let sent = mock_verify_transactions(
+            &mut transaction_builder,
+            &mut mock_client,
+            move |signatures| {
+                if signatures == 1 {
+                    sent_on_their_own += 1;
+                }
+                if signatures > 1 || sent_on_their_own == 1 {
+                    return Err(IncluderClientError::SlotAlreadyVerifiedError(
+                        "Error Code: SlotAlreadyVerified".to_string(),
+                    ));
+                }
+                Ok(5_220)
+            },
+        );
+
+        let includer = create_test_includer(
+            mock_client,
+            keypair,
+            chain_name,
+            transaction_builder,
+            mock_gmp_api,
+            redis_conn,
+            mock_refunds_model,
+        );
+
+        let total_cost = includer
+            .verify_signatures(&execute_data_with_signatures(6, MERKLE_PROOF_LEN))
+            .await
+            .unwrap();
+
+        assert_eq!(*sent.lock().unwrap(), vec![6, 1, 1, 1, 1, 1, 1]);
+        assert_eq!(total_cost, 5 * 5_220);
+    }
+
+    #[tokio::test]
+    async fn test_verify_signatures_falls_back_when_six_signatures_do_not_fit() {
+        // Six signatures fit in a v1 transaction up to a 12-level Merkle proof (a set of 4096
+        // verifiers). One level more and the transaction is too large to build, so each
+        // signature goes in a transaction of its own.
+        for (proof_levels, expected_sent) in [(12, vec![6]), (13, vec![1; 6])] {
+            let (
+                mock_gmp_api,
+                keypair,
+                chain_name,
+                redis_conn,
+                mock_refunds_model,
+                mut mock_client,
+                mut transaction_builder,
+            ) = get_includer_fields();
+
+            let sent =
+                mock_verify_transactions(&mut transaction_builder, &mut mock_client, |_| Ok(1));
+
+            let includer = create_test_includer(
+                mock_client,
+                keypair,
+                chain_name,
+                transaction_builder,
+                mock_gmp_api,
+                redis_conn,
+                mock_refunds_model,
+            );
+
+            includer
+                .verify_signatures(&execute_data_with_signatures(6, proof_levels * 32))
+                .await
+                .unwrap();
+
+            assert_eq!(*sent.lock().unwrap(), expected_sent);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_verify_signatures_fails_when_a_signature_cannot_be_verified() {
+        let (
+            mock_gmp_api,
+            keypair,
+            chain_name,
+            redis_conn,
+            mock_refunds_model,
+            mut mock_client,
+            mut transaction_builder,
+        ) = get_includer_fields();
+
+        // Neither the transaction with all the signatures nor the separate ones go through
+        mock_verify_transactions(&mut transaction_builder, &mut mock_client, |_| {
+            Err(IncluderClientError::GenericError("rejected".to_string()))
+        });
+
+        let includer = create_test_includer(
+            mock_client,
+            keypair,
+            chain_name,
+            transaction_builder,
+            mock_gmp_api,
+            redis_conn,
+            mock_refunds_model,
+        );
+
+        let result = includer
+            .verify_signatures(&execute_data_with_signatures(6, MERKLE_PROOF_LEN))
+            .await;
+
+        assert!(matches!(result, Err(SolanaIncluderError::GenericError(_))));
     }
 
     #[tokio::test]
