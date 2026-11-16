@@ -8,7 +8,7 @@
 //     constant, see CU_HARDCODED_* below.
 //   - simulated: instructions whose CU varies with payload/accounts. We simulate, take
 //     `units_consumed`, add a 25% margin. On simulation error, we either fall back to a
-//     conservative constant (ApproveMessage, AltCreateExtend) or propagate the error
+//     conservative constant (ApproveMessage) or propagate the error
 //     (Execute, Other)
 
 use crate::error::GasCalculatorError;
@@ -25,9 +25,8 @@ const PERCENT_POINTS_TO_TOP_UP: u64 = 25;
 const CU_HARDCODED_INIT_PAYLOAD_VERIFICATION: u64 = 30_000;
 const CU_HARDCODED_VERIFY_SIGNATURE: u64 = 220_000;
 
-/// Conservative fallbacks for simulated instructions when the simulation itself errors.
+/// Conservative fallback for a simulated instruction when the simulation itself errors.
 const CU_FALLBACK_APPROVE_MESSAGE: u64 = 80_000;
-const CU_FALLBACK_ALT_CREATE_EXTEND: u64 = 20_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InstructionKind {
@@ -40,8 +39,6 @@ pub enum InstructionKind {
     /// GMP / ITS / governance execute on the destination program — simulated, no fallback.
     /// Payload size and destination program vary too widely for a meaningful fallback.
     Execute,
-    /// AddressLookupTable create+extend — simulated, falls back to a constant.
-    AltCreateExtend,
     /// Anything else (rotate signers, refunds, gas service fee claims, etc.) — simulated,
     /// no fallback.
     Other,
@@ -94,10 +91,6 @@ impl<IC: IncluderClientTrait> GasCalculatorTrait for GasCalculator<IC> {
             }
             InstructionKind::ApproveMessage => {
                 self.simulate_with_fallback(tx, kind, Some(CU_FALLBACK_APPROVE_MESSAGE))
-                    .await
-            }
-            InstructionKind::AltCreateExtend => {
-                self.simulate_with_fallback(tx, kind, Some(CU_FALLBACK_ALT_CREATE_EXTEND))
                     .await
             }
             InstructionKind::Execute | InstructionKind::Other => {
@@ -244,41 +237,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(cu, CU_FALLBACK_APPROVE_MESSAGE);
-    }
-
-    #[tokio::test]
-    async fn alt_create_extend_simulates_and_applies_margin() {
-        let mut client = MockIncluderClientTrait::new();
-        client
-            .expect_get_units_consumed_from_simulation()
-            .times(1)
-            .returning(|_| Box::pin(async { Ok(10_000) }));
-
-        let calc = GasCalculator::new(client);
-        let cu = calc
-            .compute_budget(dummy_tx(), InstructionKind::AltCreateExtend)
-            .await
-            .unwrap();
-        // 10_000 + 25% = 12_500
-        assert_eq!(cu, 12_500);
-    }
-
-    #[tokio::test]
-    async fn alt_create_extend_falls_back_on_simulation_error() {
-        let mut client = MockIncluderClientTrait::new();
-        client
-            .expect_get_units_consumed_from_simulation()
-            .times(1)
-            .returning(|_| {
-                Box::pin(async { Err(IncluderClientError::GenericError("sim boom".into())) })
-            });
-
-        let calc = GasCalculator::new(client);
-        let cu = calc
-            .compute_budget(dummy_tx(), InstructionKind::AltCreateExtend)
-            .await
-            .unwrap();
-        assert_eq!(cu, CU_FALLBACK_ALT_CREATE_EXTEND);
     }
 
     #[tokio::test]

@@ -206,10 +206,6 @@ pub fn create_mock_redis() -> MockRedisConnectionTrait {
     mock_redis
         .expect_write_gas_cost_for_message_id()
         .returning(|_, _, _| ());
-    mock_redis.expect_get_alt_entry().returning(|_| Ok(None));
-    mock_redis
-        .expect_write_alt_entry()
-        .returning(|_, _, _| Ok(()));
     mock_redis
         .expect_get_cu_price()
         .times(..)
@@ -242,10 +238,6 @@ pub fn create_recording_mock_redis() -> (
             }
         },
     );
-    mock_redis.expect_get_alt_entry().returning(|_| Ok(None));
-    mock_redis
-        .expect_write_alt_entry()
-        .returning(|_, _, _| Ok(()));
     mock_redis
         .expect_get_cu_price()
         .times(..)

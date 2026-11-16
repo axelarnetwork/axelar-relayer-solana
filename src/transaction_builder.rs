@@ -1,10 +1,10 @@
 use crate::gas_calculator::{GasCalculatorTrait, InstructionKind};
-use crate::gas_estimation::{classify_execute, ExecuteEntrypoint};
+use crate::gas_estimation::{classify_execute, consensus_fee_lamports, ExecuteEntrypoint};
 use crate::includer_client::IncluderClientTrait;
 use crate::redis::RedisConnectionTrait;
 use crate::utils::{
-    calculate_total_cost_lamports, create_transaction, extract_proposal_hash_from_payload,
-    get_ata_with_program, get_gateway_event_authority_pda, get_governance_event_authority_pda,
+    create_transaction, extract_proposal_hash_from_payload, get_ata_with_program,
+    get_gateway_event_authority_pda, get_governance_event_authority_pda,
     get_its_event_authority_pda, get_minter_roles_pda, get_operator_proposal_pda, get_proposal_pda,
     get_token_mint_pda,
 };
@@ -18,9 +18,6 @@ use async_trait::async_trait;
 use borsh::BorshDeserialize;
 use mpl_token_metadata;
 use relayer_core::utils::ThreadSafe;
-use solana_address_lookup_table_interface::instruction::{
-    create_lookup_table, extend_lookup_table,
-};
 use solana_axelar_gateway::executable::ExecutablePayload;
 use solana_axelar_gateway::Message;
 use solana_axelar_its::encoding::HubMessage;
@@ -29,13 +26,15 @@ use solana_axelar_its::instructions::{
     execute_link_token_extra_accounts,
 };
 use solana_sdk::instruction::{AccountMeta, Instruction};
-use solana_sdk::message::AddressLookupTableAccount;
 use solana_sdk::program_pack::Pack;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signer::keypair::Keypair;
 use solana_sdk::signer::Signer as _;
 use std::sync::Arc;
 use tracing::{debug, error};
+
+/// Most compute units a transaction may request (protocol limit).
+const MAX_COMPUTE_UNIT_LIMIT: u64 = 1_400_000;
 
 #[derive(Clone)]
 pub struct TransactionBuilder<
@@ -57,8 +56,6 @@ pub trait TransactionBuilderTrait<IC: IncluderClientTrait, R: RedisConnectionTra
     async fn build(
         &self,
         ixs: &[Instruction],
-        address_lookup_tables: Vec<AddressLookupTableAccount>,
-        extra_signing_keypairs: Option<Vec<Keypair>>,
         kind: InstructionKind,
     ) -> Result<(SolanaTransactionType, u64), TransactionBuilderError>;
 
@@ -67,21 +64,21 @@ pub trait TransactionBuilderTrait<IC: IncluderClientTrait, R: RedisConnectionTra
         message: &Message,
         payload: &[u8],
         destination_address: Pubkey,
-    ) -> Result<(Instruction, Vec<AccountMeta>, ExecuteEntrypoint), TransactionBuilderError>;
+    ) -> Result<(Instruction, ExecuteEntrypoint), TransactionBuilderError>;
 
     async fn build_its_instruction(
         &self,
         message: &Message,
         payload: &[u8],
         incoming_message_pda: Pubkey,
-    ) -> Result<(Instruction, Vec<AccountMeta>, ExecuteEntrypoint), TransactionBuilderError>;
+    ) -> Result<(Instruction, ExecuteEntrypoint), TransactionBuilderError>;
 
     async fn build_governance_instruction(
         &self,
         message: &Message,
         payload: &[u8],
         incoming_message_pda: Pubkey,
-    ) -> Result<(Instruction, Vec<AccountMeta>), TransactionBuilderError>;
+    ) -> Result<Instruction, TransactionBuilderError>;
 
     async fn build_executable_instruction(
         &self,
@@ -89,13 +86,7 @@ pub trait TransactionBuilderTrait<IC: IncluderClientTrait, R: RedisConnectionTra
         payload: &[u8],
         incoming_message_pda: Pubkey,
         destination_address: Pubkey,
-    ) -> Result<(Instruction, Vec<AccountMeta>), TransactionBuilderError>;
-
-    async fn build_lookup_table_instructions(
-        &self,
-        recent_slot: u64,
-        execute_accounts: &[AccountMeta],
-    ) -> Result<(Instruction, Instruction, Pubkey, String), TransactionBuilderError>;
+    ) -> Result<Instruction, TransactionBuilderError>;
 }
 
 impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + Clone>
@@ -209,15 +200,14 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
     async fn build(
         &self,
         ixs: &[Instruction],
-        address_lookup_tables: Vec<AddressLookupTableAccount>,
-        extra_signing_keypairs: Option<Vec<Keypair>>,
         kind: InstructionKind,
     ) -> Result<(SolanaTransactionType, u64), TransactionBuilderError> {
         let unit_price = self
             .redis_conn
             .get_cu_price()
             .await
-            .map_err(|e| TransactionBuilderError::ClientError(e.to_string()))?;
+            .map_err(|e| TransactionBuilderError::ClientError(e.to_string()))?
+            .unwrap_or(0);
 
         let recent_hash = self
             .includer_client
@@ -225,23 +215,16 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
             .await
             .map_err(|e| TransactionBuilderError::ClientError(e.to_string()))?;
 
-        let mut signing_keypairs: Vec<&Keypair> = vec![&self.keypair];
-        if let Some(keypairs) = &extra_signing_keypairs {
-            signing_keypairs.extend(keypairs);
-        }
-
-        // Proto transaction where the compute budget is set to a high value to ensure the transaction is simulated successfully
+        // Proto transaction where the compute budget is set to the maximum to ensure the transaction is simulated successfully
         // We will override the compute budget in the final transaction.
         let proto_transaction = create_transaction(
-            ixs.to_vec(),
-            address_lookup_tables.clone(),
-            unit_price.unwrap_or(0),
-            500_0000,
+            ixs,
+            unit_price,
+            MAX_COMPUTE_UNIT_LIMIT,
             &self.keypair,
-            signing_keypairs.clone(),
+            &[&self.keypair],
             recent_hash,
         )
-        .await
         .map_err(|e| TransactionBuilderError::CreateTransactionError(e.to_string()))?;
 
         // Compute the actual compute budget required for the transaction.
@@ -254,19 +237,20 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
 
         // Create the final transaction with the actual compute budget
         let final_transaction = create_transaction(
-            ixs.to_vec(),
-            address_lookup_tables,
-            unit_price.unwrap_or(0),
+            ixs,
+            unit_price,
             compute_budget,
             &self.keypair,
-            signing_keypairs,
+            &[&self.keypair],
             recent_hash,
         )
-        .await
         .map_err(|e| TransactionBuilderError::CreateTransactionError(e.to_string()))?;
 
-        let final_cost = calculate_total_cost_lamports(&final_transaction, compute_budget)
-            .map_err(|e| TransactionBuilderError::GenericError(e.to_string()))?;
+        let final_cost = consensus_fee_lamports(
+            final_transaction.get_num_required_signatures(),
+            compute_budget,
+            unit_price,
+        );
 
         Ok((final_transaction, final_cost))
     }
@@ -276,7 +260,7 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
         message: &Message,
         payload: &[u8],
         destination_address: Pubkey,
-    ) -> Result<(Instruction, Vec<AccountMeta>, ExecuteEntrypoint), TransactionBuilderError> {
+    ) -> Result<(Instruction, ExecuteEntrypoint), TransactionBuilderError> {
         let (incoming_message_pda, _) =
             solana_axelar_gateway::IncomingMessage::try_find_pda(&message.command_id())
                 .ok_or_else(|| {
@@ -292,13 +276,13 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
             }
             x if x == solana_axelar_governance::ID => {
                 // Governance/arbitrary executes fund no relayer accounts so no rent.
-                let (ix, accounts) = self
+                let ix = self
                     .build_governance_instruction(message, payload, incoming_message_pda)
                     .await?;
-                Ok((ix, accounts, ExecuteEntrypoint::Other))
+                Ok((ix, ExecuteEntrypoint::Other))
             }
             _ => {
-                let (ix, accounts) = self
+                let ix = self
                     .build_executable_instruction(
                         message,
                         payload,
@@ -306,7 +290,7 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
                         destination_address,
                     )
                     .await?;
-                Ok((ix, accounts, ExecuteEntrypoint::Other))
+                Ok((ix, ExecuteEntrypoint::Other))
             }
         }
     }
@@ -316,7 +300,7 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
         message: &Message,
         payload: &[u8],
         incoming_message_pda: Pubkey,
-    ) -> Result<(Instruction, Vec<AccountMeta>, ExecuteEntrypoint), TransactionBuilderError> {
+    ) -> Result<(Instruction, ExecuteEntrypoint), TransactionBuilderError> {
         // Use a copy for deserialization to preserve the original payload bytes
         let mut payload_reader = payload;
         let gmp_decoded_payload = HubMessage::deserialize(&mut payload_reader)
@@ -562,16 +546,6 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
             }
         }
 
-        // Track whether this is an InterchainTransfer with data, so we can check if it fits
-        // as is or if we need an extra ephemeral ALT
-        let has_executable_data = matches!(
-            &gmp_decoded_payload,
-            HubMessage::ReceiveFromHub {
-                message: solana_axelar_its::encoding::Message::InterchainTransfer(t),
-                ..
-            } if t.data.is_some()
-        );
-
         let data = solana_axelar_its::instruction::Execute {
             message: message.clone(),
             payload: payload.to_vec(),
@@ -580,16 +554,8 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
 
         let instruction = Instruction {
             program_id: solana_axelar_its::ID,
-            accounts: accounts.clone(),
+            accounts,
             data,
-        };
-
-        // Only return ephemeral ALT candidate accounts for InterchainTransfer with data.
-        // The caller will check if the tx actually overflows before creating the ephemeral ALT.
-        let ephemeral_alt_accounts = if has_executable_data {
-            accounts
-        } else {
-            vec![]
         };
 
         // The rent depends on whether the ATA this execute would create already exists.
@@ -610,7 +576,7 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
             _ => ExecuteEntrypoint::Other,
         };
 
-        Ok((instruction, ephemeral_alt_accounts, entrypoint))
+        Ok((instruction, entrypoint))
     }
 
     async fn build_governance_instruction(
@@ -618,7 +584,7 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
         message: &Message,
         payload: &[u8],
         incoming_message_pda: Pubkey,
-    ) -> Result<(Instruction, Vec<AccountMeta>), TransactionBuilderError> {
+    ) -> Result<Instruction, TransactionBuilderError> {
         let (signing_pda, _) = solana_axelar_gateway::ValidateMessageSigner::try_find_pda(
             &message.command_id(),
             &solana_axelar_governance::ID,
@@ -678,14 +644,11 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
         }
         .data();
 
-        Ok((
-            Instruction {
-                program_id: solana_axelar_governance::ID,
-                accounts,
-                data,
-            },
-            vec![], // we do not want to create an ALT for governance instructions
-        ))
+        Ok(Instruction {
+            program_id: solana_axelar_governance::ID,
+            accounts,
+            data,
+        })
     }
 
     async fn build_executable_instruction(
@@ -694,7 +657,7 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
         payload: &[u8],
         incoming_message_pda: Pubkey,
         destination_address: Pubkey,
-    ) -> Result<(Instruction, Vec<AccountMeta>), TransactionBuilderError> {
+    ) -> Result<Instruction, TransactionBuilderError> {
         let decoded_payload = ExecutablePayload::decode(payload)
             .map_err(|e| TransactionBuilderError::PayloadDecodeError(e.to_string()))?; // return custom error to send cannot_execute_message
 
@@ -737,45 +700,11 @@ impl<GE: GasCalculatorTrait, IC: IncluderClientTrait, R: RedisConnectionTrait + 
         }
         .data();
 
-        Ok((
-            Instruction {
-                program_id: destination_address,
-                accounts,
-                data,
-            },
-            vec![], // we do not want to create an ALT for executable instructions
-        ))
-    }
-
-    async fn build_lookup_table_instructions(
-        &self,
-        recent_slot: u64,
-        execute_accounts: &[AccountMeta],
-    ) -> Result<(Instruction, Instruction, Pubkey, String), TransactionBuilderError> {
-        // create a new keypair as the authority to avoid conflicts with concurrent ALT creations using the same recent hash
-        let authority_keypair = Keypair::new();
-        let (ix_alt_create, alt_pubkey) = create_lookup_table(
-            authority_keypair.pubkey(),
-            self.keypair.pubkey(),
-            recent_slot,
-        );
-
-        let alt_accounts = execute_accounts.iter().map(|acc| acc.pubkey).collect();
-
-        let ix_alt_extend = extend_lookup_table(
-            alt_pubkey,
-            authority_keypair.pubkey(),
-            Some(self.keypair.pubkey()),
-            alt_accounts,
-        );
-
-        let authority_keypair_str = authority_keypair.to_base58_string();
-        Ok((
-            ix_alt_create,
-            ix_alt_extend,
-            alt_pubkey,
-            authority_keypair_str,
-        ))
+        Ok(Instruction {
+            program_id: destination_address,
+            accounts,
+            data,
+        })
     }
 }
 
@@ -790,7 +719,6 @@ mod tests {
     use alloy_sol_types::SolValue;
     use anchor_lang::prelude::AccountMeta;
     use anchor_lang::AccountSerialize;
-    use solana_sdk::message::AddressLookupTableAccount;
 
     use solana_axelar_gateway::executable::ExecutablePayload;
     use solana_axelar_gateway::payload::EncodingScheme;
@@ -867,87 +795,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_transaction_builder_build_with_alt_produces_versioned_tx() {
-        let keypair = Arc::new(Keypair::new());
-        let mut mock_gas = MockGasCalculatorTrait::new();
-        let mut mock_client = MockIncluderClientTrait::new();
-        let mut mock_redis = MockRedisConnectionTrait::new();
-
-        let alt_pubkey = Pubkey::new_unique();
-        let alt_account_1 = Pubkey::new_unique();
-        let alt_account_2 = Pubkey::new_unique();
-        let alt_addresses = vec![alt_account_1, alt_account_2];
-
-        let user_program = Pubkey::new_unique();
-        let user_ix = Instruction::new_with_bytes(
-            user_program,
-            &[1, 2, 3],
-            vec![
-                AccountMeta::new(keypair.pubkey(), true),
-                AccountMeta::new_readonly(alt_account_1, false),
-            ],
-        );
-
-        let recent_blockhash = Hash::new_unique();
-
-        mock_redis
-            .expect_get_cu_price()
-            .times(1)
-            .returning(move || Ok(Some(100_000u64)));
-
-        mock_gas
-            .expect_compute_budget()
-            .times(1)
-            .returning(|_, _| Ok(100_000u64));
-
-        mock_client
-            .expect_get_latest_blockhash()
-            .times(1)
-            .returning(move || {
-                let hash = recent_blockhash;
-                Box::pin(async move { Ok(hash) })
-            });
-
-        let alts = vec![AddressLookupTableAccount {
-            key: alt_pubkey,
-            addresses: alt_addresses,
-        }];
-
-        let builder = TransactionBuilder::new(
-            Arc::clone(&keypair),
-            mock_gas,
-            Arc::new(mock_client),
-            mock_redis,
-        );
-
-        let (tx, _cost) = builder
-            .build(
-                std::slice::from_ref(&user_ix),
-                alts,
-                None,
-                InstructionKind::Other,
-            )
-            .await
-            .expect("build with ALT should succeed");
-
-        match tx {
-            SolanaTransactionType::Versioned(versioned_tx) => match versioned_tx.message {
-                VersionedMessage::V0(msg) => {
-                    assert_eq!(msg.instructions.len(), 3);
-
-                    assert_eq!(msg.address_table_lookups.len(), 1);
-                    assert_eq!(msg.address_table_lookups[0].account_key, alt_pubkey);
-
-                    assert_eq!(versioned_tx.signatures.len(), 1);
-                }
-                _ => panic!("expected v0 message for ALT-backed build"),
-            },
-            _ => panic!("expected Versioned transaction when ALTInfo is provided"),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_transaction_builder_build_without_alt_produces_legacy_tx() {
+    async fn test_transaction_builder_build_produces_v1_tx_with_computed_budget() {
         let keypair = Arc::new(Keypair::new());
         let mut mock_gas = MockGasCalculatorTrait::new();
         let mut mock_client = MockIncluderClientTrait::new();
@@ -987,188 +835,27 @@ mod tests {
             mock_redis,
         );
 
-        let (tx, _cost) = builder
-            .build(
-                std::slice::from_ref(&user_ix),
-                vec![],
-                None,
-                InstructionKind::Other,
-            )
+        let (tx, cost) = builder
+            .build(std::slice::from_ref(&user_ix), InstructionKind::Other)
             .await
-            .expect("build without ALT should succeed");
+            .expect("build should succeed");
 
-        match tx {
-            SolanaTransactionType::Legacy(legacy_tx) => {
-                assert_eq!(legacy_tx.message.instructions.len(), 3);
-                assert_eq!(legacy_tx.message.account_keys[0], keypair.pubkey());
-                assert_eq!(legacy_tx.message.recent_blockhash, recent_blockhash);
-                assert_eq!(legacy_tx.signatures.len(), 1);
-            }
-            _ => panic!("expected Legacy transaction when no ALTs are provided"),
-        }
-    }
+        let SolanaTransactionType::Versioned(tx) = tx else {
+            panic!("expected a versioned transaction");
+        };
+        assert_eq!(tx.signatures.len(), 1);
 
-    #[tokio::test]
-    async fn test_transaction_builder_build_with_extra_signing_keypairs() {
-        let keypair = Arc::new(Keypair::new());
-        let mut mock_gas = MockGasCalculatorTrait::new();
-        let mut mock_client = MockIncluderClientTrait::new();
-        let mut mock_redis = MockRedisConnectionTrait::new();
-
-        let extra_keypair1 = Keypair::new();
-        let extra_keypair2 = Keypair::new();
-        let extra_keypair1_pubkey = extra_keypair1.pubkey();
-        let extra_keypair2_pubkey = extra_keypair2.pubkey();
-        let extra_signing_keypairs = vec![extra_keypair1, extra_keypair2];
-
-        let user_program = Pubkey::new_unique();
-        let user_ix = Instruction::new_with_bytes(
-            user_program,
-            &[7, 8, 9],
-            vec![
-                AccountMeta::new(keypair.pubkey(), true),
-                AccountMeta::new(extra_keypair1_pubkey, true),
-                AccountMeta::new(extra_keypair2_pubkey, true),
-            ],
-        );
-
-        let recent_blockhash = Hash::new_unique();
-
-        mock_redis
-            .expect_get_cu_price()
-            .times(1)
-            .returning(move || Ok(Some(100_000u64)));
-
-        mock_gas
-            .expect_compute_budget()
-            .times(1)
-            .returning(|_, _| Ok(100_000u64));
-
-        mock_client
-            .expect_get_latest_blockhash()
-            .times(1)
-            .returning(move || {
-                let hash = recent_blockhash;
-                Box::pin(async move { Ok(hash) })
-            });
-
-        let builder = TransactionBuilder::new(
-            Arc::clone(&keypair),
-            mock_gas,
-            Arc::new(mock_client),
-            mock_redis,
-        );
-
-        let (tx, _cost) = builder
-            .build(
-                std::slice::from_ref(&user_ix),
-                vec![],
-                Some(extra_signing_keypairs),
-                InstructionKind::Other,
-            )
-            .await
-            .expect("build with extra signing keypairs should succeed");
-
-        match tx {
-            SolanaTransactionType::Legacy(legacy_tx) => {
-                assert_eq!(legacy_tx.message.instructions.len(), 3);
-                assert_eq!(legacy_tx.message.account_keys[0], keypair.pubkey());
-                assert_eq!(legacy_tx.message.recent_blockhash, recent_blockhash);
-                // Should have 3 signatures: main keypair + 2 extra keypairs
-                assert_eq!(legacy_tx.signatures.len(), 3);
-            }
-            _ => panic!("expected Legacy transaction when no ALTs are provided"),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_build_with_two_alts_produces_versioned_tx_referencing_both() {
-        let keypair = Arc::new(Keypair::new());
-        let mut mock_gas = MockGasCalculatorTrait::new();
-        let mut mock_client = MockIncluderClientTrait::new();
-        let mut mock_redis = MockRedisConnectionTrait::new();
-
-        let alt1_pubkey = Pubkey::new_unique();
-        let alt2_pubkey = Pubkey::new_unique();
-        let alt1_account = Pubkey::new_unique();
-        let alt2_account = Pubkey::new_unique();
-
-        let user_program = Pubkey::new_unique();
-        let user_ix = Instruction::new_with_bytes(
-            user_program,
-            &[1, 2, 3],
-            vec![
-                AccountMeta::new(keypair.pubkey(), true),
-                AccountMeta::new_readonly(alt1_account, false),
-                AccountMeta::new_readonly(alt2_account, false),
-            ],
-        );
-
-        let recent_blockhash = Hash::new_unique();
-        mock_redis
-            .expect_get_cu_price()
-            .times(1)
-            .returning(move || Ok(Some(100_000u64)));
-        mock_gas
-            .expect_compute_budget()
-            .times(1)
-            .returning(|_, _| Ok(100_000u64));
-        mock_client
-            .expect_get_latest_blockhash()
-            .times(1)
-            .returning(move || {
-                let hash = recent_blockhash;
-                Box::pin(async move { Ok(hash) })
-            });
-
-        let alts = vec![
-            AddressLookupTableAccount {
-                key: alt1_pubkey,
-                addresses: vec![alt1_account],
-            },
-            AddressLookupTableAccount {
-                key: alt2_pubkey,
-                addresses: vec![alt2_account],
-            },
-        ];
-
-        let builder = TransactionBuilder::new(
-            Arc::clone(&keypair),
-            mock_gas,
-            Arc::new(mock_client),
-            mock_redis,
-        );
-
-        let (tx, _cost) = builder
-            .build(
-                std::slice::from_ref(&user_ix),
-                alts,
-                None,
-                InstructionKind::Other,
-            )
-            .await
-            .expect("build with two ALTs should succeed");
-
-        match tx {
-            SolanaTransactionType::Versioned(versioned_tx) => match versioned_tx.message {
-                VersionedMessage::V0(msg) => {
-                    assert_eq!(
-                        msg.address_table_lookups.len(),
-                        2,
-                        "should reference both ALTs"
-                    );
-                    let keys: Vec<Pubkey> = msg
-                        .address_table_lookups
-                        .iter()
-                        .map(|l| l.account_key)
-                        .collect();
-                    assert!(keys.contains(&alt1_pubkey));
-                    assert!(keys.contains(&alt2_pubkey));
-                }
-                _ => panic!("expected v0 message"),
-            },
-            _ => panic!("expected Versioned transaction with two ALTs"),
-        }
+        let VersionedMessage::V1(message) = tx.message else {
+            panic!("expected a v1 message");
+        };
+        assert_eq!(message.instructions.len(), 1);
+        assert_eq!(message.account_keys.first(), Some(&keypair.pubkey()));
+        assert_eq!(message.lifetime_specifier, recent_blockhash);
+        assert_eq!(message.config.compute_unit_limit, Some(100_000));
+        // 100_000 micro-lamports per unit * 100_000 units
+        assert_eq!(message.config.priority_fee, Some(10_000));
+        // one signature + the priority fee
+        assert_eq!(cost, 15_000);
     }
 
     #[tokio::test]
@@ -1270,20 +957,13 @@ mod tests {
         // Serialize using borsh
         let its_payload = borsh::to_vec(&hub_message).expect("Failed to serialize HubMessage");
 
-        let (its_instruction, its_accounts, _entrypoint) = builder
+        let (its_instruction, _entrypoint) = builder
             .build_execute_instruction(&message, &its_payload, its_destination)
             .await
             .expect("ITS build_execute_instruction should succeed");
 
         assert_eq!(its_instruction.program_id, solana_axelar_its::ID);
-        // ITS InterchainTransfer WITHOUT data should return empty accounts
-        // (no ephemeral ALT needed — global ALT covers the static accounts)
-        assert!(
-            its_accounts.is_empty(),
-            "ITS InterchainTransfer without data should return empty accounts"
-        );
 
-        // Governance address should return empty accounts (no ALT)
         let governance_destination = solana_axelar_governance::ID;
 
         // Create a valid governance payload
@@ -1302,7 +982,7 @@ mod tests {
         };
         let governance_payload = gmp_payload.abi_encode();
 
-        let (governance_instruction, governance_accounts, _) = builder
+        let (governance_instruction, _) = builder
             .build_execute_instruction(&message, &governance_payload, governance_destination)
             .await
             .expect("Governance build_execute_instruction should succeed");
@@ -1310,10 +990,6 @@ mod tests {
         assert_eq!(
             governance_instruction.program_id,
             solana_axelar_governance::ID
-        );
-        assert!(
-            governance_accounts.is_empty(),
-            "Governance should return empty accounts (no ALT)"
         );
 
         let arbitrary_destination = Pubkey::new_unique();
@@ -1325,16 +1001,12 @@ mod tests {
         );
         let executable_payload_bytes = executable_payload.encode().unwrap();
 
-        let (arbitrary_instruction, arbitrary_accounts, _) = builder
+        let (arbitrary_instruction, _) = builder
             .build_execute_instruction(&message, &executable_payload_bytes, arbitrary_destination)
             .await
             .expect("Arbitrary program build_execute_instruction should succeed");
 
         assert_eq!(arbitrary_instruction.program_id, arbitrary_destination);
-        assert!(
-            arbitrary_accounts.is_empty(),
-            "Arbitrary program should return empty accounts (no ALT)"
-        );
     }
 
     #[tokio::test]
@@ -1527,7 +1199,7 @@ mod tests {
         // Serialize using borsh
         let its_payload = borsh::to_vec(&hub_message).expect("Failed to serialize HubMessage");
 
-        let (its_instruction, its_accounts, _entrypoint) = builder
+        let (its_instruction, _entrypoint) = builder
             .build_execute_instruction(&message, &its_payload, its_destination)
             .await
             .expect("ITS build_execute_instruction with ExecutablePayload should succeed");
@@ -1545,12 +1217,6 @@ mod tests {
         assert!(
             account_pubkeys.contains(&gmp_account2),
             "gmp_account2 should be in the instruction accounts"
-        );
-
-        // Verify accounts are returned for ALT creation
-        assert!(
-            !its_accounts.is_empty(),
-            "ITS should return accounts for ALT"
         );
     }
 
@@ -1980,7 +1646,7 @@ mod tests {
 
         let its_payload = borsh::to_vec(&hub_message).expect("Failed to serialize HubMessage");
 
-        let (its_instruction, _its_accounts, _entrypoint) = builder
+        let (its_instruction, _entrypoint) = builder
             .build_execute_instruction(&message, &its_payload, its_destination)
             .await
             .expect("ITS build_execute_instruction should succeed for linked SPL token");
@@ -2301,7 +1967,7 @@ mod tests {
         );
         let encoded = executable_payload.encode().unwrap();
 
-        let (instruction, _) = builder
+        let instruction = builder
             .build_executable_instruction(
                 &message,
                 &encoded,
