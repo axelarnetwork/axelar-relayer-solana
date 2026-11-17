@@ -1682,7 +1682,7 @@ async fn test_approve_message_verifies_six_signatures_per_transaction() {
     let execute_data = execute_data_for_message(&env, message_id, 13);
 
     let components = create_includer_components(&env.rpc_url, &env.payer);
-    let (mock_redis, message_costs) = create_cost_tracking_mock_redis();
+    let (mock_redis, message_costs) = create_recording_mock_redis();
     let includer = SolanaIncluder::new(
         Arc::new(components.includer_client),
         components.keypair,
@@ -1733,7 +1733,7 @@ async fn test_approve_message_verifies_signatures_separately_after_a_partial_att
     let execute_data = execute_data_for_message(&env, message_id, 12);
 
     let components = create_includer_components(&env.rpc_url, &env.payer);
-    let (mock_redis, message_costs) = create_cost_tracking_mock_redis();
+    let (mock_redis, message_costs) = create_recording_mock_redis();
     let includer = SolanaIncluder::new(
         Arc::new(components.includer_client),
         components.keypair,

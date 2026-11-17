@@ -213,43 +213,12 @@ pub fn create_mock_redis() -> MockRedisConnectionTrait {
     mock_redis
 }
 
-/// Records the cost the includer reports for each message id, keyed exactly like the real
-/// Redis (`write_gas_cost_for_message_id` does a `SET`, so the last write per message id
-/// wins; zero-cost writes are skipped). Returns the mock plus a handle to the recorded costs.
+/// Keeps gas costs the way the real Redis does: the costs added for a task id accumulate and
+/// are read back as the approve overhead, and each cost written for a message id replaces
+/// the previous one (zero-cost writes are skipped). Returns the mock plus a handle to the
+/// last cost written for each message id.
 #[cfg(test)]
 pub fn create_recording_mock_redis() -> (
-    MockRedisConnectionTrait,
-    Arc<std::sync::Mutex<std::collections::HashMap<String, u64>>>,
-) {
-    let costs = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
-    let sink = Arc::clone(&costs);
-
-    let mut mock_redis = MockRedisConnectionTrait::new();
-    mock_redis
-        .expect_add_gas_cost_for_task_id()
-        .returning(|_, _, _| ());
-    mock_redis
-        .expect_get_gas_cost_for_task_id()
-        .returning(|_, _| Ok(0u64));
-    mock_redis.expect_write_gas_cost_for_message_id().returning(
-        move |message_id, gas_cost, _tx_type| {
-            if gas_cost != 0 {
-                sink.lock().unwrap().insert(message_id, gas_cost);
-            }
-        },
-    );
-    mock_redis
-        .expect_get_cu_price()
-        .times(..)
-        .returning(|| Ok(Some(100_000u64)));
-    (mock_redis, costs)
-}
-
-/// Keeps the approve cost of a gateway task the way Redis does: the costs added for a task
-/// id accumulate and are read back as the overhead. Returns the mock plus a handle to the
-/// cost written for each message id.
-#[cfg(test)]
-pub fn create_cost_tracking_mock_redis() -> (
     MockRedisConnectionTrait,
     Arc<std::sync::Mutex<std::collections::HashMap<String, u64>>>,
 ) {
@@ -276,9 +245,15 @@ pub fn create_cost_tracking_mock_redis() -> (
     let sink = Arc::clone(&message_costs);
     mock_redis.expect_write_gas_cost_for_message_id().returning(
         move |message_id, gas_cost, _tx_type| {
-            sink.lock().unwrap().insert(message_id, gas_cost);
+            if gas_cost != 0 {
+                sink.lock().unwrap().insert(message_id, gas_cost);
+            }
         },
     );
+    mock_redis
+        .expect_get_cu_price()
+        .times(..)
+        .returning(|| Ok(Some(100_000u64)));
     (mock_redis, message_costs)
 }
 

@@ -42,7 +42,7 @@ const CU_FALLBACK_APPROVE_MESSAGE: u64 = 80_000;
 pub enum InstructionKind {
     /// Gateway InitializePayloadVerificationSession — hardcoded.
     InitPayloadVerification,
-    /// Gateway VerifySignature, one or more per transaction — hardcoded per instruction.
+    /// Gateway VerifySignature: hardcoded per instruction, one or more per transaction.
     VerifySignature,
     /// Gateway ApproveMessage — simulated; falls back to a constant on sim error.
     ApproveMessage,
