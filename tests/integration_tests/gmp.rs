@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use anchor_lang::{InstructionData, ToAccountMetas};
+use anchor_lang::{Discriminator, InstructionData, ToAccountMetas};
 use axelar_relayer_solana::includer::SolanaIncluder;
 use axelar_relayer_solana::ingestor::SolanaIngestor;
 use axelar_relayer_solana::mocks::{MockRefundsModel, MockUpdateEvents};
@@ -15,7 +15,11 @@ use relayer_core::gmp_api::{GmpApiTrait, MockGmpApiTrait};
 use relayer_core::includer_worker::IncluderTrait;
 use relayer_core::ingestor::IngestorTrait;
 use relayer_core::queue::{QueueItem, QueueTrait};
+use solana_axelar_std::execute_data::{ExecuteData, MerklizedPayload};
 use solana_axelar_std::PayloadType;
+use solana_axelar_std::{CrossChainId, MerklizedMessage, Message, MessageLeaf};
+use solana_client::rpc_client::GetConfirmedSignaturesForAddress2Config;
+use solana_client::rpc_config::RpcTransactionConfig;
 use solana_commitment_config::CommitmentConfig;
 use solana_sdk::hash::Hash;
 use solana_sdk::instruction::Instruction;
@@ -24,8 +28,10 @@ use solana_sdk::message::{v0, VersionedMessage};
 use solana_sdk::native_token::LAMPORTS_PER_SOL;
 use solana_sdk::signature::{Keypair, Signer};
 use solana_sdk::transaction::{Transaction, VersionedTransaction};
+use solana_transaction_parser::gmp_types::{CommonTaskFields, GatewayTxTask, GatewayTxTaskFields};
 use solana_transaction_parser::parser::TransactionParser;
 use solana_transaction_parser::redis::MockCostCacheTrait;
+use solana_transaction_status::{EncodedTransaction, UiTransactionEncoding};
 
 use solana_axelar_gateway::ID as GATEWAY_PROGRAM_ID;
 use solana_axelar_std::{hasher::LeafHash, MerkleTree, PublicKey, VerifierSetLeaf};
@@ -1509,5 +1515,271 @@ async fn test_rotate_signers() {
 
     println!("Rotate Signers Integration Test Completed");
     test_queue.clear().await;
+    env.cleanup().await;
+}
+
+/// Execute data approving one message, signed by the first `signatures` verifiers.
+fn execute_data_for_message(
+    env: &TestEnvironment,
+    message_id: &str,
+    signatures: usize,
+) -> ExecuteData {
+    let leaf = MessageLeaf {
+        message: Message {
+            cc_id: CrossChainId {
+                chain: "axelar".to_string(),
+                id: message_id.to_string(),
+            },
+            source_address: "axelar1test".to_string(),
+            destination_chain: "solana-devnet".to_string(),
+            destination_address: env.memo_program_id.to_string(),
+            payload_hash: [9u8; 32],
+        },
+        position: 0,
+        set_size: 1,
+        domain_separator: env.domain_separator,
+    };
+    let payload_merkle_root = MerkleTree::from_leaves(&[leaf.hash()])
+        .root()
+        .expect("merkle root");
+
+    let signing_verifier_set_leaves = env
+        .verifier_secret_keys
+        .iter()
+        .zip(&env.verifier_leaves)
+        .enumerate()
+        .take(signatures)
+        .map(|(position, (secret_key, verifier_leaf))| {
+            create_verifier_info(
+                secret_key,
+                payload_merkle_root,
+                verifier_leaf,
+                position,
+                &env.verifier_merkle_tree,
+                PayloadType::ApproveMessages,
+            )
+        })
+        .collect();
+
+    ExecuteData {
+        payload_merkle_root,
+        signing_verifier_set_merkle_root: env.verifier_set_hash,
+        signing_verifier_set_leaves,
+        payload_items: MerklizedPayload::NewMessages {
+            messages: vec![MerklizedMessage {
+                leaf,
+                proof: vec![],
+            }],
+        },
+    }
+}
+
+fn gateway_tx_task(task_id: &str, execute_data: &ExecuteData) -> GatewayTxTask {
+    GatewayTxTask {
+        common: CommonTaskFields {
+            id: task_id.into(),
+            chain: "solana-devnet".into(),
+            timestamp: "2025-11-26T14:47:18.567796Z".into(),
+            r#type: "GATEWAY_TX".into(),
+            meta: None,
+        },
+        task: GatewayTxTaskFields {
+            execute_data: BASE64_STANDARD.encode(borsh::to_vec(execute_data).expect("borsh")),
+        },
+    }
+}
+
+/// A landed transaction that verified signatures.
+#[derive(Debug)]
+struct VerifyTransaction {
+    signatures: usize,
+    /// Serialized size in bytes
+    size: usize,
+}
+
+/// The transactions that verified signatures in the session of `execute_data`, as the
+/// validator stored them. None of the session's transactions may have failed on-chain.
+async fn verify_transactions(
+    env: &TestEnvironment,
+    execute_data: &ExecuteData,
+) -> Vec<VerifyTransaction> {
+    let (session, _) = solana_axelar_gateway::SignatureVerificationSessionData::find_pda(
+        &execute_data.payload_merkle_root,
+        PayloadType::ApproveMessages,
+        &execute_data.signing_verifier_set_merkle_root,
+    );
+    let statuses = env
+        .rpc_client
+        .get_signatures_for_address_with_config(
+            &session,
+            GetConfirmedSignaturesForAddress2Config {
+                commitment: Some(CommitmentConfig::confirmed()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("signatures of the session");
+
+    let mut transactions = vec![];
+    for status in statuses {
+        assert!(status.err.is_none(), "failed on-chain: {status:?}");
+
+        let confirmed = env
+            .rpc_client
+            .get_transaction_with_config(
+                &status.signature.parse().expect("signature"),
+                RpcTransactionConfig {
+                    encoding: Some(UiTransactionEncoding::Base64),
+                    commitment: Some(CommitmentConfig::confirmed()),
+                    max_supported_transaction_version: Some(1),
+                },
+            )
+            .await
+            .expect("transaction of the session");
+        let EncodedTransaction::Binary(encoded, _) = &confirmed.transaction.transaction else {
+            panic!("expected a binary encoding");
+        };
+        let size = BASE64_STANDARD.decode(encoded).expect("base64").len();
+        let transaction = confirmed
+            .transaction
+            .transaction
+            .decode()
+            .expect("decodable transaction");
+        assert!(matches!(transaction.message, VersionedMessage::V1(_)));
+
+        let signatures = transaction
+            .message
+            .instructions()
+            .iter()
+            .filter(|instruction| {
+                instruction
+                    .data
+                    .starts_with(solana_axelar_gateway::instruction::VerifySignature::DISCRIMINATOR)
+            })
+            .count();
+        if signatures > 0 {
+            transactions.push(VerifyTransaction { signatures, size });
+        }
+    }
+    transactions
+}
+
+/// How many signatures each of the `transactions` verified, smallest first.
+fn signatures_per_transaction(transactions: &[VerifyTransaction]) -> Vec<usize> {
+    let mut signatures: Vec<usize> = transactions.iter().map(|tx| tx.signatures).collect();
+    signatures.sort_unstable();
+    signatures
+}
+
+/// Test that the signatures of a gateway task are verified six per transaction and that
+/// the cost reported for the message is what the relayer paid. 13 of the 18 verifiers have
+/// to sign (12 of 18 on mainnet), so the signatures go out as 6 + 6 + 1.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_approve_message_verifies_six_signatures_per_transaction() {
+    let env = TestEnvironment::with_verifier_set(18, 1, 13).await;
+
+    let message_id = "test-batched-signatures-001";
+    let execute_data = execute_data_for_message(&env, message_id, 13);
+
+    let components = create_includer_components(&env.rpc_url, &env.payer);
+    let (mock_redis, message_costs) = create_recording_mock_redis();
+    let includer = SolanaIncluder::new(
+        Arc::new(components.includer_client),
+        components.keypair,
+        "solana-devnet".to_string(),
+        components.transaction_builder,
+        Arc::new(create_mock_gmp_api_for_execute()),
+        mock_redis,
+        Arc::new(MockRefundsModel::new()),
+    );
+
+    let payer = env.payer.pubkey();
+    let balance_before = env.rpc_client.get_balance(&payer).await.expect("balance");
+    includer
+        .handle_gateway_tx_task(gateway_tx_task(
+            "test-batched-signatures-task",
+            &execute_data,
+        ))
+        .await
+        .expect("gateway task should succeed");
+    let balance_after = env.rpc_client.get_balance(&payer).await.expect("balance");
+
+    let transactions = verify_transactions(&env, &execute_data).await;
+    println!("verify transactions: {transactions:?}");
+    assert_eq!(signatures_per_transaction(&transactions), vec![1, 6, 6]);
+    assert!(transactions
+        .iter()
+        .all(|tx| tx.size <= v1::MAX_TRANSACTION_SIZE));
+
+    // The approve cost of the message is everything the task made the relayer pay
+    assert_eq!(
+        message_costs.lock().unwrap().get(message_id).copied(),
+        Some(balance_before - balance_after)
+    );
+
+    // The includer's idle RPC connections would hold up the validator's shutdown
+    drop(includer);
+    env.cleanup().await;
+}
+
+/// Test that when an earlier attempt already verified one signature, the transaction it
+/// would have shared with five others is replaced by one transaction per signature, while
+/// the other six still go in one transaction. Mainnet's shape: 12 of 18 verifiers sign.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_approve_message_verifies_signatures_separately_after_a_partial_attempt() {
+    let env = TestEnvironment::with_verifier_set(18, 1, 12).await;
+
+    let message_id = "test-batched-signatures-002";
+    let execute_data = execute_data_for_message(&env, message_id, 12);
+
+    let components = create_includer_components(&env.rpc_url, &env.payer);
+    let (mock_redis, message_costs) = create_recording_mock_redis();
+    let includer = SolanaIncluder::new(
+        Arc::new(components.includer_client),
+        components.keypair,
+        "solana-devnet".to_string(),
+        components.transaction_builder,
+        Arc::new(create_mock_gmp_api_for_execute()),
+        mock_redis,
+        Arc::new(MockRefundsModel::new()),
+    );
+
+    // The earlier attempt: the session is created and the first signature verified
+    let mut earlier_attempt = execute_data.clone();
+    earlier_attempt.signing_verifier_set_leaves.truncate(1);
+    earlier_attempt.payload_items = MerklizedPayload::NewMessages { messages: vec![] };
+    includer
+        .handle_gateway_tx_task(gateway_tx_task(
+            "test-partial-attempt-task",
+            &earlier_attempt,
+        ))
+        .await
+        .expect("earlier attempt should succeed");
+
+    let payer = env.payer.pubkey();
+    let balance_before = env.rpc_client.get_balance(&payer).await.expect("balance");
+    includer
+        .handle_gateway_tx_task(gateway_tx_task("test-retried-task", &execute_data))
+        .await
+        .expect("gateway task should succeed");
+    let balance_after = env.rpc_client.get_balance(&payer).await.expect("balance");
+
+    // One signature from the earlier attempt, the five that shared its transaction, and
+    // the six of the other transaction
+    let transactions = verify_transactions(&env, &execute_data).await;
+    println!("verify transactions: {transactions:?}");
+    assert_eq!(
+        signatures_per_transaction(&transactions),
+        vec![1, 1, 1, 1, 1, 1, 6]
+    );
+
+    // The retried task is charged what it paid: no session and no already verified signature
+    assert_eq!(
+        message_costs.lock().unwrap().get(message_id).copied(),
+        Some(balance_before - balance_after)
+    );
+
+    // The includer's idle RPC connections would hold up the validator's shutdown
+    drop(includer);
     env.cleanup().await;
 }

@@ -259,6 +259,18 @@ pub fn create_transaction(
     let message =
         v1::Message::try_compile_with_config(&payer.pubkey(), instructions, recent_hash, config)
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+
+    // A v1 transaction is serialized as a version byte, the message, then the signatures.
+    let size = 1
+        + message.size()
+        + usize::from(message.header.num_required_signatures) * v1::SIGNATURE_SIZE;
+    if size > v1::MAX_TRANSACTION_SIZE {
+        return Err(anyhow!(
+            "Transaction is {size} bytes, above the limit of {}",
+            v1::MAX_TRANSACTION_SIZE
+        ));
+    }
+
     let transaction =
         VersionedTransaction::try_new(VersionedMessage::V1(message), signing_keypairs)
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
@@ -414,6 +426,7 @@ mod tests {
     use super::*;
     use alloy_sol_types::SolValue;
     use anchor_lang::InstructionData;
+    use base64::prelude::{Engine as _, BASE64_STANDARD};
     use governance_gmp::alloy_primitives::U256;
     use solana_axelar_governance::state::proposal::ExecutableProposal;
     use solana_axelar_governance::{ExecuteProposalCallData, SolanaAccountMetadata};
@@ -425,6 +438,8 @@ mod tests {
     };
     use solana_sdk::instruction::AccountMeta;
     use solana_sdk::signature::Keypair;
+    use solana_transaction_status::{Encodable, UiTransactionEncoding};
+    use solana_transaction_status_client_types::EncodedTransaction;
 
     #[test]
     fn test_get_tx_batch_command_requests_v1_transactions() {
@@ -1194,5 +1209,41 @@ mod tests {
         );
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_create_transaction_enforces_the_v1_size_limit() {
+        let payer = Keypair::new();
+        let program = Pubkey::new_unique();
+        let build = |data_len: usize| {
+            create_transaction(
+                &[Instruction::new_with_bytes(
+                    program,
+                    &vec![0u8; data_len],
+                    vec![],
+                )],
+                1_000,
+                200_000,
+                &payer,
+                &[&payer],
+                solana_sdk::hash::Hash::new_unique(),
+            )
+        };
+
+        // Everything but the instruction data takes 190 bytes: version (1), one signature
+        // (64), fixed header (41), two addresses (64), three config values (16) and one
+        // instruction header (4). That leaves 3906 of the 4096 bytes.
+        let SolanaTransactionType::Versioned(largest) = build(3_906).unwrap() else {
+            panic!("expected a versioned transaction");
+        };
+        // The size we check must be the size on the wire
+        let EncodedTransaction::Binary(encoded, _) = largest.encode(UiTransactionEncoding::Base64)
+        else {
+            panic!("expected a binary encoding");
+        };
+        assert_eq!(BASE64_STANDARD.decode(encoded).unwrap().len(), 4_096);
+
+        let error = build(3_907).err().expect("one byte over the limit");
+        assert!(error.to_string().contains("4097 bytes"));
     }
 }

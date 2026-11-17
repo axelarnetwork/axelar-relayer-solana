@@ -21,9 +21,19 @@ use tracing::{debug, error};
 /// Margin added on top of simulated CU to absorb between-sim and on-chain state drift.
 const PERCENT_POINTS_TO_TOP_UP: u64 = 25;
 
+/// Most compute units a transaction may request (protocol limit).
+pub const MAX_COMPUTE_UNIT_LIMIT: u64 = 1_400_000;
+
 /// Hardcoded CU values for protocol-known instructions (mainnet-measured + ~10% buffer).
-const CU_HARDCODED_INIT_PAYLOAD_VERIFICATION: u64 = 30_000;
+/// Init is the exception: it costs about 7,700 plus 1,500 per bump tried while deriving the
+/// session and verifier set tracker PDAs, so 40,000 covers 21 tries in total.
+const CU_HARDCODED_INIT_PAYLOAD_VERIFICATION: u64 = 40_000;
 const CU_HARDCODED_VERIFY_SIGNATURE: u64 = 220_000;
+
+/// Most `VerifySignature` instructions sent in one transaction. Each one is budgeted
+/// `CU_HARDCODED_VERIFY_SIGNATURE` (220,000) and a transaction may request at most
+/// `MAX_COMPUTE_UNIT_LIMIT` (1,400,000): 6 need 1,320,000, 7 would need 1,540,000.
+pub const MAX_VERIFY_SIGNATURES_PER_TX: usize = 6;
 
 /// Conservative fallback for a simulated instruction when the simulation itself errors.
 const CU_FALLBACK_APPROVE_MESSAGE: u64 = 80_000;
@@ -32,7 +42,7 @@ const CU_FALLBACK_APPROVE_MESSAGE: u64 = 80_000;
 pub enum InstructionKind {
     /// Gateway InitializePayloadVerificationSession — hardcoded.
     InitPayloadVerification,
-    /// Gateway VerifySignature — hardcoded.
+    /// Gateway VerifySignature: hardcoded per instruction, one or more per transaction.
     VerifySignature,
     /// Gateway ApproveMessage — simulated; falls back to a constant on sim error.
     ApproveMessage,
@@ -82,12 +92,9 @@ impl<IC: IncluderClientTrait> GasCalculatorTrait for GasCalculator<IC> {
                 Ok(CU_HARDCODED_INIT_PAYLOAD_VERIFICATION)
             }
             InstructionKind::VerifySignature => {
-                debug!(
-                    kind = ?kind,
-                    cu = CU_HARDCODED_VERIFY_SIGNATURE,
-                    "compute_budget: using hardcoded CU"
-                );
-                Ok(CU_HARDCODED_VERIFY_SIGNATURE)
+                let cu = CU_HARDCODED_VERIFY_SIGNATURE.saturating_mul(tx.get_num_instructions());
+                debug!(kind = ?kind, cu, "compute_budget: using hardcoded CU");
+                Ok(cu)
             }
             InstructionKind::ApproveMessage => {
                 self.simulate_with_fallback(tx, kind, Some(CU_FALLBACK_APPROVE_MESSAGE))
@@ -163,13 +170,18 @@ mod tests {
     use solana_sdk::transaction::Transaction;
 
     fn dummy_tx() -> SolanaTransactionType {
+        dummy_tx_with_instructions(1)
+    }
+
+    fn dummy_tx_with_instructions(count: usize) -> SolanaTransactionType {
         let kp = Keypair::new();
+        let instruction = solana_sdk::instruction::Instruction::new_with_bytes(
+            solana_sdk_ids::system_program::ID,
+            &[],
+            vec![],
+        );
         let tx = Transaction::new_signed_with_payer(
-            &[solana_sdk::instruction::Instruction::new_with_bytes(
-                solana_sdk_ids::system_program::ID,
-                &[],
-                vec![],
-            )],
+            &vec![instruction; count],
             Some(&kp.pubkey()),
             &[&kp],
             Hash::default(),
@@ -202,6 +214,30 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(cu, CU_HARDCODED_VERIFY_SIGNATURE);
+    }
+
+    #[tokio::test]
+    async fn verify_signature_budget_scales_with_the_number_of_instructions() {
+        let mut client = MockIncluderClientTrait::new();
+        client.expect_get_units_consumed_from_simulation().times(0);
+
+        let calc = GasCalculator::new(client);
+        let cu = calc
+            .compute_budget(
+                dummy_tx_with_instructions(MAX_VERIFY_SIGNATURES_PER_TX),
+                InstructionKind::VerifySignature,
+            )
+            .await
+            .unwrap();
+        assert_eq!(cu, 1_320_000);
+    }
+
+    #[test]
+    fn max_verify_signatures_per_tx_is_the_most_that_fit_the_compute_limit() {
+        let budget = MAX_VERIFY_SIGNATURES_PER_TX as u64 * CU_HARDCODED_VERIFY_SIGNATURE;
+        assert!(budget <= MAX_COMPUTE_UNIT_LIMIT);
+        // One more signature would not fit
+        assert!(budget + CU_HARDCODED_VERIFY_SIGNATURE > MAX_COMPUTE_UNIT_LIMIT);
     }
 
     #[tokio::test]

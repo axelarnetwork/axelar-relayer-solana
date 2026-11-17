@@ -2788,7 +2788,8 @@ async fn test_its_interchain_transfer_with_and_without_data() {
     //   [0]    counter PDA   — writable (memo increments it)
     //   [1]    payer's ATA   — writable; memo's optional onward TransferChecked
     //                          target. A real ATA lets this CPI succeed.
-    //   [2..]  4 readonly fillers — bulk up the tx size past 1232 bytes.
+    //   [2..]  4 readonly fillers, which make the transaction too large for a
+    //          legacy one (1232 bytes), so the execute only fits in v1.
     let mut extra_accounts: Vec<AccountMeta> = vec![
         AccountMeta::new(counter_pda, false),
         AccountMeta::new(payer_ata, false),

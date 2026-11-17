@@ -17,6 +17,13 @@ impl SolanaTransactionType {
         }
     }
 
+    pub fn get_num_instructions(&self) -> u64 {
+        match self {
+            SolanaTransactionType::Legacy(tx) => tx.message.instructions.len() as u64,
+            SolanaTransactionType::Versioned(tx) => tx.message.instructions().len() as u64,
+        }
+    }
+
     pub fn get_signature(&self) -> Option<&Signature> {
         match self {
             SolanaTransactionType::Legacy(tx) => tx.signatures.first(),
